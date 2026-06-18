@@ -1,0 +1,27 @@
+# Live cluster config for the local Confluent (KRaft) stack.
+#
+# Unlike cluster.example.yaml (which pulls logs over SSH), this reads the GC
+# logs that docker-compose.live.yml bind-mounts onto the host, so source: local.
+#
+# Ingest into the live history store with:
+#     python -m gcanalyzer.ingest --config cluster.live.yaml --db gc_live.db
+cluster: LOCAL-DEV
+
+defaults:
+  source: local
+
+nodes:
+  - id: controller-1
+    role: controller
+    local_paths:
+      - ./live-logs/controller/kafkaServer-gc.log*
+
+  - id: broker-1
+    role: broker
+    local_paths:
+      - ./live-logs/broker1/kafkaServer-gc.log*
+
+  - id: broker-2
+    role: broker
+    local_paths:
+      - ./live-logs/broker2/kafkaServer-gc.log*

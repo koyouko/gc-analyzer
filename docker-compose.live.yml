@@ -1,0 +1,80 @@
+# Local Confluent (KRaft) stack for the GC Analyzer.
+#
+#   1 dedicated controller (node 1) + 2 brokers (nodes 2, 3), no ZooKeeper.
+#
+# Each JVM writes a Java-11+ *unified* GC log (-Xlog:gc*) with the `time`
+# decorator, which is exactly the format gcanalyzer/parser.py targets. The
+# /gclogs dir in every container is bind-mounted to ./live-logs/<node> on the
+# host so the analyzer can read them with source: local (no SSH needed).
+#
+# Bring up:   docker compose -f docker-compose.live.yml up -d
+# Tear down:  docker compose -f docker-compose.live.yml down -v
+name: gc-analyzer-live
+
+# Shared GC-logging flags. Confluent's kafka-run-class.sh already forces
+# -XX:+UseG1GC, so these only add unified GC-log output to a known file.
+x-gc-log-opts: &gc-log-opts >-
+  -Xlog:gc*=info:file=/gclogs/kafkaServer-gc.log:time,uptime,level,tags:filecount=5,filesize=10M
+
+services:
+  controller:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: gc-controller
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@controller:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: "CONTROLLER://controller:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+      KAFKA_GC_LOG_OPTS: *gc-log-opts
+    volumes:
+      - ./live-logs/controller:/gclogs
+
+  broker1:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: gc-broker1
+    depends_on: [controller]
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@controller:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: "PLAINTEXT://broker1:19092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://broker1:19092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+      KAFKA_GC_LOG_OPTS: *gc-log-opts
+    volumes:
+      - ./live-logs/broker1:/gclogs
+
+  broker2:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: gc-broker2
+    depends_on: [controller]
+    environment:
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@controller:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: "PLAINTEXT://broker2:19092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://broker2:19092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+      KAFKA_GC_LOG_OPTS: *gc-log-opts
+    volumes:
+      - ./live-logs/broker2:/gclogs

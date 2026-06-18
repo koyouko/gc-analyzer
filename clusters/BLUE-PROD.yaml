@@ -1,0 +1,11 @@
+cluster: BLUE-PROD
+defaults:
+  source: ssh
+  user: kafka
+  key_path: ~/.ssh/id_rsa
+nodes:
+  - {id: broker-1, role: broker, host: 10.0.1.11}
+  - {id: broker-2, role: broker, host: 10.0.1.12}
+  - {id: zk-1, role: zookeeper, host: 10.0.1.31, log_paths: [/opt/zookeeper/logs/zookeeper-gc.log*]}
+  - {id: sr-1, role: schema-registry, host: 10.0.1.41}
+  - {id: connect-1, role: connect, host: 10.0.1.51}

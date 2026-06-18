@@ -1,0 +1,51 @@
+# GC Analyzer - Cluster Configuration Template
+cluster: demo
+region: EMEA
+env: DEV
+
+# Defaults applicable to all nodes unless overridden
+defaults:
+  source: ssh                  # ssh | local
+  user: kafka                  # ssh user
+  key_path: ~/.ssh/id_rsa      # ssh private key path
+  password: password123        # ssh password (optional, if not using key)
+  port: 22                     # ssh port
+  kafka_home: /opt/kafka       # path to kafka home (for default logs location)
+
+nodes:
+  - id: broker-1
+    role: broker               # broker | controller | history | zookeeper | schema-registry | connect
+    host: 10.0.1.11            # ssh host
+    port: 22                   # overrides default port
+    user: kafka                # overrides default ssh user
+    key_path: ~/.ssh/id_rsa    # overrides default key_path
+    password: password123      # overrides default password
+    kafka_home: /opt/kafka     # overrides default kafka_home
+    log_paths:                 # override default log paths
+      - /opt/kafka/logs/kafkaServer-gc.log*
+
+  - id: controller-1
+    role: controller
+    host: 10.0.1.21
+    kafka_home: /opt/kafka
+
+  - id: zk-1
+    role: zookeeper
+    host: 10.0.1.31
+    log_paths:
+      - /opt/zookeeper/logs/zookeeper-gc.log*
+
+  - id: sr-1
+    role: schema-registry
+    host: 10.0.1.41
+
+  - id: connect-1
+    role: connect
+    host: 10.0.1.51
+
+  # Example of local log file collection (no ssh)
+  - id: local-broker-example
+    role: broker
+    source: local              # reads directly from local filesystem
+    local_paths:               # local paths/globs to read logs from
+      - ./live-logs/broker1/kafkaServer-gc.log*

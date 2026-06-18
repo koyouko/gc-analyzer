@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>BSP Kafka GC Analyzer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0e1117; --panel:#161b22; --panel2:#1c2230; --border:#2a3140;
+    --txt:#e6edf3; --muted:#8b949e; --accent:#58a6ff;
+    --ok:#3fb950; --watch:#d29922; --crit:#f85149; --unknown:#6e7681;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);
+       font-family:'Inter', -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px}
+  
+  /* Hide dashboard until authenticated */
+  header, .layout {
+    display: none !important;
+  }
+  body.authenticated header {
+    display: flex !important;
+  }
+  body.authenticated .layout {
+    display: flex !important;
+  }
+  header{display:flex;align-items:center;justify-content:space-between;
+         padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel)}
+  header h1{font-size:16px;margin:0;font-weight:650}
+  header .sub{color:var(--muted);font-size:11px;margin-top:2px}
+  .right{display:flex;align-items:center;gap:12px}
+  .btn{background:var(--accent);color:#0b1020;border:0;border-radius:6px;padding:7px 13px;font-weight:600;cursor:pointer;font-size:12px}
+  .btn:disabled{opacity:.5;cursor:wait}
+  .statuspill{padding:4px 12px;border-radius:20px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .layout{display:flex;height:calc(100vh - 57px)}
+  /* sidebar */
+  .sidebar{width:310px;min-width:310px;border-right:1px solid var(--border);overflow-y:auto;background:var(--panel);padding:8px 0}
+  .tree-row{display:flex;align-items:center;gap:7px;padding:5px 10px;cursor:pointer;user-select:none;white-space:nowrap}
+  .tree-row:hover{background:var(--panel2)}
+  .tree-row.sel{background:rgba(88,166,255,.16)}
+  .tw{display:inline-block;width:12px;color:var(--muted);font-size:10px;text-align:center;flex:none}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .dot.ok{background:var(--ok)}.dot.watch{background:var(--watch)}.dot.crit{background:var(--crit)}.dot.unknown{background:var(--unknown)}
+  .lbl{flex:1;overflow:hidden;text-overflow:ellipsis}
+  .cnt{color:var(--muted);font-size:11px}
+  .indent1{padding-left:20px}.indent2{padding-left:36px}.indent3{padding-left:54px}.indent4{padding-left:72px}
+  .role-tag{font-size:10px;color:var(--muted);text-transform:uppercase}
+  /* main */
+  .main{flex:1;overflow-y:auto;padding:18px 22px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:13px 15px}
+  .card .l{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+  .card .v{font-size:24px;font-weight:700;margin-top:5px}
+  .card.ok{border-left:3px solid var(--ok)}.card.watch{border-left:3px solid var(--watch)}.card.crit{border-left:3px solid var(--crit)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:20px 0 10px}
+  .alerts{display:flex;flex-direction:column;gap:7px}
+  .alert{display:flex;align-items:center;gap:11px;background:var(--panel);border:1px solid var(--border);
+         border-left-width:3px;border-radius:7px;padding:9px 13px;cursor:pointer}
+  .alert.critical{border-left-color:var(--crit)}.alert.warning{border-left-color:var(--watch)}
+  .alert:hover{border-color:var(--accent)}
+  .sev{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;border-radius:4px}
+  .sev.critical{background:rgba(248,81,73,.18);color:var(--crit)}
+  .sev.warning{background:rgba(210,153,34,.18);color:var(--watch)}
+  .alert .where{font-weight:600}.alert .msg{color:var(--muted)}
+  .grade{width:46px;height:46px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px;color:#0b1020;flex:none}
+  .grade.A{background:var(--ok)}.grade.B{background:#56d364}.grade.C{background:var(--watch)}
+  .grade.D{background:#db6d28}.grade.F{background:var(--crit)}
+  .metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:11px}
+  .metric{background:var(--panel2);border-radius:7px;padding:9px 12px;position:relative}
+  .metric .l{color:var(--muted);font-size:11px}.metric .v{font-size:17px;font-weight:700;margin-top:3px}
+  .metric .info{color:var(--muted);font-size:10px;margin-left:4px;cursor:help;opacity:.6}
+  .metric:hover .info{opacity:1;color:var(--accent)}
+  .metric .tip{position:absolute;top:100%;left:0;margin-top:6px;z-index:50;display:none;width:230px;max-width:70vw;
+    background:#0b0f16;border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.45;
+    color:var(--txt);box-shadow:0 6px 20px rgba(0,0,0,.5);font-weight:400;text-transform:none;letter-spacing:0}
+  .metric:hover .tip{display:block}
+  .panels{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:14px}
+  .panel.full{grid-column:1/-1}
+  .panel h3{margin:0 0 10px;font-size:12px;font-weight:650}
+  .chartbox{position:relative;height:210px}
+  ul.list{margin:0;padding-left:17px}ul.list li{margin:5px 0;line-height:1.4}
+  .pros li{color:#7ee787}.cons li{color:#ffa198}.recs li{color:var(--txt)}
+  .engine{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);padding:3px 9px;border-radius:18px;font-weight:600;font-size:11px}
+  .muted{color:var(--muted)}
+  .ihdr{display:flex;align-items:center;gap:13px;flex-wrap:wrap;margin-bottom:8px}
+  .breadcrumb{color:var(--muted);font-size:12px;margin-bottom:3px}
+  .empty{color:var(--muted);text-align:center;padding:60px 20px}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--muted);margin:4px 0 14px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .nodegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:9px}
+  .ncard{background:var(--panel);border:1px solid var(--border);border-left-width:3px;border-radius:8px;padding:9px 11px;cursor:pointer}
+  .ncard:hover{border-color:var(--accent)}
+  .ncard.ok{border-left-color:var(--ok)}.ncard.watch{border-left-color:var(--watch)}
+  .ncard.critical{border-left-color:var(--crit)}.ncard.unknown{border-left-color:var(--unknown)}
+  .ncard .nid{font-weight:600;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+  .ncard .nmeta{color:var(--muted);font-size:11px;margin-top:4px;display:flex;justify-content:space-between}
+  .minigrade{font-size:11px;font-weight:800;padding:0 5px;border-radius:4px;color:#0b1020}
+  .minigrade.A{background:var(--ok)}.minigrade.B{background:#56d364}.minigrade.C{background:var(--watch)}
+  .minigrade.D{background:#db6d28}.minigrade.F{background:var(--crit)}
+  .cfg{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px}
+  .cfg .k{color:var(--muted)}
+  .help{position:relative;cursor:help}
+  .help .info{color:var(--muted);font-size:10px;margin-left:4px;opacity:.6}
+  .help:hover .info{opacity:1;color:var(--accent)}
+  .help .tip{position:absolute;top:100%;left:0;margin-top:6px;z-index:50;display:none;width:240px;max-width:70vw;
+    background:#0b0f16;border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.45;
+    color:var(--txt);box-shadow:0 6px 20px rgba(0,0,0,.5);font-weight:400}
+  .help:hover .tip{display:block}
+  /* onboarding modal */
+  .btn.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--border)}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;z-index:100}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:20px 22px;width:640px;max-width:92vw;max-height:88vh;overflow-y:auto}
+  .modal h3{margin:0 0 4px;font-size:15px;font-weight:650}
+  .inp{width:100%;background:var(--bg);color:var(--txt);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:12px;margin-top:3px}
+  .inp:focus{outline:1px solid var(--accent)}
+  .modal label{font-size:11px;color:var(--muted);display:block}
+
+  /* Clean Login Page Styles */
+  #loginModal {
+    background: radial-gradient(circle at 50% 50%, #161c2d 0%, #080a0f 100%) !important;
+    z-index: 1000;
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+  }
+  .login-glow {
+    position: absolute;
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, rgba(88, 166, 255, 0.07) 0%, rgba(88, 166, 255, 0) 70%);
+    top: 30%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .login-glow-2 {
+    position: absolute;
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, rgba(139, 92, 246, 0.04) 0%, rgba(139, 92, 246, 0) 70%);
+    top: 70%;
+    left: 30%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 1;
+  }
+  .login-card {
+    position: relative;
+    z-index: 2;
+    background: rgba(22, 27, 34, 0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(42, 49, 64, 0.7);
+    border-radius: 16px;
+    padding: 36px;
+    width: 380px;
+    max-width: 90vw;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    animation: loginFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes loginFadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .login-header {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+  .login-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    background: rgba(88, 166, 255, 0.1);
+    border: 1px solid rgba(88, 166, 255, 0.25);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.1);
+  }
+  .login-logo svg {
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .login-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--txt);
+    margin: 0 0 6px;
+  }
+  .login-subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .login-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 18px;
+  }
+  .login-field label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .login-input {
+    background: rgba(14, 17, 23, 0.65) !important;
+    color: var(--txt) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    padding: 10px 14px !important;
+    font-size: 13px !important;
+    font-family: inherit !important;
+    transition: all 0.2s ease !important;
+    width: 100% !important;
+  }
+  .login-input:focus {
+    outline: none !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15) !important;
+    background: rgba(14, 17, 23, 0.85) !important;
+  }
+  .login-btn {
+    width: 100%;
+    background: linear-gradient(135deg, #58a6ff 0%, #388bfd 100%) !important;
+    color: #0b1020 !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 11px 16px !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    box-shadow: 0 4px 12px rgba(56, 139, 253, 0.25) !important;
+    margin-top: 8px !important;
+  }
+  .login-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(56, 139, 253, 0.4) !important;
+    filter: brightness(1.05);
+  }
+  .login-btn:active {
+    transform: translateY(1px);
+    box-shadow: 0 2px 6px rgba(56, 139, 253, 0.2) !important;
+  }
+  .login-error {
+    color: var(--crit);
+    font-size: 12px;
+    margin-top: 8px;
+    min-height: 18px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Badge for active jobs count */
+  .badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: var(--accent);
+    color: #0b1020;
+    font-size: 9px;
+    font-weight: 800;
+    border-radius: 50%;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 0 2px var(--bg);
+  }
+  
+  /* Jobs Panel slide-out */
+  .jobs-panel {
+    position: fixed;
+    top: 57px; /* right below the header */
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    box-shadow: -10px 0 30px rgba(0,0,0,0.5);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes slideIn {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+  .jobs-panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .jobs-panel-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 650;
+    font-family: 'Outfit', sans-serif;
+  }
+  .close-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+  }
+  .close-btn:hover {
+    color: var(--txt);
+  }
+  .jobs-panel-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .job-card {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    position: relative;
+  }
+  .job-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .job-card-title {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--txt);
+  }
+  .job-card-status {
+    font-size: 10px;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .job-card-status.pending { background: rgba(110, 118, 129, 0.15); color: var(--unknown); }
+  .job-card-status.running { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+  .job-card-status.completed { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+  .job-card-status.warning { background: rgba(210, 153, 34, 0.15); color: var(--watch); }
+  .job-card-status.failed { background: rgba(248, 81, 73, 0.15); color: var(--crit); }
+  
+  .job-progress-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 8px 0;
+  }
+  .job-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.3s ease;
+  }
+  .job-progress-fill.running {
+    background: linear-gradient(90deg, var(--accent) 0%, #388bfd 100%);
+    animation: pulseGlow 1.5s infinite;
+  }
+  .job-progress-fill.completed { background: var(--ok); }
+  .job-progress-fill.warning { background: var(--watch); }
+  .job-progress-fill.failed { background: var(--crit); }
+  
+  @keyframes pulseGlow {
+    0% { opacity: 0.8; }
+    50% { opacity: 1; }
+    100% { opacity: 0.8; }
+  }
+  
+  .job-message {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .job-time {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 6px;
+    display: block;
+    text-align: right;
+  }
+  .job-logs-container {
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+    font-size: 10.5px;
+    line-height: 1.4;
+    max-height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    color: var(--muted);
+    margin-top: 8px;
+    scrollbar-width: thin;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 style="cursor:pointer" onclick="goHome()" title="Back to fleet overview">BSP Kafka GC Analyzer</h1>
+    <div class="sub" id="sub">loading…</div>
+  </div>
+  <div class="right">
+    <span class="muted" id="whoami" style="font-size:11px"></span>
+    <span class="statuspill" id="fleetPill">—</span>
+    <button class="btn ghost" id="settingsBtn" onclick="openSettings()" title="Settings & Cluster Management" style="display:none">Settings</button>
+    <button class="btn ghost" id="jobsBtn" onclick="toggleJobsPanel()" style="position:relative;display:none">Jobs <span id="jobsBadge" class="badge" style="display:none">0</span></button>
+    <button class="btn" id="refreshBtn" onclick="load()">Refresh</button>
+    <button class="btn ghost" id="logoutBtn" onclick="logout()" style="display:none">Log out</button>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main" id="main"><div class="empty">Loading fleet…</div></div>
+</div>
+
+<!-- Onboarding modal removed (onboarding migrated to Settings page) -->
+
+<div id="jobsPanel" class="jobs-panel" style="display:none">
+  <div class="jobs-panel-header">
+    <h3>Background Jobs</h3>
+    <button class="close-btn" onclick="toggleJobsPanel(false)">×</button>
+  </div>
+  <div class="jobs-panel-content" id="jobsList">
+    <!-- Jobs list will be dynamically rendered here -->
+  </div>
+</div>
+
+<div id="deleteConfirmModal" class="modal-bg" style="display:none">
+  <div class="modal" style="width:400px; padding:28px;">
+    <h3 style="color:var(--crit); display:flex; align-items:center; gap:8px; margin:0 0 12px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+        <line x1="12" y1="9" x2="12" y2="13"></line>
+        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+      </svg>
+      Delete Cluster
+    </h3>
+    <div class="muted" style="margin-bottom:20px; line-height:1.5; font-size:12.5px;">
+      Are you sure you want to delete <b id="deleteClusterName" style="color:var(--txt);"></b> and all its history? This action is permanent and cannot be undone.
+    </div>
+    
+    <label style="margin-bottom:8px; display:block;">Type <code style="background:rgba(248,81,73,0.15); color:var(--crit); padding:2px 6px; border-radius:4px; font-weight:600; font-family:ui-monospace,monospace;">yes</code> to confirm:</label>
+    <input id="deleteConfirmInput" class="inp" placeholder="Type yes" autocomplete="off" oninput="checkDeleteConfirmation()" onkeydown="if(event.key==='Enter' && this.value.trim().toLowerCase()==='yes') executeClusterDeletion()" style="margin-bottom:20px; border-color:var(--border);">
+    
+    <div style="display:flex; justify-content:flex-end; gap:10px;">
+      <button class="btn ghost" onclick="closeDeleteConfirmModal()">Cancel</button>
+      <button class="btn" id="deleteConfirmBtn" disabled style="background:var(--crit); color:#0e1117;" onclick="executeClusterDeletion()">Delete Cluster</button>
+    </div>
+  </div>
+</div>
+
+<div id="jobLogsModal" class="modal-bg" style="display:none">
+  <div class="modal" style="width: 800px; max-width: 90vw; height: 80vh; max-height: 80vh; display: flex; flex-direction: column; padding: 24px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex: none;">
+      <h3 style="margin: 0; font-size: 16px; color: var(--txt);">
+        Job Logs — <span id="modalJobCluster" style="color: var(--accent);"></span>
+      </h3>
+      <button class="close-btn" onclick="closeJobLogsModal()" style="font-size: 24px; background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; line-height: 1;">×</button>
+    </div>
+    <div id="modalJobLogContent" style="flex: 1; background: rgba(0, 0, 0, 0.45); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5; overflow-y: auto; white-space: pre-wrap; color: var(--txt); margin-bottom: 16px; scrollbar-width: thin;">
+      <!-- Logs go here -->
+    </div>
+    <div style="display: flex; justify-content: space-between; align-items: center; flex: none;">
+      <div id="modalJobStatus" class="job-card-status" style="display: inline-block;"></div>
+      <button class="btn ghost" onclick="closeJobLogsModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="loginModal" class="modal-bg" style="display:none">
+  <div class="login-glow"></div>
+  <div class="login-glow-2"></div>
+  <div class="login-card">
+    <div class="login-header">
+      <div class="login-logo">
+        <svg viewBox="0 0 24 24">
+          <path d="M7 19H4.815a1.83 1.83 0 0 1-1.57-.881 1.785 1.785 0 0 1-.004-1.784L7.196 9.5" />
+          <path d="M11 19h8.203a1.83 1.83 0 0 0 1.556-.89 1.784 1.784 0 0 0 0-1.775l-1.226-2.12" />
+          <path d="m14 16-3 3 3 3" />
+          <path d="M8.293 13.596 7.196 9.5 3.1 10.598" />
+          <path d="m9.344 5.811 1.093-1.892A1.83 1.83 0 0 1 11.985 3a1.784 1.784 0 0 1 1.546.888l3.943 6.843" />
+          <path d="m13.378 9.633 4.096 1.098 1.097-4.096" />
+        </svg>
+      </div>
+      <h3 class="login-title">BSP Kafka GC Analyzer</h3>
+      <div class="login-subtitle">Sign in to manage and analyze JVM garbage collection telemetry</div>
+    </div>
+    
+    <div class="login-field">
+      <label for="loginUser">Username</label>
+      <input id="loginUser" class="login-input" autocomplete="username" placeholder="e.g. admin">
+    </div>
+    
+    <div class="login-field">
+      <label for="loginPass">Password</label>
+      <input id="loginPass" type="password" class="login-input" autocomplete="current-password" placeholder="••••••••"
+             onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    
+    <div id="loginErr" class="login-error"></div>
+    
+    <button class="login-btn" onclick="doLogin()">
+      Sign in
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-left: 2px;">
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+        <polyline points="12 5 19 12 12 19"></polyline>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<script>
+const SC={ok:'ok',watch:'watch',critical:'crit',unknown:'unknown'};
+const METRIC_HELP={
+  'Throughput':'Percentage of wall-clock time the application ran instead of being paused by GC. Higher is better — aim for ≥ 99%.',
+  'Time in GC':'Share of wall-clock time spent inside stop-the-world GC pauses. The inverse of throughput; lower is better.',
+  'Avg pause':'Average duration of a stop-the-world GC pause over the window. Application threads are frozen during each pause.',
+  'p99 pause':'99th-percentile GC pause — 99% of pauses were shorter than this. Tail latency that directly affects Kafka request times.',
+  'Max pause':'Longest single stop-the-world pause in the window. Long pauses can trip request.timeout, shrink the ISR, and stall produce/fetch.',
+  'GC freq':'Garbage collections per minute. Very high frequency points to a hot allocation path or an undersized young generation.',
+  'Full GCs (24h)':'Count of Full GCs (whole-heap compaction with all threads stopped) in the last 24h. Should be 0 on a healthy broker.',
+  'Heap max':'Configured maximum heap size (-Xmx) for this JVM process.',
+  'Avg live set':'Average post-GC heap occupancy as a percentage of max heap — the steady-state live memory footprint after collections.',
+  'Peak live set':'Highest post-GC heap occupancy as a percentage of max heap. Near 100% means little headroom before OutOfMemoryError.',
+  'Promotion trend':'How often the post-GC live set grew versus the previous collection. A steady climb hints at a memory leak or growing cache.'
+};
+const MEM_HELP={
+  'Total heap':'Sum of -Xmx (max heap) across every JVM in this cluster.',
+  'In use (live set)':'Combined post-GC live memory currently held across all nodes — the real footprint after garbage is collected.',
+  'Used of heap':'Cluster live set as a percentage of total allocated heap. Lower leaves more headroom for spikes.',
+  'Peak node util':'Highest single-node post-GC heap occupancy in the cluster. Near 100% means that node is close to OutOfMemoryError.'
+};
+const TEL_HELP={
+  'GC engine':'The garbage collector each JVM is running (e.g. G1). Modern Kafka defaults to and is tuned for G1.',
+  'GC log format':'Format of the GC logs being parsed. Unified (-Xlog:gc*) is the Java 11+ standard.',
+  'Pause target':"G1's MaxGCPauseMillis goal — the pause time G1 tries to stay under per collection.",
+  'Avg throughput':'Average percentage of wall-clock time across the cluster spent running the app rather than paused in GC. Aim ≥ 99%.',
+  'Full GCs (1h / 24h)':'Count of Full GCs (whole-heap stop-the-world compactions) across the cluster in the last hour and last 24 hours. Should be 0.',
+  'Worst pause (now)':'Longest stop-the-world GC pause observed on any node in the most recent sample. Long pauses risk request timeouts and ISR shrink.',
+  'Heap sizing':'Configured max heap (-Xmx) per component role in this cluster.'
+};
+const esc=s=>String(s).replace(/"/g,'&quot;');
+const memMetric=(label,valueHtml)=>{const h=MEM_HELP[label]||'';return `<div class="metric"${h?` title="${esc(h)}"`:''}><div class="l">${label}${h?'<span class="info">ⓘ</span>':''}</div><div class="v">${valueHtml}</div>${h?`<span class="tip">${h}</span>`:''}</div>`;};
+const cfgKey=label=>{const h=TEL_HELP[label]||'';return h?`<span class="k help" title="${esc(h)}">${label}<span class="info">ⓘ</span><span class="tip">${h}</span></span>`:`<span class="k">${label}</span>`;};
+const PILL={ok:'var(--ok)',watch:'var(--watch)',critical:'var(--crit)',unknown:'var(--unknown)'};
+let FLEET=null, SELECTED=null, charts={}, expanded={};
+
+async function api(p){const r=await fetch(p);if(!r.ok)throw new Error(await r.text());return r.json();}
+function fmtDay(ts){return new Date(ts*1000).toLocaleDateString([], {month:'short',day:'numeric'});}
+function fmtTime(ts){return new Date(ts*1000).toLocaleString();}
+
+/* ---------------- sidebar tree ---------------- */
+function dot(s){return `<span class="dot ${SC[s]||'unknown'}"></span>`;}
+function tw(open){return `<span class="tw">${open?'▾':'▸'}</span>`;}
+
+function renderTree(){
+  const sb=document.getElementById('sidebar'); let h='';
+  for(const r of FLEET.regions){
+    const rk='r:'+r.region, ro=expanded[rk]!==false; // regions default open
+    h+=`<div class="tree-row" onclick="toggle('${rk}')">${tw(ro)}${dot(r.status)}<span class="lbl"><b>${r.region}</b></span></div>`;
+    if(!ro) continue;
+    for(const e of r.envs){
+      const ek='e:'+r.region+e.env, eo=expanded[ek]===true;
+      const al=e.alert_count?`<span class="cnt"> ⚠${e.alert_count}</span>`:'';
+      h+=`<div class="tree-row indent1" onclick="toggle('${ek}')">`
+        +`<span class="tw">${eo?'▾':'▸'}</span>`
+        +`${dot(e.status)}<span class="lbl">${e.env}</span>${al}</div>`;
+      if(!eo) continue;
+      for(const c of e.clusters){
+        const ck='c:'+c.cluster, co=expanded[ck]===true;
+        const cal=c.alert_count?`<span class="cnt"> ⚠${c.alert_count}</span>`:'';
+        const sel=SELECTED==='cluster:'+c.cluster?'sel':'';
+        h+=`<div class="tree-row indent2 ${sel}" onclick="selectCluster('${c.cluster}')" title="Open ${c.cluster} cluster dashboard">`
+          +`<span class="tw" onclick="toggle('${ck}');event.stopPropagation()">${co?'▾':'▸'}</span>`
+          +`${dot(c.status)}<span class="lbl">${c.cluster}</span>${cal}</div>`;
+        if(!co) continue;
+        for(const g of c.groups){
+          const gk='g:'+c.cluster+g.group, go=expanded[gk]===true;
+          h+=`<div class="tree-row indent3" onclick="toggle('${gk}')">${tw(go)}${dot(g.status)}<span class="lbl">${g.label}</span><span class="cnt">${g.count}</span></div>`;
+          if(!go) continue;
+          for(const i of g.instances){
+            const sel=SELECTED===i.id?'sel':'';
+            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance('${i.id}',event)">${dot(i.status)}<span class="lbl">${i.id.split('-').slice(-2).join('-')}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
+          }
+        }
+      }
+    }
+  }
+  sb.innerHTML=h;
+}
+function toggle(k){expanded[k]=k.startsWith('r:')?(expanded[k]===false?true:false):!expanded[k];renderTree();}
+
+/* auto-expand paths that contain critical/watch instances */
+function autoExpand(){
+  for(const r of FLEET.regions){
+    for(const e of r.envs){
+      if(e.status==='critical'||e.status==='watch'){
+        expanded['e:'+r.region+e.env]=true;
+        for(const c of e.clusters){
+          if(c.status==='critical'||c.status==='watch'){
+            expanded['c:'+c.cluster]=true;
+            for(const g of c.groups){
+              if(g.status==='critical'||g.status==='watch') expanded['g:'+c.cluster+g.group]=true;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/* ---------------- fleet overview ---------------- */
+function renderFleet(){
+  const c=FLEET.counts;
+  document.getElementById('main').innerHTML=`
+    <div class="breadcrumb">Fleet overview · ${FLEET.total_instances} JVM components · snapshot ${fmtTime(FLEET.now)}</div>
+    <div class="cards">
+      <div class="card ok"><div class="l">Healthy</div><div class="v">${c.ok||0}</div></div>
+      <div class="card watch"><div class="l">Watch</div><div class="v">${c.watch||0}</div></div>
+      <div class="card crit"><div class="l">Critical</div><div class="v">${c.critical||0}</div></div>
+      <div class="card"><div class="l">Total components</div><div class="v">${FLEET.total_instances}</div></div>
+      <div class="card"><div class="l">Active alerts (1h)</div><div class="v">${FLEET.active_alerts.length}</div></div>
+    </div>
+    <h2>Issues in the last hour</h2>
+    <div class="legend">
+      <span>${dot('ok')} healthy</span><span>${dot('watch')} watch</span>
+      <span>${dot('critical')} critical</span><span>🔴 Full GC in last hour</span>
+    </div>
+    <div class="alerts">${FLEET.active_alerts.length?FLEET.active_alerts.map(a=>`
+      <div class="alert ${a.severity}" onclick="selectInstance('${a.instance_id}')">
+        <span class="sev ${a.severity}">${a.severity}</span>
+        <span class="where">${a.instance_id}</span>
+        <span class="msg">${a.msg}</span>
+      </div>`).join(''):'<div class="muted">No GC issues detected across the fleet in the last hour.</div>'}</div>
+    <h2 style="margin-top:26px">Tip</h2>
+    <div class="muted">Pick any component in the left tree (or click an alert) to see its current health and 30-day JVM heap / GC trends.</div>`;
+}
+
+/* ---------------- cluster overview ---------------- */
+async function selectCluster(cluster){
+  SELECTED='cluster:'+cluster; renderTree();
+  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+cluster+'…</div>';
+  try{ renderCluster(await api('/api/cluster/'+cluster)); }
+  catch(e){ main.innerHTML=`<div class="empty">Failed: ${e.message}</div>`; }
+}
+
+function ncard(n){
+  return `<div class="ncard ${SC[n.status]}" onclick="selectInstance('${n.id}')">
+    <div class="nid"><span>${n.id.split('-').slice(-2).join('-')}</span>
+      ${n.grade?`<span class="minigrade ${n.grade}">${n.grade}</span>`:''}</div>
+    <div class="nmeta"><span>${n.role}</span><span>heap ${n.heap_after_pct!=null?n.heap_after_pct+'%':'—'}</span></div>
+    ${n.full_gc_1h?'<div class="nmeta" style="color:var(--crit)">🔴 Full GC in last hour</div>':''}
+  </div>`;
+}
+
+function renderCluster(v){
+  destroy();
+  const m=v.memory, t=v.telemetry, cfg=v.config, c=v.counts;
+  const heapRoles=Object.entries(cfg.heap_by_role).map(([r,s])=>`${r} ${s.join('/')} MB`).join(' · ');
+  const cards=[
+    {l:'Total nodes',v:c.total},
+    {l:'Healthy',v:c.healthy,cls:'ok'},
+    {l:'Unhealthy',v:c.unhealthy,cls:c.unhealthy?'crit':'ok'},
+    {l:'Cluster memory',v:`${(m.used_mb/1024).toFixed(1)}<span class="muted" style="font-size:13px"> / ${(m.total_heap_mb/1024).toFixed(0)} GB</span>`},
+    {l:'Avg heap util',v:m.avg_util_pct+'%'},
+    {l:'GC engine',v:cfg.gc_engine.join(', ')},
+  ];
+  const attention=v.attention.length?v.attention.map(n=>`
+    <div class="alert ${n.status==='critical'?'critical':'warning'}" onclick="selectInstance('${n.id}')">
+      <span class="sev ${n.status==='critical'?'critical':'warning'}">${n.status}</span>
+      <span class="where">${n.id}</span>
+      <span class="msg">${(n.alerts[0]&&n.alerts[0].msg)||n.reason||('grade '+n.grade)}</span>
+      ${n.grade?`<span class="minigrade ${n.grade}" style="margin-left:auto">${n.grade}</span>`:''}
+    </div>`).join(''):'<div class="muted">All nodes healthy — nothing needs attention. 🟢</div>';
+
+  document.getElementById('main').innerHTML=`
+    <div class="breadcrumb">${v.region} › ${v.env}</div>
+    <div class="ihdr">
+      <span class="statuspill" style="background:${PILL[v.status]};color:#0b1020">${v.status}</span>
+      <div style="font-size:18px;font-weight:700">${v.cluster} cluster</div>
+      <span class="muted">snapshot ${fmtTime(v.now)}</span>
+    </div>
+    <div class="cards">${cards.map(x=>`<div class="card ${x.cls||''}"><div class="l">${x.l}</div><div class="v">${x.v}</div></div>`).join('')}</div>
+
+    <div class="panels">
+      <div class="panel"><h3>Cluster memory</h3>
+        <div class="metric-grid">
+          ${memMetric('Total heap',`${(m.total_heap_mb/1024).toFixed(0)} GB`)}
+          ${memMetric('In use (live set)',`${(m.used_mb/1024).toFixed(1)} GB`)}
+          ${memMetric('Used of heap',`${m.used_pct}%`)}
+          ${memMetric('Peak node util',`${m.peak_util_pct}%`)}
+        </div>
+      </div>
+      <div class="panel"><h3>Java / GC configuration &amp; telemetry</h3>
+        <div class="cfg">
+          ${cfgKey('GC engine')}<span>${cfg.gc_engine.join(', ')}</span>
+          ${cfgKey('GC log format')}<span>${cfg.log_format}</span>
+          ${cfgKey('Pause target')}<span>${cfg.pause_target_ms} ms (MaxGCPauseMillis)</span>
+          ${cfgKey('Avg throughput')}<span>${t.avg_throughput_pct}%</span>
+          ${cfgKey('Full GCs (1h / 24h)')}<span style="color:${t.full_gc_1h?'var(--crit)':'inherit'}">${t.full_gc_1h} / ${t.full_gc_24h}</span>
+          ${cfgKey('Worst pause (now)')}<span style="color:${t.worst_pause_ms>500?'var(--crit)':'inherit'}">${t.worst_pause_ms} ms</span>
+          ${cfgKey('Heap sizing')}<span>${heapRoles}</span>
+        </div>
+      </div>
+    </div>
+
+    <h2>Nodes — current GC health</h2>
+    <div class="legend"><span>${dot('ok')} healthy</span><span>${dot('watch')} watch</span><span>${dot('critical')} critical</span><span>🔴 Full GC in last hour</span></div>
+    <div class="nodegrid">${v.nodes.map(ncard).join('')}</div>
+
+    <h2 style="margin-top:24px">Needs attention${v.attention.length?` (${v.attention.length})`:''} — click to investigate</h2>
+    <div class="alerts">${attention}</div>`;
+}
+
+/* ---------------- instance detail ---------------- */
+async function selectInstance(id,ev){
+  if(ev) ev.stopPropagation();
+  SELECTED=id; CURRENT_INSTANCE=id; renderTree();
+  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+id+'…</div>';
+  const [snap,ser]=await Promise.all([api('/api/instance/'+id),api('/api/instance/'+id+'/series?range='+CURRENT_RANGE)]);
+  renderInstance(snap,ser);
+}
+
+function renderInstance(s,tr){
+  const m=s.metrics,h=s.health,inst=s.instance;
+  const status = s.alerts.some(a=>a.severity==='critical')?'critical':(s.alerts.length||['C','D','F'].includes(h.grade))?'watch':'ok';
+  const alertHtml=s.alerts.length?`<div class="alerts" style="margin:6px 0 4px">${s.alerts.map(a=>`
+    <div class="alert ${a.severity}"><span class="sev ${a.severity}">${a.severity}</span><span class="msg">${a.msg}</span></div>`).join('')}</div>`:'';
+  const mc=[
+    ['Throughput',m.throughput_pct+'%'],['Time in GC',m.pct_time_in_gc+'%'],
+    ['Avg pause',m.avg_pause_ms+' ms'],['p99 pause',m.p99_pause_ms+' ms'],['Max pause',m.max_pause_ms+' ms'],
+    ['GC freq',m.gc_per_min+'/min'],['Full GCs (24h)',m.full_count],
+    ['Heap max',m.heap_max_mb+' MB'],['Avg live set',m.avg_heap_after_pct+'%'],['Peak live set',m.peak_heap_after_pct+'%'],
+    ['Promotion trend',m.promotion_trend_pct+'%'],
+  ];
+  document.getElementById('main').innerHTML=`
+    <div class="breadcrumb">${inst.region} › ${inst.env} › ${inst.cluster} › ${inst.role}</div>
+    <div class="ihdr">
+      <div class="grade ${h.grade}">${h.grade}</div>
+      <div><div style="font-size:18px;font-weight:700">${inst.id}</div>
+        <div class="muted">${h.score} / 100 · ${h.status} · heap ${inst.heap_max_mb} MB</div></div>
+      <span class="engine"><span class="dot ${SC[status]}"></span> ${inst.collector} · ${inst.role}</span>
+    </div>
+    <div class="muted" style="margin-bottom:8px">${h.reasons.join(' · ')||'No issues detected.'}</div>
+    ${alertHtml}
+    <h2>Current metrics (24h window)</h2>
+    <div class="metric-grid">${mc.map(([l,v])=>{const hlp=METRIC_HELP[l]||'';return `<div class="metric"${hlp?` title="${hlp.replace(/"/g,'&quot;')}"`:''}><div class="l">${l}${hlp?'<span class="info">ⓘ</span>':''}</div><div class="v">${v}</div>${hlp?`<span class="tip">${hlp}</span>`:''}</div>`;}).join('')}</div>
+    <h2 style="display:flex;align-items:center;gap:12px">Trends
+      <select class="inp" style="width:auto;margin:0;text-transform:none;letter-spacing:0" onchange="changeRange(this.value)">
+        ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===CURRENT_RANGE?' selected':''}>${r}</option>`).join('')}
+      </select>
+    </h2>
+    <div class="panels">
+      <div class="panel"><h3>Heap live set vs max (MB)</h3><div class="chartbox"><canvas id="cHeap"></canvas></div></div>
+      <div class="panel"><h3>Heap utilization (%)</h3><div class="chartbox"><canvas id="cUtil"></canvas></div></div>
+      <div class="panel"><h3>GC pause trend — p99 &amp; max (ms)</h3><div class="chartbox"><canvas id="cPause"></canvas></div></div>
+      <div class="panel"><h3>Full GCs per day &amp; time-in-GC (%)</h3><div class="chartbox"><canvas id="cFull"></canvas></div></div>
+    </div>
+    <div class="panels">
+      <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(s.findings.pros||[]).map(x=>`<li>${x}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
+      <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${x}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
+      <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${x}</li>`).join('')}</ul></div>
+    </div>`;
+  drawTrends(tr);
+}
+
+function destroy(){Object.values(charts).forEach(c=>c.destroy());charts={};}
+function baseOpts(){return{responsive:true,maintainAspectRatio:false,animation:false,
+  interaction:{mode:'index',intersect:false},
+  plugins:{legend:{labels:{boxWidth:11,font:{size:10}}}},
+  scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{ticks:{font:{size:9}}}}};}
+
+function drawTrends(tr){
+  destroy();
+  Chart.defaults.color='#8b949e';Chart.defaults.borderColor='#2a3140';
+  const s=tr.series;
+  const span=s.length>1?s[s.length-1].t-s[0].t:0;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const labels=s.map(p=>lab(p.t)),hmax=tr.heap_max_mb;
+
+  charts.heap=new Chart(cHeap,{type:'line',data:{labels,datasets:[
+    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#3fb950',backgroundColor:'rgba(63,185,80,.12)',fill:true,pointRadius:0,borderWidth:1.4,tension:.25},
+    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#58a6ff',pointRadius:0,borderWidth:1,tension:.25},
+    {label:'heap max',data:s.map(()=>hmax),borderColor:'#8b949e',borderDash:[5,4],pointRadius:0,borderWidth:1}
+  ]},options:baseOpts()});
+
+  charts.util=new Chart(cUtil,{type:'line',data:{labels,datasets:[
+    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#d29922',backgroundColor:'rgba(210,153,34,.12)',fill:true,pointRadius:0,borderWidth:1.4,tension:.25}
+  ]},options:{...baseOpts(),scales:{...baseOpts().scales,y:{suggestedMax:100,ticks:{font:{size:9}}}}}});
+
+  charts.pause=new Chart(cPause,{type:'line',data:{labels,datasets:[
+    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#58a6ff',pointRadius:0,borderWidth:1.3,tension:.25},
+    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#f85149',backgroundColor:'rgba(248,81,73,.10)',fill:true,pointRadius:0,borderWidth:1.3,tension:.25}
+  ]},options:baseOpts()});
+
+  charts.full=new Chart(cFull,{data:{labels,datasets:[
+    {type:'bar',label:'Full GCs/day',data:s.map(p=>p.full_gc),backgroundColor:'#f85149',yAxisID:'y'},
+    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#d29922',pointRadius:0,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+  ]},options:{...baseOpts(),scales:{
+    x:{ticks:{maxTicksLimit:8,font:{size:9}}},
+    y:{position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:'Full GCs',font:{size:9}}},
+    y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}},title:{display:true,text:'% in GC',font:{size:9}}}
+  }}});
+}
+
+function goHome(){ SELECTED=null; renderTree(); renderFleet(); }
+
+/* ---------------- cluster onboarding ---------------- */
+const ONBOARD_TEMPLATE=`cluster: demo
+region: EMEA
+env: DEV
+defaults:
+  source: ssh
+  user: kafka
+  key_path: ~/.ssh/id_rsa
+  password: password123
+  port: 22
+  kafka_home: /opt/kafka
+nodes:
+  - id: broker-1
+    role: broker
+    host: 10.0.1.11
+    port: 22
+    user: kafka
+    key_path: ~/.ssh/id_rsa
+    password: password123
+    kafka_home: /opt/kafka
+    log_paths:
+      - /opt/kafka/logs/kafkaServer-gc.log*
+  - id: zk-1
+    role: zookeeper
+    host: 10.0.1.31
+    log_paths:
+      - /opt/zookeeper/logs/zookeeper-gc.log*
+  - id: sr-1
+    role: schema-registry
+    host: 10.0.1.41
+  - id: connect-1
+    role: connect
+    host: 10.0.1.51
+  - id: local-broker-example
+    role: broker
+    source: local
+    local_paths:
+      - ./live-logs/broker1/kafkaServer-gc.log*
+`;
+// openOnboard and closeOnboard removed (onboarding migrated to Settings page)
+let jobsPollInterval = null;
+let jobsPanelOpen = false;
+let LOG_MODAL_JOB_ID = null;
+let LAST_JOBS = [];
+
+function openJobLogsModal(jobId, clusterName) {
+  LOG_MODAL_JOB_ID = jobId;
+  document.getElementById('modalJobCluster').textContent = clusterName;
+  document.getElementById('jobLogsModal').style.display = 'flex';
+  updateModalJobLogs();
+  // Ensure we are polling so logs update in real-time
+  startPollingJobs();
+}
+
+function closeJobLogsModal() {
+  LOG_MODAL_JOB_ID = null;
+  document.getElementById('jobLogsModal').style.display = 'none';
+  stopPollingJobs();
+}
+
+function updateModalJobLogs() {
+  if (!LOG_MODAL_JOB_ID) return;
+  const job = LAST_JOBS.find(j => j.id === LOG_MODAL_JOB_ID);
+  if (!job) return;
+  
+  const content = document.getElementById('modalJobLogContent');
+  const status = document.getElementById('modalJobStatus');
+  
+  const oldText = content.textContent;
+  const newText = (job.logs || []).join('\n');
+  
+  if (oldText !== newText) {
+    content.textContent = newText;
+    // Auto-scroll to bottom
+    content.scrollTop = content.scrollHeight;
+  }
+  
+  status.textContent = job.status;
+  status.className = 'job-card-status ' + job.status;
+}
+
+function toggleJobsPanel(show) {
+  const panel = document.getElementById('jobsPanel');
+  if (show === true) {
+    panel.style.display = 'flex';
+    jobsPanelOpen = true;
+    updateJobsList();
+    startPollingJobs();
+  } else if (show === false) {
+    panel.style.display = 'none';
+    jobsPanelOpen = false;
+    stopPollingJobs();
+  } else {
+    if (panel.style.display === 'none') {
+      panel.style.display = 'flex';
+      jobsPanelOpen = true;
+      updateJobsList();
+      startPollingJobs();
+    } else {
+      panel.style.display = 'none';
+      jobsPanelOpen = false;
+      stopPollingJobs();
+    }
+  }
+}
+
+async function updateJobsList() {
+  try {
+    const r = await fetch('/api/jobs');
+    if (!r.ok) return;
+    const data = await r.json();
+    LAST_JOBS = data.jobs;
+    
+    const list = document.getElementById('jobsList');
+    const badge = document.getElementById('jobsBadge');
+    
+    const activeJobs = data.jobs.filter(j => j.status === 'pending' || j.status === 'running');
+    if (activeJobs.length > 0) {
+      badge.textContent = activeJobs.length;
+      badge.style.display = 'flex';
+    } else {
+      badge.style.display = 'none';
+      stopPollingJobs();
+    }
+    
+    if (data.jobs.length === 0) {
+      list.innerHTML = '<div class="muted" style="text-align: center; padding: 40px 0;">No background jobs.</div>';
+      return;
+    }
+    
+    const hadRunning = sessionStorage.getItem('had_running_jobs') === 'true';
+    const hasRunning = activeJobs.length > 0;
+    if (hadRunning && !hasRunning) {
+      load();
+    }
+    sessionStorage.setItem('had_running_jobs', hasRunning ? 'true' : 'false');
+    
+    list.innerHTML = data.jobs.map(j => {
+      const isRunning = j.status === 'running' || j.status === 'pending';
+      const progressClass = j.status;
+      const progressWidth = j.progress + '%';
+      
+      const nodeDetailsHtml = j.nodes ? `
+        <div class="job-node-details" style="margin-top: 8px; font-size: 11px; border-top: 1px solid var(--border); padding-top: 6px; display: flex; flex-direction: column; gap: 4px;">
+          ${j.nodes.map(n => `
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="color: ${n.recorded ? 'var(--ok)' : 'var(--muted)'}; font-weight: 500;">● ${n.node_id}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : '';
+      
+      const logsHtml = (j.logs && j.logs.length) ? `
+        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+          <span class="job-time" style="margin: 0; color: var(--muted);">${new Date(j.created_at * 1000).toLocaleTimeString()}</span>
+          <button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px;" onclick="openJobLogsModal('${j.id}', '${esc(j.cluster)}')">View Logs</button>
+        </div>
+      ` : `
+        <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+          <span class="job-time">${new Date(j.created_at * 1000).toLocaleTimeString()}</span>
+        </div>
+      `;
+      
+      return `
+        <div class="job-card">
+          <div class="job-card-header">
+            <span class="job-card-title">${esc(j.cluster)}</span>
+            <span class="job-card-status ${j.status}">${j.status}</span>
+          </div>
+          <div class="job-message">${esc(j.message)}</div>
+          <div class="job-progress-bar">
+            <div class="job-progress-fill ${progressClass}" style="width: ${progressWidth}"></div>
+          </div>
+          ${nodeDetailsHtml}
+          ${logsHtml}
+        </div>
+      `;
+    }).join('');
+
+    updateModalJobLogs();
+  } catch (e) {
+    console.error("Failed to update jobs list", e);
+  }
+}
+
+function startPollingJobs() {
+  if (jobsPollInterval) return;
+  updateJobsList();
+  jobsPollInterval = setInterval(updateJobsList, 2000);
+}
+
+function stopPollingJobs() {
+  const badge = document.getElementById('jobsBadge');
+  const hasActive = badge && badge.style.display !== 'none';
+  if (!jobsPanelOpen && !hasActive && jobsPollInterval) {
+    clearInterval(jobsPollInterval);
+    jobsPollInterval = null;
+  }
+}
+
+let EDITING_CLUSTER = null;
+
+async function openSettings(){
+  SELECTED='settings'; renderTree();
+  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading settings…</div>';
+  try {
+    const data = await api('/api/clusters');
+    renderSettingsView(data.clusters);
+  } catch(e) {
+    main.innerHTML=`<div class="empty">Failed to load settings: ${e.message}</div>`;
+  }
+}
+
+function renderSettingsView(clusters) {
+  destroy();
+  EDITING_CLUSTER = null;
+  const main = document.getElementById('main');
+  
+  const clusterListHtml = clusters.length ? clusters.map(c => `
+    <div style="display:flex; justify-content:space-between; align-items:center; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-bottom:8px;">
+      <div>
+        <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(c)}</div>
+        <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(c)}.yaml</div>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="editClusterConfig('${esc(c)}')">Edit Config</button>
+        <button class="btn" style="background:var(--crit); color:#0e1117; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
+      </div>
+    </div>
+  `).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
+
+  main.innerHTML = `
+    <div class="breadcrumb">Admin Settings</div>
+    <div style="font-size:18px; font-weight:700; margin-bottom:20px;">Cluster Management</div>
+    
+    <div class="panels" style="grid-template-columns: 1fr 1fr;">
+      <div class="panel">
+        <h3>Onboarded Clusters (<span id="settingsClusterCount">${clusters.length}</span>)</h3>
+        <div id="settingsClusterList" style="margin-top:12px; display:flex; flex-direction:column;">
+          ${clusterListHtml}
+        </div>
+      </div>
+      
+      <div class="panel">
+        <h3 id="formTitle">Onboard a new cluster</h3>
+        <div class="muted" style="margin-bottom:12px">Paste a <code>cluster.yaml</code> describing the cluster's nodes. GC logs are pulled per node, parsed, and analyzed in the background.</div>
+        <label>cluster.yaml</label>
+        <textarea id="obYaml" class="inp" spellcheck="false" style="height:200px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; margin-bottom:12px;"></textarea>
+        <div id="obResult" style="margin-top:10px"></div>
+        <div style="display:flex; justify-content:flex-end;">
+          <button class="btn" id="obSubmit" onclick="submitOnboardFromSettings()">Onboard &amp; collect</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.getElementById('obYaml').value = ONBOARD_TEMPLATE;
+}
+
+async function refreshSettingsClusters() {
+  try {
+    const data = await api('/api/clusters');
+    const list = document.getElementById('settingsClusterList');
+    const count = document.getElementById('settingsClusterCount');
+    if (list && count) {
+      count.textContent = data.clusters.length;
+      list.innerHTML = data.clusters.length ? data.clusters.map(c => `
+        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-bottom:8px;">
+          <div>
+            <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(c)}</div>
+            <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(c)}.yaml</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="editClusterConfig('${esc(c)}')">Edit Config</button>
+            <button class="btn" style="background:var(--crit); color:#0e1117; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
+          </div>
+        </div>
+      `).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
+    }
+  } catch(e) {
+    console.error("Failed to refresh settings clusters list", e);
+  }
+}
+
+async function editClusterConfig(cluster) {
+  try {
+    const data = await api('/api/clusters/' + encodeURIComponent(cluster) + '/config');
+    EDITING_CLUSTER = cluster;
+    
+    document.getElementById('formTitle').textContent = 'Edit cluster: ' + cluster;
+    document.getElementById('obSubmit').textContent = 'Save & collect';
+    document.getElementById('obYaml').value = data.config;
+    
+    document.getElementById('obYaml').focus();
+    
+    if (!document.getElementById('cancelEditBtn')) {
+      const cancelBtn = document.createElement('button');
+      cancelBtn.id = 'cancelEditBtn';
+      cancelBtn.className = 'btn ghost';
+      cancelBtn.style.marginRight = '8px';
+      cancelBtn.textContent = 'Cancel Edit';
+      cancelBtn.onclick = cancelEditing;
+      const btnContainer = document.getElementById('obSubmit').parentNode;
+      btnContainer.insertBefore(cancelBtn, document.getElementById('obSubmit'));
+    }
+    
+    document.getElementById('obResult').innerHTML = '<div class="muted" style="font-size:11px;">Editing config for <b>' + esc(cluster) + '</b>. Saving will restart ingestion for this cluster.</div>';
+  } catch (e) {
+    alert('Failed to load config: ' + e.message);
+  }
+}
+
+function cancelEditing() {
+  EDITING_CLUSTER = null;
+  const formTitle = document.getElementById('formTitle');
+  if (formTitle) formTitle.textContent = 'Onboard a new cluster';
+  const obSubmit = document.getElementById('obSubmit');
+  if (obSubmit) obSubmit.textContent = 'Onboard & collect';
+  const obYaml = document.getElementById('obYaml');
+  if (obYaml) obYaml.value = ONBOARD_TEMPLATE;
+  const obResult = document.getElementById('obResult');
+  if (obResult) obResult.innerHTML = '';
+  const cancelBtn = document.getElementById('cancelEditBtn');
+  if (cancelBtn) cancelBtn.remove();
+}
+
+async function submitOnboardFromSettings(){
+  const btn=document.getElementById('obSubmit');btn.disabled=true;
+  btn.textContent = EDITING_CLUSTER ? 'Saving job…' : 'Submitting job…';
+  const res=document.getElementById('obResult');res.innerHTML='';
+  try{
+    const body={config:document.getElementById('obYaml').value,
+                is_edit:!!EDITING_CLUSTER};
+    const r=await fetch('/api/clusters',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.detail||('HTTP '+r.status));
+    
+    const wasEditing = EDITING_CLUSTER;
+    cancelEditing();
+    
+    res.innerHTML = `<div style="color:var(--ok); font-size:12px; margin-top:8px;">${wasEditing ? 'Cluster updated' : 'Job submitted'} successfully! Check progress in the Jobs panel.</div>`;
+    
+    await refreshSettingsClusters();
+    toggleJobsPanel(true);
+  }catch(e){
+    res.innerHTML=`<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">${e.message}</span></div>`;
+  }finally{btn.disabled=false;btn.textContent = EDITING_CLUSTER ? 'Save & collect' : 'Onboard & collect';}
+}
+
+let CLUSTER_TO_DELETE = null;
+
+function openDeleteConfirmModal(cluster) {
+  CLUSTER_TO_DELETE = cluster;
+  document.getElementById('deleteClusterName').textContent = cluster;
+  document.getElementById('deleteConfirmInput').value = '';
+  document.getElementById('deleteConfirmBtn').disabled = true;
+  document.getElementById('deleteConfirmModal').style.display = 'flex';
+  document.getElementById('deleteConfirmInput').focus();
+}
+
+function closeDeleteConfirmModal() {
+  CLUSTER_TO_DELETE = null;
+  document.getElementById('deleteConfirmModal').style.display = 'none';
+}
+
+function checkDeleteConfirmation() {
+  const input = document.getElementById('deleteConfirmInput').value.trim().toLowerCase();
+  document.getElementById('deleteConfirmBtn').disabled = (input !== 'yes');
+}
+
+async function executeClusterDeletion() {
+  if (!CLUSTER_TO_DELETE) return;
+  const cluster = CLUSTER_TO_DELETE;
+  const btn = document.getElementById('deleteConfirmBtn');
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    const r = await fetch('/api/clusters/' + encodeURIComponent(cluster), {method: 'DELETE'});
+    if (r.ok) {
+      closeDeleteConfirmModal();
+      const data = await api('/api/clusters');
+      renderSettingsView(data.clusters);
+      load();
+    } else {
+      const d = await r.json().catch(() => ({}));
+      alert('Failed: ' + (d.detail || r.status));
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Delete Cluster';
+  }
+}
+
+/* ---------------- boot ---------------- */
+async function load(){
+  const b=document.getElementById('refreshBtn');b.disabled=true;b.textContent='Loading…';
+  try{
+    FLEET=await api('/api/fleet');
+    document.getElementById('sub').textContent=`${FLEET.total_instances} components · ${FLEET.regions.length} regions`;
+    const pill=document.getElementById('fleetPill');
+    pill.textContent=FLEET.fleet_status;pill.style.background=PILL[FLEET.fleet_status];pill.style.color='#0b1020';
+    autoExpand();renderTree();
+    if (SELECTED === 'settings') {
+      await refreshSettingsClusters();
+    } else if (SELECTED && SELECTED.startsWith('cluster:')) {
+      selectCluster(SELECTED.slice(8));
+    } else if (SELECTED) {
+      selectInstance(SELECTED);
+    } else {
+      renderFleet();
+    }
+  }catch(e){
+    document.getElementById('main').innerHTML=`<div class="empty">Failed to load: ${e.message}</div>`;
+  }finally{b.disabled=false;b.textContent='Refresh';}
+}
+/* ---------------- auth + role gating ---------------- */
+let CURRENT_ROLE=null, CURRENT_INSTANCE=null, CURRENT_RANGE='24h';
+async function boot(){
+  try{
+    const me=await api('/api/me');
+    CURRENT_ROLE=me.role;
+    document.getElementById('whoami').textContent=me.user+' · '+me.role;
+    document.getElementById('logoutBtn').style.display='';
+    document.getElementById('settingsBtn').style.display=(me.role==='admin')?'':'none';
+    document.getElementById('jobsBtn').style.display='';
+    document.getElementById('loginModal').style.display='none';
+    document.body.classList.add('authenticated');
+    load();
+    startPollingJobs();
+  }catch(e){
+    document.body.classList.remove('authenticated');
+    document.getElementById('loginModal').style.display='flex';
+    document.getElementById('loginUser').focus();
+  }
+}
+async function doLogin(){
+  const err=document.getElementById('loginErr');err.textContent='';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({user:document.getElementById('loginUser').value,password:document.getElementById('loginPass').value})});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||'login failed');}
+    document.getElementById('loginPass').value='';
+    boot();
+  }catch(e){err.textContent=e.message;}
+}
+async function logout(){ try{await fetch('/api/logout',{method:'POST'});}catch(e){} location.reload(); }
+async function changeRange(r){
+  CURRENT_RANGE=r;
+  if(!CURRENT_INSTANCE) return;
+  drawTrends(await api('/api/instance/'+CURRENT_INSTANCE+'/series?range='+r));
+}
+boot();
+</script>
+</body>
+</html>

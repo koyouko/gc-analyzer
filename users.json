@@ -1,0 +1,12 @@
+[
+  {
+    "user": "admin",
+    "role": "admin",
+    "pw_hash": "pbkdf2$200000$9d8accb93d81628206b6b7115187d716$25bd024eab2b42c55dd7b8793d66dad67e985d2be2d81beeaf7fa8c554a01ec8"
+  },
+  {
+    "user": "readonly",
+    "role": "readonly",
+    "pw_hash": "pbkdf2$200000$5563e0c6523b2ad2a059360e38e3a9b3$409a19aadcf1afaabbbf39f1d244d43736ef57c849c9538cc86f1fd485a443e6"
+  }
+]

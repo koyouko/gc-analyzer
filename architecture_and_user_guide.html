@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BSP Kafka GC Analyzer — Architecture & User Guide</title>
+  <!-- Google Fonts: Outfit, Inter, and Fira Code -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --sidebar-bg: #0f1422;
+      --card-bg: #131a2f;
+      --card-hover: #19223e;
+      --border: #202b48;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.15);
+      --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      --txt: #94a3b8;
+      --txt-bright: #f8fafc;
+      --muted: #64748b;
+      --code-bg: #080c16;
+      
+      --ok: #10b981;
+      --watch: #f59e0b;
+      --critical: #ef4444;
+      
+      --font-outfit: 'Outfit', sans-serif;
+      --font-inter: 'Inter', sans-serif;
+      --font-code: 'Fira Code', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--txt);
+      font-family: var(--font-inter);
+      line-height: 1.6;
+      font-size: 15px;
+      display: flex;
+    }
+
+    /* Layout */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 280px;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--border);
+      padding: 32px 24px;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      z-index: 100;
+    }
+
+    .main-content {
+      margin-left: 280px;
+      flex: 1;
+      padding: 64px 80px;
+      max-width: 1100px;
+    }
+
+    /* Typography & Headers */
+    .app-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .app-logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      background: var(--accent-glow);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+    }
+
+    .app-logo svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .app-name {
+      font-family: var(--font-outfit);
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--txt-bright);
+      letter-spacing: -0.01em;
+    }
+
+    .nav-title {
+      font-family: var(--font-outfit);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.1em;
+      margin: 24px 0 12px 0;
+    }
+
+    .nav-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .nav-link {
+      display: block;
+      color: var(--txt);
+      text-decoration: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .nav-link:hover {
+      background: var(--card-hover);
+      color: var(--txt-bright);
+    }
+
+    .nav-link.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-outfit);
+      color: var(--txt-bright);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    h1 {
+      font-size: 40px;
+      margin-bottom: 12px;
+      line-height: 1.2;
+      background: linear-gradient(135deg, var(--txt-bright) 40%, var(--muted) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .doc-subtitle {
+      font-size: 18px;
+      color: var(--muted);
+      margin-bottom: 48px;
+      font-weight: 300;
+    }
+
+    .doc-section {
+      padding: 48px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .doc-section:last-of-type {
+      border-bottom: none;
+    }
+
+    .doc-section h2 {
+      font-size: 26px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .doc-section h2::before {
+      content: '';
+      display: inline-block;
+      width: 4px;
+      height: 24px;
+      background: var(--accent-gradient);
+      border-radius: 2px;
+    }
+
+    .doc-section h3 {
+      font-size: 18px;
+      margin: 32px 0 16px 0;
+      color: var(--txt-bright);
+    }
+
+    p {
+      margin-bottom: 16px;
+      color: var(--txt);
+      font-size: 15px;
+    }
+
+    strong {
+      color: var(--txt-bright);
+      font-weight: 600;
+    }
+
+    /* Custom CSS Diagrams */
+    .diagram-container {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      margin: 24px 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .diagram-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: 100%;
+      flex-wrap: wrap;
+    }
+
+    .diagram-box {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 18px;
+      font-family: var(--font-outfit);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--txt-bright);
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      transition: border-color 0.2s ease;
+      min-width: 140px;
+    }
+
+    .diagram-box.accent {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+    }
+
+    .diagram-arrow {
+      color: var(--muted);
+      font-size: 18px;
+      font-weight: bold;
+    }
+
+    .diagram-arrow.vertical {
+      transform: rotate(90deg);
+      margin: 4px 0;
+    }
+
+    /* Code & Tables */
+    code {
+      font-family: var(--font-code);
+      font-size: 13.5px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      overflow-x: auto;
+      margin: 20px 0;
+    }
+
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--txt);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 24px 0;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 12px 16px;
+      text-align: left;
+    }
+
+    th {
+      background: var(--sidebar-bg);
+      font-family: var(--font-outfit);
+      color: var(--txt-bright);
+      font-weight: 600;
+    }
+
+    tr:nth-child(even) td {
+      background: rgba(255,255,255,0.01);
+    }
+
+    /* Callout Card */
+    .callout {
+      background: rgba(59, 130, 246, 0.05);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      padding: 18px 24px;
+      margin: 24px 0;
+    }
+
+    .callout-title {
+      font-family: var(--font-outfit);
+      font-weight: 600;
+      color: var(--txt-bright);
+      margin-bottom: 6px;
+    }
+
+    .callout-body {
+      margin-bottom: 0;
+      font-size: 14.5px;
+    }
+    
+    .callout.warning {
+      background: rgba(245, 158, 11, 0.05);
+      border-left-color: var(--watch);
+    }
+    
+    .callout.warning .callout-title {
+      color: var(--watch);
+    }
+
+    /* Sidebar footer */
+    .sidebar-footer {
+      margin-top: auto;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        flex-direction: column;
+      }
+      .sidebar {
+        position: relative;
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 24px;
+      }
+      .main-content {
+        margin-left: 0;
+        padding: 32px 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <aside class="sidebar">
+    <div class="app-brand">
+      <div class="app-logo">
+        <svg viewBox="0 0 24 24">
+          <path d="M7 19H4.815a1.83 1.83 0 0 1-1.57-.881 1.785 1.785 0 0 1-.004-1.784L7.196 9.5" />
+          <path d="M11 19h8.203a1.83 1.83 0 0 0 1.556-.89 1.784 1.784 0 0 0 0-1.775l-1.226-2.12" />
+          <path d="m14 16-3 3 3 3" />
+          <path d="M8.293 13.596 7.196 9.5 3.1 10.598" />
+          <path d="m9.344 5.811 1.093-1.892A1.83 1.83 0 0 1 11.985 3a1.784 1.784 0 0 1 1.546.888l3.943 6.843" />
+          <path d="m13.378 9.633 4.096 1.098 1.097-4.096" />
+        </svg>
+      </div>
+      <span class="app-name">BSP GC Analyzer</span>
+    </div>
+
+    <nav>
+      <div class="nav-title">Architecture</div>
+      <ul class="nav-list">
+        <li><a href="#intro" class="nav-link">Overview</a></li>
+        <li><a href="#pipeline" class="nav-link">Ingestion Pipeline</a></li>
+        <li><a href="#storage" class="nav-link">Storage Layer</a></li>
+        <li><a href="#codebase" class="nav-link">Codebase Breakdown</a></li>
+      </ul>
+
+      <div class="nav-title">User Guide</div>
+      <ul class="nav-list">
+        <li><a href="#onboarding" class="nav-link">Cluster Onboarding</a></li>
+        <li><a href="#dashboard" class="nav-link">Dashboard Reference</a></li>
+        <li><a href="#alerts" class="nav-link">Alerting & Detections</a></li>
+        <li><a href="#admin" class="nav-link">Administration</a></li>
+      </ul>
+    </nav>
+
+    <div class="sidebar-footer">
+      BSP Kafka GC Analyzer<br>Version 2.1.0
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <header>
+      <h1>Architecture &amp; User Manual</h1>
+      <div class="doc-subtitle">A guide to the internal workings and operational use cases of the BSP Kafka GC Analyzer.</div>
+    </header>
+
+    <!-- 1. Overview -->
+    <section id="intro" class="doc-section">
+      <h2>System Overview</h2>
+      <p>
+        The <strong>BSP Kafka GC Analyzer</strong> is a lightweight, real-time telemetry monitoring and diagnostic web application tailored to investigate JVM Garbage Collection behaviors inside Apache Kafka deployments. The tool automates log retrieval across multi-cluster environments, calculates key performance statistics, detects GC anomalies (such as memory leaks and GC storms), and suggests configuration remedies.
+      </p>
+      <p>
+        By focusing specifically on GC metrics (rather than general VM metrics), it isolates issues related to long Stop-the-world (STW) pauses, throughput degradation, heap occupancy peaks, and allocation rates, allowing administrators to optimize JVM tunings.
+      </p>
+    </section>
+
+    <!-- 2. Ingestion Pipeline -->
+    <section id="pipeline" class="doc-section">
+      <h2>Ingestion Pipeline Architecture</h2>
+      <p>
+        The analyzer utilizes a push/pull hybrid ingestion pipeline. It schedules periodic checks across all configured broker nodes, scrapes newly appended GC log bytes, parses events, and commits aggregated metrics.
+      </p>
+
+      <div class="diagram-container">
+        <div class="diagram-row">
+          <div class="diagram-box">Remote Kafka Hosts<br>(Unified GC Logs)</div>
+          <div class="diagram-arrow">&rarr;</div>
+          <div class="diagram-box accent">collector.py<br>(SSH Tail / Local Read)</div>
+          <div class="diagram-arrow">&rarr;</div>
+          <div class="diagram-box">parser.py<br>(Regex Tokenizer)</div>
+        </div>
+        <div class="diagram-arrow vertical">&rarr;</div>
+        <div class="diagram-row">
+          <div class="diagram-box">analyzer.py<br>(Math &amp; Profiler)</div>
+          <div class="diagram-arrow">&rarr;</div>
+          <div class="diagram-box accent">store.py<br>(SQLite GROUP BY)</div>
+          <div class="diagram-arrow">&rarr;</div>
+          <div class="diagram-box">FastAPI / Web App<br>(Vue-less SPA UI)</div>
+        </div>
+      </div>
+
+      <h3>Scraping Modes</h3>
+      <p>The collection layer supports two scraper paradigms configured per-node:</p>
+      <ul>
+        <li>
+          <strong>Local Scraper (<code>source: local</code>)</strong>: Reads log files locally on disk. Uses file seeks and offsets mapped to file paths to read only newly appended log data.
+        </li>
+        <li>
+          <strong>SSH Scraper (<code>source: ssh</code>)</strong>: Connects remotely via Paramiko SSH. To optimize network load and memory consumption, the collector queries remote files' inodes and sizes using:
+          <pre><code>stat -c '%i %s' '/path/to/log' 2>/dev/null || stat -f '%i %z' '/path/to/log'</code></pre>
+          If the remote file's inode matches the recorded state and its size is greater than or equal to the previous offset, the analyzer executes:
+          <pre><code>tail -c +[OFFSET] '/path/to/log'</code></pre>
+          This fetches only the delta block since the last scrape tick, keeping bandwidth usage low.
+        </li>
+      </ul>
+    </section>
+
+    <!-- 3. Storage Layer -->
+    <section id="storage" class="doc-section">
+      <h2>Storage Layer</h2>
+      <p>
+        The system relies on an embedded SQLite database (<code>gc_history.db</code> or <code>gc_live.db</code>) to track cluster topology metadata, hourly performance metrics, and incremental collector states.
+      </p>
+
+      <h3>Schema Design</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Table</th>
+            <th>Primary Key</th>
+            <th>Columns</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong><code>instances</code></strong></td>
+            <td><code>id</code></td>
+            <td><code>region</code>, <code>env</code>, <code>cluster</code>, <code>grp</code>, <code>role</code>, <code>idx</code>, <code>heap_max_mb</code>, <code>collector</code></td>
+            <td>Fleet inventory registry. Tracks JVM details per cluster.</td>
+          </tr>
+          <tr>
+            <td><strong><code>metrics</code></strong></td>
+            <td><code>(instance_id, ts)</code></td>
+            <td><code>heap_used_mb</code>, <code>heap_max_mb</code>, <code>heap_after_pct</code>, <code>pause_avg_ms</code>, <code>pause_p99_ms</code>, <code>pause_max_ms</code>, <code>full_gc_count</code>, <code>young_count</code>, <code>gc_per_min</code>, <code>time_in_gc_pct</code>, <code>throughput_pct</code></td>
+            <td>Stores collected metrics aggregated by collection interval ticks. Powers trends.</td>
+          </tr>
+          <tr>
+            <td><strong><code>collector_state</code></strong></td>
+            <td><code>(instance_id, file_path)</code></td>
+            <td><code>inode</code>, <code>offset</code>, <code>updated_ts</code></td>
+            <td>Remembers the byte offset and inode of local or remote GC logs. Prevents duplicate scraping.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Aggregations Optimization</h3>
+      <div class="callout">
+        <div class="callout-title">Database-Side Query Performance</div>
+        <p class="callout-body">
+          To display 30-day historical charts, the application aggregates metric records to a daily resolution. Previously calculated in Python memory, this query is now executed on the SQLite side using a mathematical grouping:
+        </p>
+        <pre style="margin: 10px 0 0 0;"><code>SELECT (ts / 86400) * 86400 AS day, AVG(heap_used_mb) AS heap_used_avg, MAX(heap_used_mb) ... GROUP BY day</code></pre>
+      </div>
+    </section>
+
+    <!-- 4. Codebase Breakdown -->
+    <section id="codebase" class="doc-section">
+      <h2>Codebase Component Breakdown</h2>
+      <p>The Python packages and web resources are organized logically as follows:</p>
+      
+      <h3>1. Server &amp; API Controller (<code>gcanalyzer/app.py</code>)</h3>
+      <p>
+        An asynchronous FastAPI application hosting API endpoints. It runs an event-loop background task that executes cluster scheduler ticks, handles authentication via the `gc_session` cookie, and exposes JSON APIs for topology, snapshots, trends, and job history.
+      </p>
+
+      <h3>2. Scraper Task Scheduler (<code>gcanalyzer/scheduler.py</code>)</h3>
+      <p>
+        Uses a thread pool executor to concurrently query remote or local nodes. It feeds log text to the parser and writes offsets and resulting statistics back to the database in a sequential transaction block. The concurrency limit is read from `config.json`.
+      </p>
+
+      <h3>3. Log Collector (<code>gcanalyzer/collector.py</code>)</h3>
+      <p>
+        Hosts Paramiko SSH client connections and local filesystem access functions. Contains the logic for the remote delta-syncing strategy (utilizing remote tailing) and maps default Kafka GC log globs based on node roles (broker, controller, history, zookeeper).
+      </p>
+
+      <h3>4. Log Parser (<code>gcanalyzer/parser.py</code>)</h3>
+      <p>
+        Tokenizes unified GC logs (e.g., standard JDK 11+ `-Xlog:gc*` formatting) line-by-line using regular expressions to capture timestamps, garbage collection phases, heap transitions (occupied vs limit), and pause times.
+      </p>
+
+      <h3>5. Fleet Health Analyzer (<code>gcanalyzer/analyzer.py</code>)</h3>
+      <p>
+        Scores metrics and assigns an academic grade (A-F) based on thresholds for GC throughput, time-in-GC percentage, pause averages, and Full GC occurrences. Also generates tuning advice (e.g., advising G1 upgrades, GCTimeRatio modifications, or Metaspace limits).
+      </p>
+    </section>
+
+    <!-- 5. User Guide - Onboarding -->
+    <section id="onboarding" class="doc-section">
+      <h2>Onboarding Clusters</h2>
+      <p>
+        New Kafka environments are registered with the application by submitting a configuration file in YAML format. The system supports full customization of authentication credentials and log paths.
+      </p>
+
+      <h3>YAML Configuration Schema</h3>
+      <p>Below is a fully populated template schema detailing all available options:</p>
+      <pre><code>cluster: demo-prod-cluster     # Unique identifier
+region: AMER                   # Grouping tier
+env: PROD                      # Environment tier (PROD, UAT, etc.)
+
+defaults:
+  source: ssh                  # ssh | local
+  port: 22
+  user: kafka-admin
+  key_path: ~/.ssh/id_rsa      # Private key path
+  kafka_home: /opt/kafka       # Resolves default log directory
+  # password: secret           # Or fallback password if key is not used
+
+nodes:
+  - id: broker-1
+    role: broker
+    host: 10.0.1.10
+  - id: broker-2
+    role: broker
+    host: 10.0.1.11
+  - id: controller-1
+    role: controller
+    host: 10.0.1.20
+    # Override paths explicitly if defaults don't fit
+    log_paths:
+      - /var/log/kafka/gc-server.log*
+  - id: zk-1
+    role: zookeeper
+    source: local
+    local_paths:
+      - ./samples/zookeeper-1-gc.log</code></pre>
+
+      <div class="callout warning">
+        <div class="callout-title">Name Duplicate Validation</div>
+        <p class="callout-body">
+          To prevent accidentally overwriting configurations, onboarding a new cluster whose name matches an already existing cluster YAML file returns an API 400 Bad Request error. If you wish to update a cluster, edit the configuration in the Settings panel directly.
+        </p>
+      </div>
+    </section>
+
+    <!-- 6. Dashboard Reference -->
+    <section id="dashboard" class="doc-section">
+      <h2>Dashboard Reference</h2>
+      <p>
+        The UI operates as a Single-Page Application (SPA) providing multi-tier navigation views.
+      </p>
+
+      <h3>Navigation Trees</h3>
+      <p>
+        The sidebar renders a structured topology: <strong>Region &rarr; Environment &rarr; Cluster &rarr; Component Group &rarr; JVM Instance</strong>. Clicking a tier displays a corresponding context panel:
+      </p>
+      <ul>
+        <li>
+          <strong>Fleet View</strong>: Displays a grid of all registered clusters showing aggregated health and active alert counts.
+        </li>
+        <li>
+          <strong>Cluster Overview</strong>: Shows total aggregate memory usage, JVM version configurations, active telemetry (e.g. worst pause time in 24h), and a targeted <em>"Needs Attention"</em> watch list highlighting degraded nodes.
+        </li>
+        <li>
+          <strong>Instance Detail</strong>: Shows current health scores, recommendations, active alerts, recent charts, and 30-day trend lines.
+        </li>
+      </ul>
+    </section>
+
+    <!-- 7. Alerting & Diagnostics -->
+    <section id="alerts" class="doc-section">
+      <h2>Alerting &amp; Diagnostic Logic</h2>
+      <p>
+        The analyzer evaluates statistics from the last hour of records to identify operational issues.
+      </p>
+
+      <h3>Alert Categories</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Alert Type</th>
+            <th>Severity</th>
+            <th>Trigger Metric Condition</th>
+            <th>Implication</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong style="color: var(--critical)">Full GC</strong></td>
+            <td>Critical</td>
+            <td><code>full_gc_count &gt; 0</code></td>
+            <td>A Full Stop-The-World GC took place. Indicates heap exhaustion.</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--critical)">Long Pause</strong></td>
+            <td>Critical</td>
+            <td><code>pause_max_ms &gt; 500ms</code></td>
+            <td>A single STW pause exceeded 500ms. Likely to cause Kafka broker timeout drops.</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--watch)">Heap Pressure</strong></td>
+            <td>Warning</td>
+            <td><code>heap_after_pct &gt; 85%</code></td>
+            <td>Live set after collection occupies more than 85% of total heap. High risk of OOM.</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--watch)">GC Storm</strong></td>
+            <td>Warning</td>
+            <td><code>time_in_gc_pct &gt; max(5%, 3x baseline)</code></td>
+            <td>The JVM is spending significant CPU resources running GC cycles.</td>
+          </tr>
+          <tr>
+            <td><strong style="color: var(--watch)">GC Frequency</strong></td>
+            <td>Warning</td>
+            <td><code>gc_per_min &gt; max(20, 2x baseline)</code></td>
+            <td>High allocation rates causing rapid GC cycles. Degrades application throughput.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 8. Administration -->
+    <section id="admin" class="doc-section">
+      <h2>Administration &amp; Troubleshooting</h2>
+      <p>
+        The backend serves static files and handles scheduler tasks in the background. Here are operational routines for operators:
+      </p>
+
+      <h3>Managing Concurrency</h3>
+      <p>
+        If the analyzer is scraping hundreds of hosts, adjust the maximum parallel scraping worker limit in the root `config.json` file:
+      </p>
+      <pre><code>{
+  "concurrency": 25
+}</code></pre>
+
+      <h3>Scraping Job Logs Pop-up</h3>
+      <p>
+        Clicking **"View Logs"** in the jobs sidebar opens an asynchronous log modal. You can inspect connection attempts, files found, read byte sizes, parsing stats, and errors (such as SSH timeout or permission denials) in real-time.
+      </p>
+
+      <h3>Running Scrapes Manually</h3>
+      <p>
+        You can force a single scraping pass to run outside of the FastAPI runtime. Execute the following command from the project root directory:
+      </p>
+      <pre><code>.venv/bin/python -m gcanalyzer.scheduler --db gc_live.db --once</code></pre>
+    </section>
+  </main>
+
+  <script>
+    // Simple script to highlight the active sidebar link based on scroll position
+    const links = document.querySelectorAll('.nav-link');
+    const sections = document.querySelectorAll('.doc-section');
+
+    function changeActiveLink() {
+      let index = sections.length;
+      while(--index && window.scrollY + 100 < sections[index].offsetTop) {}
+      links.forEach((link) => link.classList.remove('active'));
+      if (index >= 0 && index < links.length) {
+        links[index].classList.add('active');
+      }
+    }
+
+    changeActiveLink();
+    window.addEventListener('scroll', changeActiveLink);
+  </script>
+</body>
+</html>

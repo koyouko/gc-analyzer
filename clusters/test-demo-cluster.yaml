@@ -1,0 +1,10 @@
+cluster: test-demo-cluster
+region: TESTREG
+env: TESTENV
+defaults:
+  source: local
+nodes:
+  - id: controller-1
+    role: controller
+    local_paths:
+      - ./live-logs/controller/kafkaServer-gc.log*

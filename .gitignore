@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# History store (regenerate with: python -m seed.seed_history)
+*.db
+*.db-journal
+
+# Next.js / Node
+web/node_modules/
+web/.next/
+web/out/
+web/*.tsbuildinfo
+
+# OS
+.DS_Store
+.gstack/
