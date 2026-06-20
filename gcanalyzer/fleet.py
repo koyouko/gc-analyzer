@@ -84,6 +84,8 @@ def build_fleet(c, now: int = None) -> dict:
                                 "heap_after_pct": None, "max_pause_ms": None, "full_gc": 0}
             continue
         day = store.window_rows(c, iid, now - 86400, now)
+        if not day and last:
+            day = [last]
         from . import analyzer
         m = store._metrics_dict_from_window(day, inst["heap_max_mb"])
         health = analyzer.score_health(m)
@@ -211,6 +213,8 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     for inst in insts:
         last = store.latest_row(c, inst["id"], now)
         day = store.window_rows(c, inst["id"], now - 86400, now)
+        if not day and last:
+            day = [last]
         m = store._metrics_dict_from_window(day, inst["heap_max_mb"])
         health = analyzer.score_health(m) if m else None
         alerts = store.evaluate_alerts(c, inst["id"], now)
