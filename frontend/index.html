@@ -432,6 +432,37 @@
     margin-top: 8px;
     scrollbar-width: thin;
   }
+  .log-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    flex-wrap: nowrap;
+  }
+  .log-tab {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+  }
+  .log-tab:hover {
+    color: var(--txt);
+    border-color: var(--accent);
+  }
+  .log-tab.active {
+    background: var(--accent);
+    color: #0b1020;
+    border-color: var(--accent);
+  }
 </style>
 </head>
 <body>
@@ -499,6 +530,7 @@
       </h3>
       <button class="close-btn" onclick="closeJobLogsModal()" style="font-size: 24px; background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; line-height: 1;">×</button>
     </div>
+    <div id="modalJobLogTabs" class="log-tabs"></div>
     <div id="modalJobLogContent" style="flex: 1; background: rgba(0, 0, 0, 0.45); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5; overflow-y: auto; white-space: pre-wrap; color: var(--txt); margin-bottom: 16px; scrollbar-width: thin;">
       <!-- Logs go here -->
     </div>
@@ -886,14 +918,15 @@ nodes:
     local_paths:
       - ./live-logs/broker1/kafkaServer-gc.log*
 `;
-// openOnboard and closeOnboard removed (onboarding migrated to Settings page)
 let jobsPollInterval = null;
 let jobsPanelOpen = false;
 let LOG_MODAL_JOB_ID = null;
 let LAST_JOBS = [];
+let activeLogTab = "_general";
 
 function openJobLogsModal(jobId, clusterName) {
   LOG_MODAL_JOB_ID = jobId;
+  activeLogTab = "_general";
   document.getElementById('modalJobCluster').textContent = clusterName;
   document.getElementById('jobLogsModal').style.display = 'flex';
   updateModalJobLogs();
@@ -907,6 +940,11 @@ function closeJobLogsModal() {
   stopPollingJobs();
 }
 
+function selectLogTab(tab) {
+  activeLogTab = tab;
+  updateModalJobLogs();
+}
+
 function updateModalJobLogs() {
   if (!LOG_MODAL_JOB_ID) return;
   const job = LAST_JOBS.find(j => j.id === LOG_MODAL_JOB_ID);
@@ -914,9 +952,33 @@ function updateModalJobLogs() {
   
   const content = document.getElementById('modalJobLogContent');
   const status = document.getElementById('modalJobStatus');
+  const tabsContainer = document.getElementById('modalJobLogTabs');
+  
+  const nodeLogs = job.node_logs || { "_general": job.logs || [] };
+  const tabKeys = Object.keys(nodeLogs).sort((a, b) => {
+    if (a === '_general') return -1;
+    if (b === '_general') return 1;
+    return a.localeCompare(b);
+  });
+  
+  if (!tabKeys.includes(activeLogTab)) {
+    activeLogTab = "_general";
+  }
+  
+  let tabsHtml = '';
+  tabKeys.forEach(key => {
+    const label = key === '_general' ? 'General' : key;
+    const isActive = key === activeLogTab;
+    tabsHtml += `<button class="log-tab ${isActive ? 'active' : ''}" onclick="selectLogTab('${key}')">${label}</button>`;
+  });
+  
+  if (tabsContainer.innerHTML !== tabsHtml) {
+    tabsContainer.innerHTML = tabsHtml;
+  }
   
   const oldText = content.textContent;
-  const newText = (job.logs || []).join('\n');
+  const currentLogs = nodeLogs[activeLogTab] || [];
+  const newText = currentLogs.join('\n');
   
   if (oldText !== newText) {
     content.textContent = newText;

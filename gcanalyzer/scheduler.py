@@ -108,7 +108,7 @@ def _scrape_node_task(node: NodeConfig, ts: int, prev_offsets: dict) -> dict:
         }
 
 
-def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_result=None, on_tick_complete=None) -> dict:
+def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_result=None, on_tick_complete=None, is_running_cb=None) -> dict:
     """One scheduler pass: incremental collect every cluster, then prune."""
     store.init_db(db_path)
     ts = now if now is not None else (int(time.time()) // 60) * 60
@@ -128,6 +128,8 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                 continue
             
             derived_region, derived_env, cluster = _derive_identity(cluster_name)
+            if is_running_cb and is_running_cb(cluster):
+                continue
             region = cfg_region or derived_region
             env = cfg_env or derived_env
             configs.append((cluster, region, env, nodes))
@@ -146,6 +148,10 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                     "instance_id": instance_id,
                     "prev_offsets": prev_offsets
                 })
+    # Call on_tick_start for each cluster in configs before starting concurrent scrapers
+    for cluster, region, env, nodes in configs:
+        if on_tick_start:
+            on_tick_start(ts, cluster, region, env)
 
     # 2. Run scrapers concurrently
     scrape_results = {}
@@ -177,9 +183,6 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
     
     with store.connect(db_path) as conn:
         for cluster, region, env, nodes in configs:
-            if on_tick_start:
-                on_tick_start(ts, cluster, region, env)
-                
             cluster_collected = 0
             for ordinal, node in enumerate(nodes, start=1):
                 index = ingest._index_of(node.id, ordinal)
@@ -239,7 +242,8 @@ async def scheduler_loop(
     interval: int = DEFAULT_INTERVAL_S,
     on_tick_start=None,
     on_node_result=None,
-    on_tick_complete=None
+    on_tick_complete=None,
+    is_running_cb=None
 ) -> None:
     while True:
         try:
@@ -249,7 +253,8 @@ async def scheduler_loop(
                 None,
                 on_tick_start,
                 on_node_result,
-                on_tick_complete
+                on_tick_complete,
+                is_running_cb
             )
             print(f"[scheduler] {summary['clusters']} clusters, "
                   f"{summary['points']} points, pruned {summary['pruned']}")

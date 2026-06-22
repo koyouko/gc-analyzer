@@ -44,6 +44,8 @@ app = FastAPI(title="BSP Kafka GC Analyzer", version="2.1.0")
 # /api/clusters mutations (POST/DELETE) additionally require the 'admin' role.
 _PUBLIC_API = {"/api/login", "/api/logout", "/api/health", "/api/me"}
 
+RUNNING_CLUSTERS: set[str] = set()
+
 
 @app.middleware("http")
 async def _auth_guard(request: Request, call_next):
@@ -67,6 +69,7 @@ async def _start_scheduler():
         def on_tick_start(ts, cluster, region, env):
             job_id = f"sched-{cluster}-{ts}"
             _prune_old_jobs()
+            RUNNING_CLUSTERS.add(cluster)
             JOBS[job_id] = {
                 "id": job_id,
                 "cluster": f"Scheduler: {cluster}",
@@ -79,7 +82,8 @@ async def _start_scheduler():
                 "completed_at": None,
                 "error": None,
                 "nodes": [],
-                "logs": [f"[{time.strftime('%H:%M:%S')}] Started scheduler re-collection tick for cluster {cluster}."]
+                "logs": [f"[{time.strftime('%H:%M:%S')}] Started scheduler re-collection tick for cluster {cluster}."],
+                "node_logs": {"_general": [f"[{time.strftime('%H:%M:%S')}] Started scheduler re-collection tick for cluster {cluster}."]}
             }
             
         def on_node_result(cluster, msg, success, node_id=None):
@@ -95,6 +99,13 @@ async def _start_scheduler():
             timestamp = time.strftime("%H:%M:%S")
             JOBS[job_id]["logs"].append(f"[{timestamp}] {msg}")
             
+            if "node_logs" not in JOBS[job_id]:
+                JOBS[job_id]["node_logs"] = {"_general": []}
+            nid = node_id if node_id else "_general"
+            if nid not in JOBS[job_id]["node_logs"]:
+                JOBS[job_id]["node_logs"][nid] = []
+            JOBS[job_id]["node_logs"][nid].append(f"[{timestamp}] {msg}")
+            
             if node_id:
                 if JOBS[job_id].get("nodes") is None:
                     JOBS[job_id]["nodes"] = []
@@ -108,6 +119,7 @@ async def _start_scheduler():
                 
         def on_tick_complete(ts, cluster, summary):
             job_id = f"sched-{cluster}-{ts}"
+            RUNNING_CLUSTERS.discard(cluster)
             if job_id not in JOBS:
                 return
             
@@ -123,6 +135,9 @@ async def _start_scheduler():
             JOBS[job_id]["progress"] = 100
             JOBS[job_id]["completed_at"] = time.time()
             JOBS[job_id]["logs"].append(f"[{time.strftime('%H:%M:%S')}] Completed. Summary: {summary}")
+            if "node_logs" not in JOBS[job_id]:
+                JOBS[job_id]["node_logs"] = {"_general": []}
+            JOBS[job_id]["node_logs"]["_general"].append(f"[{time.strftime('%H:%M:%S')}] Completed. Summary: {summary}")
 
         asyncio.create_task(
             scheduler.scheduler_loop(
@@ -130,7 +145,8 @@ async def _start_scheduler():
                 interval,
                 on_tick_start=on_tick_start,
                 on_node_result=on_node_result,
-                on_tick_complete=on_tick_complete
+                on_tick_complete=on_tick_complete,
+                is_running_cb=lambda c: c in RUNNING_CLUSTERS
             )
         )
 
@@ -236,12 +252,19 @@ def _prune_old_jobs() -> None:
 
 
 async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, env: str, cluster: str):
-    def log_cb(msg: str):
+    def log_cb(msg: str, node_id: str = "_general"):
         timestamp = time.strftime("%H:%M:%S")
+        if "node_logs" not in JOBS[job_id]:
+            JOBS[job_id]["node_logs"] = {"_general": []}
+        if node_id not in JOBS[job_id]["node_logs"]:
+            JOBS[job_id]["node_logs"][node_id] = []
+        JOBS[job_id]["node_logs"][node_id].append(f"[{timestamp}] {msg}")
+
         if "logs" not in JOBS[job_id]:
             JOBS[job_id]["logs"] = []
         JOBS[job_id]["logs"].append(f"[{timestamp}] {msg}")
 
+    RUNNING_CLUSTERS.add(cluster)
     JOBS[job_id]["status"] = "running"
     JOBS[job_id]["progress"] = 20
     JOBS[job_id]["message"] = f"Connecting to {len(nodes)} nodes to collect and parse GC logs..."
@@ -293,6 +316,8 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
         JOBS[job_id]["error"] = str(e)
         JOBS[job_id]["message"] = f"Failed: {e}"
         log_cb(f"Job failed with error: {e}")
+    finally:
+        RUNNING_CLUSTERS.discard(cluster)
 
 
 @app.post("/api/clusters")
@@ -309,6 +334,9 @@ async def onboard_cluster(req: OnboardRequest) -> dict:
     )
     region = cfg_region or derived_region
     env = cfg_env or derived_env
+
+    if cluster in RUNNING_CLUSTERS:
+        raise HTTPException(409, f"A job is already running for cluster '{cluster}'. Please try again later.")
 
     if not req.is_edit:
         safe = "".join(ch for ch in cluster if ch.isalnum() or ch in "-_") or "cluster"
@@ -331,7 +359,8 @@ async def onboard_cluster(req: OnboardRequest) -> dict:
         "completed_at": None,
         "error": None,
         "nodes": None,
-        "logs": []
+        "logs": [],
+        "node_logs": {"_general": []}
     }
 
     # Start the job in the background using asyncio.create_task

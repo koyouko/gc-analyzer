@@ -22,6 +22,7 @@ you point --db at it.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import time
 from dataclasses import dataclass
 
@@ -116,47 +117,6 @@ def _analyze_node(node: NodeConfig, log_callback=None) -> dict | None:
     return result
 
 
-def _record_nodes(conn, nodes, region: str, env: str, cluster: str, ts: int, log_callback=None) -> list[NodeResult]:
-    """Collect -> analyze -> upsert+record each node on an open connection."""
-    results: list[NodeResult] = []
-    for ordinal, node in enumerate(nodes, start=1):
-        try:
-            analysis = _analyze_node(node, log_callback=log_callback)
-        except Exception as exc:  # surface per-node collection/parse failures
-            if log_callback:
-                log_callback(f"Failed to process node '{node.id}': {exc}")
-            results.append(NodeResult(node.id, "-", node.role, False, f"error: {exc}"))
-            continue
-
-        if analysis is None:
-            results.append(NodeResult(node.id, "-", node.role, False, "no GC log files found"))
-            continue
-
-        metrics = analysis["metrics"]
-        index = _index_of(node.id, ordinal)
-        heap_max = _heap_max_mb(node.role, metrics["heap_max_mb"])
-        inst = build_instance(node, region, env, cluster, index, heap_max)
-
-        if metrics["stw_count"] <= 0:
-            store.upsert_instance(conn, inst, collector=analysis["collector"])
-            if log_callback:
-                log_callback(f"Successfully upserted node '{node.id}' to topology, but no GC events were parsed.")
-            results.append(NodeResult(node.id, inst.id, node.role, False, "no GC events parsed yet"))
-            continue
-
-        store.upsert_instance(conn, inst, collector=analysis["collector"])
-        store.record_metric(conn, inst.id, ts, metrics_to_row(metrics))
-        detail = (
-            f"{analysis['collector']} | {metrics['stw_count']} GCs "
-            f"| p99 {metrics['p99_pause_ms']:.0f}ms | max {metrics['max_pause_ms']:.0f}ms "
-            f"| full {metrics['full_count']} | thr {metrics['throughput_pct']:.2f}%"
-        )
-        if log_callback:
-            log_callback(f"Successfully recorded metrics for node '{node.id}': {detail}")
-        results.append(NodeResult(node.id, inst.id, node.role, True, detail))
-    return results
-
-
 def ingest_nodes(
     nodes: list[NodeConfig],
     db_path: str,
@@ -170,11 +130,91 @@ def ingest_nodes(
     dashboard onboarding endpoint, which has nodes parsed from pasted YAML)."""
     cluster = cluster or f"{region}-{env}"
     ts = now if now is not None else (int(time.time()) // 60) * 60
+
+    # 1. Run node analysis concurrently
+    if log_callback:
+        log_callback(f"Analyzing {len(nodes)} nodes concurrently (max workers: 5)...")
+
+    analysis_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_node = {}
+        for node in nodes:
+            # Bind the node_id to log messages for this node
+            def node_log_cb(msg: str, nid=node.id):
+                if log_callback:
+                    try:
+                        log_callback(msg, node_id=nid)
+                    except TypeError:
+                        log_callback(msg)
+
+            future = executor.submit(_analyze_node, node, log_callback=node_log_cb)
+            future_to_node[future] = node
+
+        for future in concurrent.futures.as_completed(future_to_node):
+            node = future_to_node[future]
+            try:
+                analysis = future.result()
+                analysis_results[node.id] = (analysis, None)
+            except Exception as exc:
+                analysis_results[node.id] = (None, exc)
+
+    # 2. Record findings sequentially in a database connection context
     store.init_db(db_path)
     if log_callback:
-        log_callback(f"Connecting to database at {db_path}...")
+        log_callback(f"Connecting to database at {db_path} to record findings...")
+
+    results: list[NodeResult] = []
     with store.connect(db_path) as conn:
-        return _record_nodes(conn, nodes, region, env, cluster, ts, log_callback=log_callback)
+        for ordinal, node in enumerate(nodes, start=1):
+            res_tuple = analysis_results.get(node.id)
+            if not res_tuple:
+                results.append(NodeResult(node.id, "-", node.role, False, "skipped"))
+                continue
+
+            analysis, exc = res_tuple
+            if exc:
+                if log_callback:
+                    try:
+                        log_callback(f"Failed to process node '{node.id}': {exc}", node_id=node.id)
+                    except TypeError:
+                        log_callback(f"Failed to process node '{node.id}': {exc}")
+                results.append(NodeResult(node.id, "-", node.role, False, f"error: {exc}"))
+                continue
+
+            if analysis is None:
+                results.append(NodeResult(node.id, "-", node.role, False, "no GC log files found"))
+                continue
+
+            metrics = analysis["metrics"]
+            index = _index_of(node.id, ordinal)
+            heap_max = _heap_max_mb(node.role, metrics["heap_max_mb"])
+            inst = build_instance(node, region, env, cluster, index, heap_max)
+
+            if metrics["stw_count"] <= 0:
+                store.upsert_instance(conn, inst, collector=analysis["collector"])
+                if log_callback:
+                    try:
+                        log_callback(f"Successfully upserted node '{node.id}' to topology, but no GC events were parsed.", node_id=node.id)
+                    except TypeError:
+                        log_callback(f"Successfully upserted node '{node.id}' to topology, but no GC events were parsed.")
+                results.append(NodeResult(node.id, inst.id, node.role, False, "no GC events parsed yet"))
+                continue
+
+            store.upsert_instance(conn, inst, collector=analysis["collector"])
+            store.record_metric(conn, inst.id, ts, metrics_to_row(metrics))
+            detail = (
+                f"{analysis['collector']} | {metrics['stw_count']} GCs "
+                f"| p99 {metrics['p99_pause_ms']:.0f}ms | max {metrics['max_pause_ms']:.0f}ms "
+                f"| full {metrics['full_count']} | thr {metrics['throughput_pct']:.2f}%"
+            )
+            if log_callback:
+                try:
+                    log_callback(f"Successfully recorded metrics for node '{node.id}': {detail}", node_id=node.id)
+                except TypeError:
+                    log_callback(f"Successfully recorded metrics for node '{node.id}': {detail}")
+            results.append(NodeResult(node.id, inst.id, node.role, True, detail))
+
+    return results
 
 
 def ingest(
