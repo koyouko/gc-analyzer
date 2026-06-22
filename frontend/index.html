@@ -851,25 +851,26 @@ function drawTrends(tr){
   const span=s.length>1?s[s.length-1].t-s[0].t:0;
   const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
   const labels=s.map(p=>lab(p.t)),hmax=tr.heap_max_mb;
+  const pr = s.length === 1 ? 3 : 0;
 
   charts.heap=new Chart(cHeap,{type:'line',data:{labels,datasets:[
-    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#3fb950',backgroundColor:'rgba(63,185,80,.12)',fill:true,pointRadius:0,borderWidth:1.4,tension:.25},
-    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#58a6ff',pointRadius:0,borderWidth:1,tension:.25},
-    {label:'heap max',data:s.map(()=>hmax),borderColor:'#8b949e',borderDash:[5,4],pointRadius:0,borderWidth:1}
+    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#3fb950',backgroundColor:'rgba(63,185,80,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25},
+    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#58a6ff',pointRadius:pr,borderWidth:1,tension:.25},
+    {label:'heap max',data:s.map(()=>hmax),borderColor:'#8b949e',borderDash:[5,4],pointRadius:pr,borderWidth:1}
   ]},options:baseOpts()});
 
   charts.util=new Chart(cUtil,{type:'line',data:{labels,datasets:[
-    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#d29922',backgroundColor:'rgba(210,153,34,.12)',fill:true,pointRadius:0,borderWidth:1.4,tension:.25}
+    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#d29922',backgroundColor:'rgba(210,153,34,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25}
   ]},options:{...baseOpts(),scales:{...baseOpts().scales,y:{suggestedMax:100,ticks:{font:{size:9}}}}}});
 
   charts.pause=new Chart(cPause,{type:'line',data:{labels,datasets:[
-    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#58a6ff',pointRadius:0,borderWidth:1.3,tension:.25},
-    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#f85149',backgroundColor:'rgba(248,81,73,.10)',fill:true,pointRadius:0,borderWidth:1.3,tension:.25}
+    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#58a6ff',pointRadius:pr,borderWidth:1.3,tension:.25},
+    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#f85149',backgroundColor:'rgba(248,81,73,.10)',fill:true,pointRadius:pr,borderWidth:1.3,tension:.25}
   ]},options:baseOpts()});
 
   charts.full=new Chart(cFull,{data:{labels,datasets:[
     {type:'bar',label:'Full GCs/day',data:s.map(p=>p.full_gc),backgroundColor:'#f85149',yAxisID:'y'},
-    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#d29922',pointRadius:0,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#d29922',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
   ]},options:{...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:{position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:'Full GCs',font:{size:9}}},
