@@ -126,16 +126,22 @@ def collect_ssh(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
             log_callback(f"SSH: Connected successfully. Checking log paths...")
         # Expand globs remotely (sh -c so wildcards resolve on the broker).
         for pattern in node.effective_globs():
-            cmd = f"ls -1 {pattern} 2>/dev/null"
+            cmd = f"ls -1 {pattern}"
             if log_callback:
                 log_callback(f"SSH: Listing files matching '{pattern}'...")
             _in, _stdout, _err = client.exec_command(cmd)
             files = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
+            stderr_text = _err.read().decode().strip()
+            if stderr_text and log_callback:
+                log_callback(f"SSH (stderr): {stderr_text}")
             for remote_path in files:
                 if log_callback:
                     log_callback(f"SSH: Fetching file '{remote_path}'...")
                 _in, _stdout, _err = client.exec_command(f"cat {remote_path}")
                 text = _stdout.read().decode(errors="replace")
+                cat_stderr = _err.read().decode().strip()
+                if cat_stderr and log_callback:
+                    log_callback(f"SSH (stderr from cat): {cat_stderr}")
                 out.append(
                     CollectedLog(node.id, node.role, f"{node.host}:{remote_path}", text)
                 )
@@ -144,16 +150,22 @@ def collect_ssh(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
             if log_callback:
                 log_callback(f"SSH: No files matched globs. Checking fallback directories: {FALLBACK_DIRS}")
             for d in FALLBACK_DIRS:
-                cmd = f"ls -1 {d}/*gc*.log* 2>/dev/null"
+                cmd = f"ls -1 {d}/*gc*.log*"
                 _in, _stdout, _err = client.exec_command(cmd)
                 files = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
+                stderr_text = _err.read().decode().strip()
+                if stderr_text and log_callback:
+                    log_callback(f"SSH (stderr): {stderr_text}")
                 for remote_path in files:
                     if log_callback:
                         log_callback(f"SSH: Fetching fallback file '{remote_path}'...")
                     _in, _stdout, _err = client.exec_command(f"cat {remote_path}")
+                    text = _stdout.read().decode(errors="replace")
+                    cat_stderr = _err.read().decode().strip()
+                    if cat_stderr and log_callback:
+                        log_callback(f"SSH (stderr from cat): {cat_stderr}")
                     out.append(
-                        CollectedLog(node.id, node.role, f"{node.host}:{remote_path}",
-                                     _stdout.read().decode(errors="replace"))
+                        CollectedLog(node.id, node.role, f"{node.host}:{remote_path}", text)
                     )
         if log_callback:
             log_callback(f"SSH: Completed collection for node. Collected {len(out)} files.")
@@ -210,17 +222,25 @@ def collect_ssh_incremental(
 
         files = []
         for pattern in node.effective_globs():
-            cmd = f"ls -1 {pattern} 2>/dev/null"
+            cmd = f"ls -1 {pattern}"
             _in, _stdout, _err = client.exec_command(cmd)
-            files.extend(ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip())
+            lines = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
+            files.extend(lines)
+            stderr_text = _err.read().decode().strip()
+            if stderr_text and not lines and log_callback:
+                log_callback(f"SSH (inc stderr) for '{pattern}': {stderr_text}")
 
         if not files:
             if log_callback:
                 log_callback(f"SSH (inc): No files matched globs. Checking fallback directories...")
             for d in FALLBACK_DIRS:
-                cmd = f"ls -1 {d}/*gc*.log* 2>/dev/null"
+                cmd = f"ls -1 {d}/*gc*.log*"
                 _in, _stdout, _err = client.exec_command(cmd)
-                files.extend(ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip())
+                lines = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
+                files.extend(lines)
+                stderr_text = _err.read().decode().strip()
+                if stderr_text and not lines and log_callback:
+                    log_callback(f"SSH (inc stderr) for '{d}': {stderr_text}")
 
         for remote_path in files:
             stat_cmd = f"stat -c '%i %s' '{remote_path}' 2>/dev/null || stat -f '%i %z' '{remote_path}'"
