@@ -38,8 +38,8 @@ def _worse(a: str, b: str) -> str:
 
 # Deterministic display ordering. Known regions/envs/groups keep the demo's
 # original order; anything else (e.g. a live "LOCAL" region) sorts after them.
-_REGION_ORDER = {"NAM": 0, "EMEA": 1, "APAC": 2}
-_ENV_ORDER = {"UAT": 0, "PROD": 1, "SANDBOX": 2, "PHY": 3, "DEV": 4}
+_REGION_ORDER = {"DEMO": 0, "NAM": 1, "EMEA": 2, "APAC": 3}
+_ENV_ORDER = {"KRAFT": 0, "ZOOKEEPER": 1, "UAT": 2, "PROD": 3, "SANDBOX": 4, "PHY": 5, "DEV": 6}
 _GROUP_ORDER = {g["key"]: n for n, g in enumerate(topology.COMPONENT_GROUPS)}
 
 
@@ -258,7 +258,10 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     nodes.sort(key=lambda n: (-STATUS_RANK[n["status"]], n["score"] if n["score"] is not None else 999))
     attention = [n for n in nodes if n["status"] in ("critical", "watch")]
 
-    region, env = cluster.split("-", 1)
+    # Region/env come from the stored instance rows (onboarding writes them).
+    # Do NOT parse the cluster name — names like "demo" have no "-" and would crash.
+    region = insts[0]["region"]
+    env = insts[0]["env"]
     cluster_status = "ok"
     for n in nodes:
         cluster_status = _worse(cluster_status, n["status"])

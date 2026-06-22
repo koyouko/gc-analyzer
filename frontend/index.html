@@ -10,10 +10,24 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0e1117; --panel:#161b22; --panel2:#1c2230; --border:#2a3140;
-    --txt:#e6edf3; --muted:#8b949e; --accent:#58a6ff;
-    --ok:#3fb950; --watch:#d29922; --crit:#f85149; --unknown:#6e7681;
+    /* Barclays light theme: light surfaces, navy text, signature Barclays cyan */
+    --bg:#eef2f7; --panel:#ffffff; --panel2:#f1f5f9; --border:#d8e1ea;
+    --txt:#0a2540; --muted:#5b7287; --accent:#0a85c2; --accent2:#00aeef; --brand:#00aeef;
+    --navy:#0a2540;           /* header / login chrome */
+    --ink:#ffffff;            /* text on accent buttons & status chips */
+    --ok:#1e9e5a; --watch:#c77700; --crit:#d22d2d; --unknown:#8497a8;
+    --shadow:0 1px 2px rgba(10,37,64,.06), 0 6px 18px rgba(10,37,64,.08);
   }
+  /* Dark Barclays theme — toggled via the header button (persists in localStorage) */
+  body.theme-dark{
+    --bg:#071a2c; --panel:#0d2840; --panel2:#143352; --border:#1f405e;
+    --txt:#eaf2f9; --muted:#93acc4; --accent:#00aeef; --accent2:#38c6ff; --brand:#00aeef;
+    --navy:#0a2540; --ink:#06283d;
+    --ok:#2eb872; --watch:#f5a623; --crit:#e5484d; --unknown:#5d748b;
+    --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.22);
+  }
+  body.theme-dark .pros li{color:#7ee787}
+  body.theme-dark .cons li{color:#ffa198}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--txt);
@@ -29,12 +43,17 @@
   body.authenticated .layout {
     display: flex !important;
   }
-  header{display:flex;align-items:center;justify-content:space-between;
-         padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel)}
-  header h1{font-size:16px;margin:0;font-weight:650}
-  header .sub{color:var(--muted);font-size:11px;margin-top:2px}
+  header{display:flex;align-items:center;justify-content:space-between;color:#fff;
+         padding:12px 22px;border-bottom:3px solid var(--brand);
+         background:linear-gradient(180deg,#0a2540 0%,#072036 100%);box-shadow:0 2px 8px rgba(10,37,64,.18)}
+  header h1{font-family:'Outfit',sans-serif;font-size:16px;margin:0;font-weight:700;letter-spacing:.01em;color:#fff;
+            display:flex;align-items:center;gap:10px;cursor:pointer}
+  header h1::before{content:"";width:7px;height:22px;border-radius:2px;background:var(--brand);
+            box-shadow:0 0 12px rgba(0,174,239,.6)}
+  header .sub{color:#9fc2db;font-size:11px;margin-top:2px;padding-left:17px}
   .right{display:flex;align-items:center;gap:12px}
-  .btn{background:var(--accent);color:#0b1020;border:0;border-radius:6px;padding:7px 13px;font-weight:600;cursor:pointer;font-size:12px}
+  .btn{background:var(--accent);color:var(--ink);border:0;border-radius:6px;padding:7px 13px;font-weight:600;cursor:pointer;font-size:12px;transition:filter .15s,transform .05s}
+  .btn:hover{filter:brightness(1.08)}.btn:active{transform:translateY(1px)}
   .btn:disabled{opacity:.5;cursor:wait}
   .statuspill{padding:4px 12px;border-radius:20px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
   .layout{display:flex;height:calc(100vh - 57px)}
@@ -42,7 +61,7 @@
   .sidebar{width:310px;min-width:310px;border-right:1px solid var(--border);overflow-y:auto;background:var(--panel);padding:8px 0}
   .tree-row{display:flex;align-items:center;gap:7px;padding:5px 10px;cursor:pointer;user-select:none;white-space:nowrap}
   .tree-row:hover{background:var(--panel2)}
-  .tree-row.sel{background:rgba(88,166,255,.16)}
+  .tree-row.sel{background:rgba(0,174,239,.16);box-shadow:inset 3px 0 0 var(--accent)}
   .tw{display:inline-block;width:12px;color:var(--muted);font-size:10px;text-align:center;flex:none}
   .dot{width:9px;height:9px;border-radius:50%;flex:none}
   .dot.ok{background:var(--ok)}.dot.watch{background:var(--watch)}.dot.crit{background:var(--crit)}.dot.unknown{background:var(--unknown)}
@@ -53,7 +72,7 @@
   /* main */
   .main{flex:1;overflow-y:auto;padding:18px 22px}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:13px 15px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:13px 15px;box-shadow:var(--shadow)}
   .card .l{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
   .card .v{font-size:24px;font-weight:700;margin-top:5px}
   .card.ok{border-left:3px solid var(--ok)}.card.watch{border-left:3px solid var(--watch)}.card.crit{border-left:3px solid var(--crit)}
@@ -64,28 +83,29 @@
   .alert.critical{border-left-color:var(--crit)}.alert.warning{border-left-color:var(--watch)}
   .alert:hover{border-color:var(--accent)}
   .sev{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;border-radius:4px}
-  .sev.critical{background:rgba(248,81,73,.18);color:var(--crit)}
-  .sev.warning{background:rgba(210,153,34,.18);color:var(--watch)}
+  .sev.critical{background:rgba(229,72,77,.18);color:var(--crit)}
+  .sev.warning{background:rgba(245,166,35,.18);color:var(--watch)}
   .alert .where{font-weight:600}.alert .msg{color:var(--muted)}
-  .grade{width:46px;height:46px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px;color:#0b1020;flex:none}
+  .grade{width:46px;height:46px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px;color:var(--ink);flex:none}
   .grade.A{background:var(--ok)}.grade.B{background:#56d364}.grade.C{background:var(--watch)}
   .grade.D{background:#db6d28}.grade.F{background:var(--crit)}
   .metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:11px}
-  .metric{background:var(--panel2);border-radius:7px;padding:9px 12px;position:relative}
+  .metric{background:var(--panel);border:1px solid #b8c9dc;border-radius:8px;padding:9px 12px;position:relative;box-shadow:0 1px 3px rgba(10,37,64,.07)}
+  body.theme-dark .metric{background:var(--panel2);border-color:#3d6a8a}
   .metric .l{color:var(--muted);font-size:11px}.metric .v{font-size:17px;font-weight:700;margin-top:3px}
   .metric .info{color:var(--muted);font-size:10px;margin-left:4px;cursor:help;opacity:.6}
   .metric:hover .info{opacity:1;color:var(--accent)}
   .metric .tip{position:absolute;top:100%;left:0;margin-top:6px;z-index:50;display:none;width:230px;max-width:70vw;
-    background:#0b0f16;border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.45;
-    color:var(--txt);box-shadow:0 6px 20px rgba(0,0,0,.5);font-weight:400;text-transform:none;letter-spacing:0}
+    background:#04162a;border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.45;
+    color:#eef5fb;box-shadow:0 10px 24px rgba(10,37,64,.28);font-weight:400;text-transform:none;letter-spacing:0}
   .metric:hover .tip{display:block}
   .panels{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
-  .panel{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:14px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:14px;box-shadow:var(--shadow)}
   .panel.full{grid-column:1/-1}
   .panel h3{margin:0 0 10px;font-size:12px;font-weight:650}
   .chartbox{position:relative;height:210px}
   ul.list{margin:0;padding-left:17px}ul.list li{margin:5px 0;line-height:1.4}
-  .pros li{color:#7ee787}.cons li{color:#ffa198}.recs li{color:var(--txt)}
+  .pros li{color:#1e8a52}.cons li{color:#c0392b}.recs li{color:var(--txt)}
   .engine{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);padding:3px 9px;border-radius:18px;font-weight:600;font-size:11px}
   .muted{color:var(--muted)}
   .ihdr{display:flex;align-items:center;gap:13px;flex-wrap:wrap;margin-bottom:8px}
@@ -100,7 +120,7 @@
   .ncard.critical{border-left-color:var(--crit)}.ncard.unknown{border-left-color:var(--unknown)}
   .ncard .nid{font-weight:600;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:6px}
   .ncard .nmeta{color:var(--muted);font-size:11px;margin-top:4px;display:flex;justify-content:space-between}
-  .minigrade{font-size:11px;font-weight:800;padding:0 5px;border-radius:4px;color:#0b1020}
+  .minigrade{font-size:11px;font-weight:800;padding:0 5px;border-radius:4px;color:var(--ink)}
   .minigrade.A{background:var(--ok)}.minigrade.B{background:#56d364}.minigrade.C{background:var(--watch)}
   .minigrade.D{background:#db6d28}.minigrade.F{background:var(--crit)}
   .cfg{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px}
@@ -109,8 +129,8 @@
   .help .info{color:var(--muted);font-size:10px;margin-left:4px;opacity:.6}
   .help:hover .info{opacity:1;color:var(--accent)}
   .help .tip{position:absolute;top:100%;left:0;margin-top:6px;z-index:50;display:none;width:240px;max-width:70vw;
-    background:#0b0f16;border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.45;
-    color:var(--txt);box-shadow:0 6px 20px rgba(0,0,0,.5);font-weight:400}
+    background:#04162a;border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-size:11px;line-height:1.45;
+    color:#eef5fb;box-shadow:0 10px 24px rgba(10,37,64,.28);font-weight:400}
   .help:hover .tip{display:block}
   /* onboarding modal */
   .btn.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--border)}
@@ -123,7 +143,7 @@
 
   /* Clean Login Page Styles */
   #loginModal {
-    background: radial-gradient(circle at 50% 50%, #161c2d 0%, #080a0f 100%) !important;
+    background: radial-gradient(circle at 50% 30%, #0e2c47 0%, #04101c 100%) !important;
     z-index: 1000;
     position: fixed;
     inset: 0;
@@ -136,7 +156,7 @@
     position: absolute;
     width: 600px;
     height: 600px;
-    background: radial-gradient(circle, rgba(88, 166, 255, 0.07) 0%, rgba(88, 166, 255, 0) 70%);
+    background: radial-gradient(circle, rgba(0, 174, 239, 0.07) 0%, rgba(0, 174, 239, 0) 70%);
     top: 30%;
     left: 50%;
     transform: translate(-50%, -50%);
@@ -147,7 +167,7 @@
     position: absolute;
     width: 500px;
     height: 500px;
-    background: radial-gradient(circle, rgba(139, 92, 246, 0.04) 0%, rgba(139, 92, 246, 0) 70%);
+    background: radial-gradient(circle, rgba(0, 174, 239, 0.04) 0%, rgba(0, 174, 239, 0) 70%);
     top: 70%;
     left: 30%;
     transform: translate(-50%, -50%);
@@ -183,11 +203,11 @@
     justify-content: center;
     width: 48px;
     height: 48px;
-    background: rgba(88, 166, 255, 0.1);
-    border: 1px solid rgba(88, 166, 255, 0.25);
+    background: rgba(0, 174, 239, 0.1);
+    border: 1px solid rgba(0, 174, 239, 0.25);
     border-radius: 12px;
     margin-bottom: 16px;
-    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.1);
+    box-shadow: 0 4px 12px rgba(0, 174, 239, 0.1);
   }
   .login-logo svg {
     width: 24px;
@@ -202,12 +222,12 @@
     font-family: 'Outfit', sans-serif;
     font-size: 20px;
     font-weight: 600;
-    color: var(--txt);
+    color: #fff;
     margin: 0 0 6px;
   }
   .login-subtitle {
     font-size: 12px;
-    color: var(--muted);
+    color: #93acc4;
     line-height: 1.4;
   }
   .login-field {
@@ -225,8 +245,9 @@
   }
   .login-input {
     background: rgba(14, 17, 23, 0.65) !important;
-    color: var(--txt) !important;
-    border: 1px solid var(--border) !important;
+    color: #fff !important;
+    -webkit-text-fill-color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
     border-radius: 8px !important;
     padding: 10px 14px !important;
     font-size: 13px !important;
@@ -234,16 +255,26 @@
     transition: all 0.2s ease !important;
     width: 100% !important;
   }
+  .login-input::placeholder {
+    color: rgba(255, 255, 255, 0.45);
+  }
+  .login-input:-webkit-autofill,
+  .login-input:-webkit-autofill:hover,
+  .login-input:-webkit-autofill:focus {
+    -webkit-text-fill-color: #fff !important;
+    caret-color: #fff;
+    box-shadow: 0 0 0 1000px rgba(14, 17, 23, 0.85) inset !important;
+  }
   .login-input:focus {
     outline: none !important;
     border-color: var(--accent) !important;
-    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15) !important;
+    box-shadow: 0 0 0 3px rgba(0, 174, 239, 0.15) !important;
     background: rgba(14, 17, 23, 0.85) !important;
   }
   .login-btn {
     width: 100%;
-    background: linear-gradient(135deg, #58a6ff 0%, #388bfd 100%) !important;
-    color: #0b1020 !important;
+    background: linear-gradient(135deg, #00aeef 0%, #0091cf 100%) !important;
+    color: var(--ink) !important;
     border: none !important;
     border-radius: 8px !important;
     padding: 11px 16px !important;
@@ -255,17 +286,17 @@
     align-items: center !important;
     justify-content: center !important;
     gap: 8px !important;
-    box-shadow: 0 4px 12px rgba(56, 139, 253, 0.25) !important;
+    box-shadow: 0 4px 12px rgba(0, 174, 239, 0.25) !important;
     margin-top: 8px !important;
   }
   .login-btn:hover {
     transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(56, 139, 253, 0.4) !important;
+    box-shadow: 0 6px 16px rgba(0, 174, 239, 0.4) !important;
     filter: brightness(1.05);
   }
   .login-btn:active {
     transform: translateY(1px);
-    box-shadow: 0 2px 6px rgba(56, 139, 253, 0.2) !important;
+    box-shadow: 0 2px 6px rgba(0, 174, 239, 0.2) !important;
   }
   .login-error {
     color: var(--crit);
@@ -277,13 +308,56 @@
     gap: 6px;
   }
 
+
+  /* ---- per-node deep-dive (gceasy-inspired, modern) ---- */
+  .node-deep{margin-top:8px}
+  .kpi-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:12px 0 16px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;box-shadow:var(--shadow)}
+  .kpi .kl{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px}
+  .kpi .kv{font-size:22px;font-weight:700;line-height:1.1}
+  .kpi .ks{font-size:10px;color:var(--muted);margin-top:4px}
+  .kpi.good .kv{color:var(--ok)}.kpi.warn .kv{color:var(--watch)}.kpi.bad .kv{color:var(--crit)}
+  .explorer{display:grid;grid-template-columns:170px 1fr;gap:12px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;box-shadow:var(--shadow);min-height:260px}
+  .explorer-tabs{display:flex;flex-direction:column;gap:6px}
+  .xtab{text-align:left;border:1px solid var(--border);background:var(--panel2);color:var(--txt);border-radius:8px;padding:9px 11px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+  .xtab:hover{border-color:var(--accent);color:var(--accent)}
+  .xtab.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(0,174,239,.25)}
+  .explorer-chart{position:relative;height:230px}
+  .chartbox.tall{height:230px}
+  .chartbox.compact{height:170px}
+  .stat-table{width:100%;border-collapse:collapse;font-size:11px}
+  .stat-table th,.stat-table td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--border)}
+  .stat-table th{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+  .stat-table tr:last-child td,.stat-table tr:last-child th{border-bottom:0}
+  .stat-table .num{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .diag-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+  .diag{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:11px 12px}
+  .diag .dt{font-size:11px;font-weight:650;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+  .diag .dd{font-size:11px;color:var(--muted);line-height:1.45}
+  .diag.ok{border-left:3px solid var(--ok)}.diag.warn{border-left:3px solid var(--watch)}.diag.bad{border-left:3px solid var(--crit)}
+  .mem-bar-wrap{margin:8px 0 4px}
+  .mem-bar-label{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:4px}
+  .mem-bar{height:22px;background:var(--panel2);border-radius:6px;overflow:hidden;position:relative}
+  .mem-bar span{display:block;height:100%;border-radius:6px;transition:width .3s}
+  .mem-bar .alloc{background:linear-gradient(90deg,#0a85c2,#00aeef);opacity:.35;width:100%;position:absolute;inset:0}
+  .mem-bar .peak{background:linear-gradient(90deg,#2eb872,#56d364);position:relative;z-index:1}
+  .board-stack{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+  .gc-mix-stack{display:flex;flex-direction:column;gap:12px;margin-top:4px}
+  .gc-mix-row{display:grid;grid-template-columns:110px 1fr 72px 44px;align-items:center;gap:10px;font-size:11px}
+  .gc-mix-row .lbl{color:var(--muted);font-weight:600}
+  .gc-mix-bar{height:12px;background:var(--panel2);border-radius:6px;overflow:hidden}
+  .gc-mix-bar span{display:block;height:100%;border-radius:6px;min-width:2px}
+  .gc-mix-bar .young{background:linear-gradient(90deg,#0a85c2,#00aeef)}
+  .gc-mix-bar .full{background:linear-gradient(90deg,#e5484d,#ff6b6b)}
+  @media(max-width:900px){.explorer{grid-template-columns:1fr}.explorer-tabs{flex-direction:row;flex-wrap:wrap}}
+
   /* Badge for active jobs count */
   .badge {
     position: absolute;
     top: -5px;
     right: -5px;
     background: var(--accent);
-    color: #0b1020;
+    color: var(--ink);
     font-size: 9px;
     font-weight: 800;
     border-radius: 50%;
@@ -373,7 +447,7 @@
     border-radius: 4px;
   }
   .job-card-status.pending { background: rgba(110, 118, 129, 0.15); color: var(--unknown); }
-  .job-card-status.running { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+  .job-card-status.running { background: rgba(0, 174, 239, 0.15); color: var(--accent); }
   .job-card-status.completed { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
   .job-card-status.warning { background: rgba(210, 153, 34, 0.15); color: var(--watch); }
   .job-card-status.failed { background: rgba(248, 81, 73, 0.15); color: var(--crit); }
@@ -392,7 +466,7 @@
     transition: width 0.3s ease;
   }
   .job-progress-fill.running {
-    background: linear-gradient(90deg, var(--accent) 0%, #388bfd 100%);
+    background: linear-gradient(90deg, var(--accent) 0%, #0091cf 100%);
     animation: pulseGlow 1.5s infinite;
   }
   .job-progress-fill.completed { background: var(--ok); }
@@ -460,7 +534,7 @@
   }
   .log-tab.active {
     background: var(--accent);
-    color: #0b1020;
+    color: var(--ink);
     border-color: var(--accent);
   }
 </style>
@@ -476,6 +550,7 @@
     <span class="statuspill" id="fleetPill">—</span>
     <button class="btn ghost" id="settingsBtn" onclick="openSettings()" title="Settings & Cluster Management" style="display:none">Settings</button>
     <button class="btn ghost" id="jobsBtn" onclick="toggleJobsPanel()" style="position:relative;display:none">Jobs <span id="jobsBadge" class="badge" style="display:none">0</span></button>
+    <button class="btn ghost" id="themeBtn" onclick="toggleTheme()" title="Switch light / dark theme">Dark</button>
     <button class="btn" id="refreshBtn" onclick="load()">Refresh</button>
     <button class="btn ghost" id="logoutBtn" onclick="logout()" style="display:none">Log out</button>
   </div>
@@ -512,12 +587,12 @@
       Are you sure you want to delete <b id="deleteClusterName" style="color:var(--txt);"></b> and all its history? This action is permanent and cannot be undone.
     </div>
     
-    <label style="margin-bottom:8px; display:block;">Type <code style="background:rgba(248,81,73,0.15); color:var(--crit); padding:2px 6px; border-radius:4px; font-weight:600; font-family:ui-monospace,monospace;">yes</code> to confirm:</label>
+    <label style="margin-bottom:8px; display:block;">Type <code style="background:rgba(229,72,77,0.15); color:var(--crit); padding:2px 6px; border-radius:4px; font-weight:600; font-family:ui-monospace,monospace;">yes</code> to confirm:</label>
     <input id="deleteConfirmInput" class="inp" placeholder="Type yes" autocomplete="off" oninput="checkDeleteConfirmation()" onkeydown="if(event.key==='Enter' && this.value.trim().toLowerCase()==='yes') executeClusterDeletion()" style="margin-bottom:20px; border-color:var(--border);">
     
     <div style="display:flex; justify-content:flex-end; gap:10px;">
       <button class="btn ghost" onclick="closeDeleteConfirmModal()">Cancel</button>
-      <button class="btn" id="deleteConfirmBtn" disabled style="background:var(--crit); color:#0e1117;" onclick="executeClusterDeletion()">Delete Cluster</button>
+      <button class="btn" id="deleteConfirmBtn" disabled style="background:var(--crit); color:#fff;" onclick="executeClusterDeletion()">Delete Cluster</button>
     </div>
   </div>
 </div>
@@ -585,6 +660,20 @@
 
 <script>
 const SC={ok:'ok',watch:'watch',critical:'crit',unknown:'unknown'};
+
+/* ---- Theme switch (light default / dark) — persists in localStorage ---- */
+function applyTheme(t, redraw){
+  const dark = t === 'dark';
+  document.body.classList.toggle('theme-dark', dark);
+  try{ localStorage.setItem('gcTheme', dark ? 'dark' : 'light'); }catch(e){}
+  const b = document.getElementById('themeBtn'); if(b) b.textContent = dark ? 'Light' : 'Dark';
+  // Redraw open charts so their axes/grid pick up the new theme colors.
+  if(redraw && typeof CURRENT_INSTANCE !== 'undefined' && CURRENT_INSTANCE){
+    try{ selectInstance(CURRENT_INSTANCE); }catch(e){}
+  }
+}
+function toggleTheme(){ applyTheme(document.body.classList.contains('theme-dark') ? 'light' : 'dark', true); }
+(function(){ let t='light'; try{ t = localStorage.getItem('gcTheme') || 'light'; }catch(e){} applyTheme(t, false); })();
 const METRIC_HELP={
   'Throughput':'Percentage of wall-clock time the application ran instead of being paused by GC. Higher is better — aim for ≥ 99%.',
   'Time in GC':'Share of wall-clock time spent inside stop-the-world GC pauses. The inverse of throughput; lower is better.',
@@ -620,6 +709,195 @@ const PILL={ok:'var(--ok)',watch:'var(--watch)',critical:'var(--crit)',unknown:'
 let FLEET=null, SELECTED=null, charts={}, expanded={};
 
 async function api(p){const r=await fetch(p);if(!r.ok)throw new Error(await r.text());return r.json();}
+
+let nodeCharts={}, EXPLORER_TAB='heap', _lastSeries=null;
+
+function destroyNodeCharts(){Object.values(nodeCharts).forEach(c=>c.destroy());nodeCharts={};}
+
+function pauseBucketsFromSeries(series){
+  const edges=[0,10,20,30,40,50,100,200,500,100000];
+  const labels=['0–10','10–20','20–30','30–40','40–50','50–100','100–200','200–500','500+'];
+  const counts=new Array(labels.length).fill(0);
+  for(const pt of series||[]){
+    const p=pt.pause_max||0;
+    for(let i=0;i<edges.length-1;i++){
+      if(p>=edges[i]&&p<edges[i+1]){counts[i]++;break;}
+    }
+  }
+  const total=counts.reduce((a,b)=>a+b,0)||1;
+  return labels.map((l,i)=>({label:l,count:counts[i],pct:Math.round(counts[i]/total*1000)/10}));
+}
+
+function diagCards(m, alerts){
+  const cards=[];
+  const peakPct=m.peak_heap_after_pct||0;
+  cards.push({t:'Heap headroom',d:peakPct>85?`Live set peaked at ${peakPct}% — close to OOM.`:`Peak live set ${peakPct}% of ${m.heap_max_mb} MB heap.`,s:peakPct>85?'bad':peakPct>70?'warn':'ok'});
+  const full=m.full_count||0;
+  cards.push({t:'Full GC (24h)',d:full?`${full} Full GC event(s) — whole-heap stop-the-world.`:'No Full GCs in the last 24 hours.',s:full?'bad':'ok'});
+  const mp=m.max_pause_ms||0;
+  cards.push({t:'Longest pause',d:mp>500?`Max pause ${mp} ms exceeds 500 ms Kafka tolerance.`:`Max pause ${mp} ms within acceptable range.`,s:mp>500?'bad':mp>200?'warn':'ok'});
+  const prom=m.promotion_trend_pct||0;
+  cards.push({t:'Live-set trend',d:prom>60?`Live set rose after ${prom}% of collections — check for leak.`:`Promotion trend ${prom}% — stable live set.`,s:prom>60?'warn':'ok'});
+  const tig=m.pct_time_in_gc||0;
+  cards.push({t:'GC overhead',d:`${tig}% of wall-clock in GC · throughput ${m.throughput_pct}%.`,s:tig>5?'warn':tig>10?'bad':'ok'});
+  const crit=alerts.some(a=>a.severity==='critical');
+  if(crit) cards.unshift({t:'Active alerts',d:alerts.map(a=>a.msg).join(' · '),s:'bad'});
+  return cards;
+}
+
+function explorerTabsHtml(){
+  const tabs=[
+    ['heap','Heap live set'],['util','Utilization %'],['pause','Pause spikes'],
+    ['tig','Time in GC'],['full','Full GC events'],['thru','Throughput']
+  ];
+  return tabs.map(([k,l])=>`<button type="button" class="xtab${EXPLORER_TAB===k?' on':''}" data-tab="${k}" onclick="setExplorerTab('${k}')">${l}</button>`).join('');
+}
+
+function renderNodeDeepDive(m, tr, s){
+  const peakMb=Math.round((m.heap_max_mb||0)*(m.peak_heap_after_pct||0)/100);
+  const avgMb=Math.round(m.avg_heap_after_mb||(m.heap_max_mb||0)*(m.avg_heap_after_pct||0)/100);
+  return `
+    <h2>Node deep-dive</h2>
+    <p class="muted" style="margin:-6px 0 10px">GC analytics for this JVM — summary from the last 24 hours.</p>
+    <div class="kpi-strip">
+      <div class="kpi ${m.throughput_pct>=99?'good':m.throughput_pct>=95?'warn':'bad'}"><div class="kl">Throughput</div><div class="kv">${m.throughput_pct}%</div><div class="ks">app time vs GC</div></div>
+      <div class="kpi ${m.max_pause_ms<=200?'good':m.max_pause_ms<=500?'warn':'bad'}"><div class="kl">Avg pause</div><div class="kv">${m.avg_pause_ms}<span style="font-size:13px;font-weight:600"> ms</span></div><div class="ks">p99 ${m.p99_pause_ms} ms</div></div>
+      <div class="kpi"><div class="kl">GC frequency</div><div class="kv">${m.gc_per_min}</div><div class="ks">collections / min</div></div>
+      <div class="kpi ${m.full_count?'bad':'good'}"><div class="kl">Full GCs</div><div class="kv">${m.full_count}</div><div class="ks">last 24 hours</div></div>
+    </div>
+    <div class="panels">
+      <div class="panel">
+        <h3>JVM memory — allocated vs peak live set</h3>
+        <div class="mem-bar-wrap">
+          <div class="mem-bar-label"><span>Peak live set</span><span>${peakMb} / ${m.heap_max_mb} MB (${m.peak_heap_after_pct}%)</span></div>
+          <div class="mem-bar"><span class="alloc"></span><span class="peak" style="width:${Math.min(100,m.peak_heap_after_pct||0)}%"></span></div>
+        </div>
+        <div class="mem-bar-wrap">
+          <div class="mem-bar-label"><span>Avg live set</span><span>${avgMb} MB (${m.avg_heap_after_pct}%)</span></div>
+          <div class="mem-bar"><span class="alloc"></span><span class="peak" style="width:${Math.min(100,m.avg_heap_after_pct||0)}%;background:linear-gradient(90deg,#0a85c2,#38c6ff)"></span></div>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:8px">Allocated -Xmx: ${m.heap_max_mb} MB · promotion trend ${m.promotion_trend_pct}%</div>
+      </div>
+      <div class="panel">
+        <h3>Pause duration distribution</h3>
+        <div class="chartbox compact"><canvas id="cHist"></canvas></div>
+      </div>
+    </div>`;
+}
+
+function renderGcEventMix(m){
+  const young=m.young_count||0, full=m.full_count||0;
+  const total=young+full||1;
+  const youngPct=Math.round(young/total*100);
+  const fullPct=100-youngPct;
+  return `
+    <div class="gc-mix-stack">
+      <div class="gc-mix-row">
+        <span class="lbl">Young / mixed</span>
+        <div class="gc-mix-bar"><span class="young" style="width:${youngPct}%"></span></div>
+        <span class="num">${young.toLocaleString()}</span>
+        <span class="num">${youngPct}%</span>
+      </div>
+      <div class="gc-mix-row">
+        <span class="lbl">Full GC</span>
+        <div class="gc-mix-bar"><span class="full" style="width:${Math.max(fullPct, full?2:0)}%"></span></div>
+        <span class="num">${full.toLocaleString()}</span>
+        <span class="num">${fullPct}%</span>
+      </div>
+    </div>`;
+}
+
+function renderNodeExplorerBoard(m, tr, s){
+  const cards=diagCards(m, s.alerts||[]);
+  return `
+    <div class="panel full" style="margin-top:14px">
+      <h3>Interactive explorer</h3>
+      <div class="explorer">
+        <div class="explorer-tabs">${explorerTabsHtml()}</div>
+        <div class="explorer-chart"><canvas id="cExplore"></canvas></div>
+      </div>
+    </div>
+    <div class="board-stack">
+      <div class="panel">
+        <h3>Latency board</h3>
+        <table class="stat-table">
+          <tr><th>Metric</th><th class="num">Value</th></tr>
+          <tr><td>Avg pause</td><td class="num">${m.avg_pause_ms} ms</td></tr>
+          <tr><td>p99 pause</td><td class="num">${m.p99_pause_ms} ms</td></tr>
+          <tr><td>Max pause</td><td class="num">${m.max_pause_ms} ms</td></tr>
+          <tr><td>Time in GC</td><td class="num">${m.pct_time_in_gc}%</td></tr>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>GC event mix (24h)</h3>
+        ${renderGcEventMix(m)}
+      </div>
+      <div class="panel">
+        <h3>Diagnostics</h3>
+        <div class="diag-grid">${cards.map(c=>`<div class="diag ${c.s}"><div class="dt">${c.t}</div><div class="dd">${c.d}</div></div>`).join('')}</div>
+      </div>
+    </div>`;
+}
+
+function setExplorerTab(tab){
+  EXPLORER_TAB=tab;
+  document.querySelectorAll('.xtab').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
+  if(_lastSeries) drawExplorerChart(_lastSeries);
+}
+
+function chartTheme(){
+  const __dark=document.body.classList.contains('theme-dark');
+  Chart.defaults.color=__dark?'#93acc4':'#5b7287';
+  Chart.defaults.borderColor=__dark?'#1f405e':'#dde5ee';
+  Chart.defaults.font.family='Inter, sans-serif';
+}
+
+function seriesLabels(s){
+  const span=s.length>1?s[s.length-1].t-s[0].t:0;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})):fmtDay;
+  return {labels:s.map(p=>lab(p.t)), pr:s.length===1?4:0};
+}
+
+function drawExplorerChart(tr){
+  if(nodeCharts.explore) nodeCharts.explore.destroy();
+  const s=tr.series||[];
+  const {labels,pr}=seriesLabels(s);
+  const fills={heap:'rgba(46,184,114,.18)',util:'rgba(245,166,35,.18)',tig:'rgba(199,119,0,.18)',thru:'rgba(46,184,114,.18)'};
+  const cfg={
+    heap:{label:'Live set (MB)',data:s.map(p=>p.heap_used_avg),color:'#2eb872',fill:'heap'},
+    util:{label:'Utilization %',data:s.map(p=>p.heap_after_pct_avg),color:'#f5a623',fill:'util',yMax:100},
+    pause:{label:'Max pause (ms)',data:s.map(p=>p.pause_max),color:'#e5484d'},
+    tig:{label:'Time in GC %',data:s.map(p=>p.time_in_gc_avg),color:'#c77700',fill:'tig'},
+    full:{label:'Full GCs / bucket',data:s.map(p=>p.full_gc),color:'#e5484d',type:'bar'},
+    thru:{label:'Throughput %',data:s.map(p=>p.throughput_avg),color:'#2eb872',fill:'thru',yMin:90}
+  }[EXPLORER_TAB];
+  if(!document.getElementById('cExplore')||!cfg) return;
+  const ds={label:cfg.label,data:cfg.data,borderColor:cfg.color,backgroundColor:cfg.type==='bar'?'rgba(229,72,77,.55)':fills[cfg.fill],fill:!!cfg.fill,pointRadius:pr,borderWidth:1.5,tension:.25};
+  nodeCharts.explore=new Chart(cExplore,{type:cfg.type||'line',data:{labels,datasets:[ds]},options:{...baseOpts(),scales:{
+    x:{ticks:{maxTicksLimit:10,font:{size:9}}},
+    y:{beginAtZero:EXPLORER_TAB!=='thru',suggestedMax:cfg.yMax,suggestedMin:cfg.yMin,ticks:{font:{size:9}}}
+  }}});
+}
+
+function drawNodeAnalyticsCharts(tr, hist){
+  destroyNodeCharts();
+  chartTheme();
+  const s=tr.series||[];
+
+  if(document.getElementById('cHist')){
+    nodeCharts.hist=new Chart(cHist,{type:'bar',data:{
+      labels:hist.map(h=>h.label+' ms'),
+      datasets:[{label:'% of samples',data:hist.map(h=>h.pct),backgroundColor:'rgba(0,174,239,.55)',borderRadius:4}]
+    },options:{...baseOpts(),indexAxis:'y',plugins:{legend:{display:false}},scales:{
+      x:{beginAtZero:true,ticks:{callback:v=>v+'%'}},
+      y:{ticks:{font:{size:9}}}
+    }}});
+  }
+  drawExplorerChart(tr);
+}
+
+let _lastMetrics=null;
+
 function fmtDay(ts){return new Date(ts*1000).toLocaleDateString([], {month:'short',day:'numeric'});}
 function fmtTime(ts){return new Date(ts*1000).toLocaleString();}
 
@@ -750,7 +1028,7 @@ function renderCluster(v){
   document.getElementById('main').innerHTML=`
     <div class="breadcrumb">${v.region} › ${v.env}</div>
     <div class="ihdr">
-      <span class="statuspill" style="background:${PILL[v.status]};color:#0b1020">${v.status}</span>
+      <span class="statuspill" style="background:${PILL[v.status]};color:var(--ink)">${v.status}</span>
       <div style="font-size:18px;font-weight:700">${v.cluster} cluster</div>
       <span class="muted">snapshot ${fmtTime(v.now)}</span>
     </div>
@@ -819,6 +1097,7 @@ function renderInstance(s,tr){
     ${alertHtml}
     <h2>Current metrics (24h window)</h2>
     <div class="metric-grid">${mc.map(([l,v])=>{const hlp=METRIC_HELP[l]||'';return `<div class="metric"${hlp?` title="${hlp.replace(/"/g,'&quot;')}"`:''}><div class="l">${l}${hlp?'<span class="info">ⓘ</span>':''}</div><div class="v">${v}</div>${hlp?`<span class="tip">${hlp}</span>`:''}</div>`;}).join('')}</div>
+    <div class="node-deep">${renderNodeDeepDive(m,tr,s)}</div>
     <h2 style="display:flex;align-items:center;gap:12px">Trends
       <select class="inp" style="width:auto;margin:0;text-transform:none;letter-spacing:0" onchange="changeRange(this.value)">
         ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===CURRENT_RANGE?' selected':''}>${r}</option>`).join('')}
@@ -830,23 +1109,29 @@ function renderInstance(s,tr){
       <div class="panel"><h3>GC pause trend — p99 &amp; max (ms)</h3><div class="chartbox"><canvas id="cPause"></canvas></div></div>
       <div class="panel"><h3>Full GCs per day &amp; time-in-GC (%)</h3><div class="chartbox"><canvas id="cFull"></canvas></div></div>
     </div>
+    <div class="node-deep">${renderNodeExplorerBoard(m,tr,s)}</div>
     <div class="panels">
       <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(s.findings.pros||[]).map(x=>`<li>${x}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
       <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${x}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
       <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${x}</li>`).join('')}</ul></div>
     </div>`;
+  _lastMetrics=m; _lastSeries=tr;
+  EXPLORER_TAB='heap';
   drawTrends(tr);
+  drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));
 }
 
-function destroy(){Object.values(charts).forEach(c=>c.destroy());charts={};}
+function destroyTrendCharts(){Object.values(charts).forEach(c=>c.destroy());charts={};}
+function destroy(){destroyTrendCharts();destroyNodeCharts();}
 function baseOpts(){return{responsive:true,maintainAspectRatio:false,animation:false,
   interaction:{mode:'index',intersect:false},
   plugins:{legend:{labels:{boxWidth:11,font:{size:10}}}},
   scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{ticks:{font:{size:9}}}}};}
 
 function drawTrends(tr){
-  destroy();
-  Chart.defaults.color='#8b949e';Chart.defaults.borderColor='#2a3140';
+  destroyTrendCharts();
+  var __dark=document.body.classList.contains('theme-dark');
+  Chart.defaults.color=__dark?'#93acc4':'#5b7287';Chart.defaults.borderColor=__dark?'#1f405e':'#dde5ee';Chart.defaults.font.family="Inter, sans-serif";
   const s=tr.series;
   const span=s.length>1?s[s.length-1].t-s[0].t:0;
   const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
@@ -854,23 +1139,23 @@ function drawTrends(tr){
   const pr = s.length === 1 ? 3 : 0;
 
   charts.heap=new Chart(cHeap,{type:'line',data:{labels,datasets:[
-    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#3fb950',backgroundColor:'rgba(63,185,80,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25},
-    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#58a6ff',pointRadius:pr,borderWidth:1,tension:.25},
-    {label:'heap max',data:s.map(()=>hmax),borderColor:'#8b949e',borderDash:[5,4],pointRadius:pr,borderWidth:1}
+    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#2eb872',backgroundColor:'rgba(46,184,114,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25},
+    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#00aeef',pointRadius:pr,borderWidth:1,tension:.25},
+    {label:'heap max',data:s.map(()=>hmax),borderColor:'#93acc4',borderDash:[5,4],pointRadius:pr,borderWidth:1}
   ]},options:baseOpts()});
 
   charts.util=new Chart(cUtil,{type:'line',data:{labels,datasets:[
-    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#d29922',backgroundColor:'rgba(210,153,34,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25}
+    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#f5a623',backgroundColor:'rgba(245,166,35,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25}
   ]},options:{...baseOpts(),scales:{...baseOpts().scales,y:{suggestedMax:100,ticks:{font:{size:9}}}}}});
 
   charts.pause=new Chart(cPause,{type:'line',data:{labels,datasets:[
-    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#58a6ff',pointRadius:pr,borderWidth:1.3,tension:.25},
-    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#f85149',backgroundColor:'rgba(248,81,73,.10)',fill:true,pointRadius:pr,borderWidth:1.3,tension:.25}
+    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#00aeef',pointRadius:pr,borderWidth:1.3,tension:.25},
+    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#e5484d',backgroundColor:'rgba(229,72,77,.10)',fill:true,pointRadius:pr,borderWidth:1.3,tension:.25}
   ]},options:baseOpts()});
 
   charts.full=new Chart(cFull,{data:{labels,datasets:[
-    {type:'bar',label:'Full GCs/day',data:s.map(p=>p.full_gc),backgroundColor:'#f85149',yAxisID:'y'},
-    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#d29922',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+    {type:'bar',label:'Full GCs/day',data:s.map(p=>p.full_gc),backgroundColor:'#e5484d',yAxisID:'y'},
+    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
   ]},options:{...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:{position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:'Full GCs',font:{size:9}}},
@@ -881,9 +1166,9 @@ function drawTrends(tr){
 function goHome(){ SELECTED=null; renderTree(); renderFleet(); }
 
 /* ---------------- cluster onboarding ---------------- */
-const ONBOARD_TEMPLATE=`cluster: demo
-region: EMEA
-env: DEV
+const ONBOARD_TEMPLATE=`cluster: DEMO-KRAFT
+region: DEMO
+env: KRAFT
 defaults:
   source: ssh
   user: kafka
@@ -1136,7 +1421,7 @@ function renderSettingsView(clusters) {
       </div>
       <div style="display:flex; gap:8px;">
         <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="editClusterConfig('${esc(c)}')">Edit Config</button>
-        <button class="btn" style="background:var(--crit); color:#0e1117; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
+        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
       </div>
     </div>
   `).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
@@ -1184,7 +1469,7 @@ async function refreshSettingsClusters() {
           </div>
           <div style="display:flex; gap:8px;">
             <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="editClusterConfig('${esc(c)}')">Edit Config</button>
-            <button class="btn" style="background:var(--crit); color:#0e1117; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
+            <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
           </div>
         </div>
       `).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
@@ -1312,7 +1597,7 @@ async function load(){
     FLEET=await api('/api/fleet');
     document.getElementById('sub').textContent=`${FLEET.total_instances} components · ${FLEET.regions.length} regions`;
     const pill=document.getElementById('fleetPill');
-    pill.textContent=FLEET.fleet_status;pill.style.background=PILL[FLEET.fleet_status];pill.style.color='#0b1020';
+    pill.textContent=FLEET.fleet_status;pill.style.background=PILL[FLEET.fleet_status];pill.style.color='var(--ink)';
     autoExpand();renderTree();
     if (SELECTED === 'settings') {
       await refreshSettingsClusters();
@@ -1361,7 +1646,10 @@ async function logout(){ try{await fetch('/api/logout',{method:'POST'});}catch(e
 async function changeRange(r){
   CURRENT_RANGE=r;
   if(!CURRENT_INSTANCE) return;
-  drawTrends(await api('/api/instance/'+CURRENT_INSTANCE+'/series?range='+r));
+  const tr=await api('/api/instance/'+CURRENT_INSTANCE+'/series?range='+r);
+  _lastSeries=tr;
+  drawTrends(tr);
+  drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));
 }
 boot();
 </script>

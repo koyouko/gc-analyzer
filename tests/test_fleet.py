@@ -32,16 +32,16 @@ def test_inventory_shape():
         insts = store.list_instances(c)
     assert len(insts) == len(topology.build_instances())
     regions = {i["region"] for i in insts}
-    assert regions == {"NAM", "EMEA", "APAC"}
-    emea_envs = {i["env"] for i in insts if i["region"] == "EMEA"}
-    assert emea_envs == {"UAT", "PROD", "SANDBOX", "PHY", "DEV"}, emea_envs
-    nam_envs = {i["env"] for i in insts if i["region"] == "NAM"}
-    assert nam_envs == {"UAT", "PROD"}, nam_envs
+    assert regions == {"DEMO"}
+    demo_envs = {i["env"] for i in insts if i["region"] == "DEMO"}
+    assert demo_envs == {"KRAFT", "ZOOKEEPER"}, demo_envs
+    clusters = {i["cluster"] for i in insts}
+    assert clusters == {"DEMO-KRAFT", "DEMO-ZK"}, clusters
 
 
 def test_trends_cover_30_days():
     with store.connect(_TMP) as c:
-        tr = store.trends(c, "NAM-PROD-broker-1", days=30)
+        tr = store.trends(c, "DEMO-KRAFT-broker-1", days=30)
     assert 29 <= len(tr["series"]) <= 32, len(tr["series"])
     assert tr["heap_max_mb"] == 6144
     for pt in tr["series"]:
@@ -50,7 +50,7 @@ def test_trends_cover_30_days():
 
 def test_injected_incident_raises_last_hour_alert():
     with store.connect(_TMP) as c:
-        alerts = store.evaluate_alerts(c, "EMEA-PROD-broker-2")
+        alerts = store.evaluate_alerts(c, "DEMO-KRAFT-broker-2")
         types = {a["type"] for a in alerts}
     assert "full_gc" in types, types
     assert any(a["severity"] == "critical" for a in alerts)
@@ -58,20 +58,20 @@ def test_injected_incident_raises_last_hour_alert():
 
 def test_heap_pressure_alert():
     with store.connect(_TMP) as c:
-        alerts = store.evaluate_alerts(c, "NAM-PROD-broker-4")
+        alerts = store.evaluate_alerts(c, "DEMO-ZK-broker-1")
     assert any(a["type"] == "heap_pressure" for a in alerts), alerts
 
 
 def test_old_incident_not_in_last_hour():
-    # NAM-UAT-broker-1's Full GC storm was ~26h ago: must NOT alert "now".
+    # DEMO-ZK-broker-3 Full GC storm was ~26h ago: must NOT alert "now".
     with store.connect(_TMP) as c:
-        alerts = store.evaluate_alerts(c, "NAM-UAT-broker-1")
+        alerts = store.evaluate_alerts(c, "DEMO-ZK-broker-3")
     assert not any(a["type"] == "full_gc" for a in alerts), alerts
 
 
 def test_healthy_instance_is_ok():
     with store.connect(_TMP) as c:
-        snap = store.current_snapshot(c, "APAC-UAT-zookeeper-1")
+        snap = store.current_snapshot(c, "DEMO-ZK-zookeeper-1")
     assert snap["health"]["grade"] in ("A", "B")
     assert snap["alerts"] == []
 
@@ -82,17 +82,17 @@ def test_fleet_rollup_status():
     assert f["fleet_status"] == "critical"           # we injected critical incidents
     assert f["counts"]["critical"] >= 1
     assert f["total_instances"] == len(topology.build_instances())
-    # EMEA-PROD must roll up to critical because of broker-2.
-    emea = [r for r in f["regions"] if r["region"] == "EMEA"][0]
-    prod = [e for e in emea["envs"] if e["env"] == "PROD"][0]
-    assert prod["status"] == "critical", prod["status"]
+    # DEMO-KRAFT must roll up to critical because of broker-2.
+    demo = [r for r in f["regions"] if r["region"] == "DEMO"][0]
+    kraft = [e for e in demo["envs"] if e["env"] == "KRAFT"][0]
+    assert kraft["status"] == "critical", kraft["status"]
 
 
 def test_cluster_overview():
     with store.connect(_TMP) as c:
-        v = fleet.build_cluster(c, "EMEA-PROD")
-    assert v["counts"]["total"] == 16, v["counts"]
-    assert v["counts"]["healthy"] + v["counts"]["unhealthy"] == 16
+        v = fleet.build_cluster(c, "DEMO-KRAFT")
+    assert v["counts"]["total"] == 10, v["counts"]
+    assert v["counts"]["healthy"] + v["counts"]["unhealthy"] == 10
     assert v["counts"]["unhealthy"] >= 1            # broker-2 is critical
     assert v["status"] == "critical"
     # Aggregate memory must be sane.
@@ -103,21 +103,21 @@ def test_cluster_overview():
     assert "broker" in v["config"]["heap_by_role"]
     # Attention list contains only unhealthy nodes, critical first.
     assert all(n["status"] in ("critical", "watch") for n in v["attention"])
-    assert any(n["id"] == "EMEA-PROD-broker-2" for n in v["attention"])
+    assert any(n["id"] == "DEMO-KRAFT-broker-2" for n in v["attention"])
 
 
-def test_healthy_cluster_has_empty_attention():
+def test_zookeeper_cluster_has_healthy_ensemble():
     with store.connect(_TMP) as c:
-        v = fleet.build_cluster(c, "APAC-UAT")
-    assert v["status"] == "ok"
-    assert v["counts"]["unhealthy"] == 0
-    assert v["attention"] == []
+        for i in (1, 2, 3):
+            snap = store.current_snapshot(c, f"DEMO-ZK-zookeeper-{i}")
+            assert snap["health"]["grade"] in ("A", "B"), snap
+            assert snap["alerts"] == []
 
 
 def test_fleet_renders_non_demo_topology():
     # Regression: build_fleet must render a real cluster whose instances are NOT
     # part of the seeded demo topology. It previously raised KeyError because the
-    # tree was built from topology.topology_skeleton() (the 96-node demo fleet)
+    # tree was built from topology.topology_skeleton() (instances actually in the store)
     # rather than from the instances actually in the store.
     import time
 

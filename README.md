@@ -8,12 +8,12 @@ last hour, and how has each component trended over the last month?*
 Navigation hierarchy:
 
 ```
-Region (NAM · EMEA · APAC)
-  └─ Environment (UAT, PROD; EMEA also SANDBOX, PHY, DEV)
-       └─ Cluster (e.g. EMEA-PROD)
+Region (DEMO — extensible to NAM · EMEA · APAC in production)
+  └─ Environment (KRAFT · ZOOKEEPER)
+       └─ Cluster (DEMO-KRAFT or DEMO-ZK)
             └─ Component group (Brokers · Schema Registry · Kafka Connect ·
-                               Controllers/KRaft · ZooKeeper)
-                 └─ Instance (a single JVM, e.g. EMEA-PROD-broker-2)
+                               Controllers/KRaft *or* ZooKeeper)
+                 └─ Instance (a single JVM, e.g. DEMO-KRAFT-broker-2)
 ```
 
 Analysis depth is inspired by [gceasy.io](https://gceasy.io/) (throughput, pause
@@ -28,8 +28,8 @@ There are two interchangeable frontends over the **same FastAPI backend**:
 
 1. **Next.js app** (`web/`) — the primary UI: a TypeScript App-Router app.
    Clicking the **BSP Kafka GC Analyzer** title returns to the fleet overview;
-   clusters and instances are real routes (`/cluster/EMEA-PROD`,
-   `/instance/EMEA-PROD-broker-2`).
+   clusters and instances are real routes (`/cluster/DEMO-KRAFT`,
+   `/instance/DEMO-KRAFT-broker-2`).
 2. **Single-file dashboard** (`frontend/index.html`) — the same dashboard with
    no build step; also used to produce the standalone `dashboard-preview.html`.
 
@@ -60,7 +60,7 @@ python -m gcanalyzer.app             # then open http://127.0.0.1:8000
 ```
 
 Want to look without running anything? Open **`dashboard-preview.html`** — a
-fully standalone snapshot of the whole fleet (96 demo components, 9 clusters,
+fully standalone snapshot of the demo fleet (20 JVMs, 2 clusters — KRaft + ZooKeeper,
 30-day trends, live "last hour" alerts) inlined into one file. Regenerate with
 `python export_static.py`.
 
@@ -78,7 +78,7 @@ a list of **"Issues in the last hour"**, color-coded by severity. Click any aler
 to jump straight to the offending component.
 
 **Cluster overview (click a cluster in the nav)** — one picture for a single
-cluster (e.g. EMEA-PROD): how many nodes are healthy vs unhealthy, aggregate
+cluster (e.g. DEMO-KRAFT): how many nodes are healthy vs unhealthy, aggregate
 cluster memory (live set vs total heap), and Java/GC configuration & telemetry
 (GC engine, log format, pause target, avg throughput, Full GCs in the last
 1h/24h, worst pause, heap sizing by role). Below that, every node as a
@@ -240,7 +240,7 @@ python -m tests.test_pipeline      # 7 checks: parsing + analysis
 python -m tests.test_fleet         # 7 checks: inventory, trends, alerting, rollup
 ```
 
-The fleet tests seed a temp DB and confirm, among other things, that EMEA
+The fleet tests seed a temp DB and confirm, among other things, that DEMO-KRAFT
 carries all five environments, that an injected Full-GC storm raises a critical
 last-hour alert while a 26-hour-old incident does **not**, and that a region rolls
 up to `critical` when one component is failing.
@@ -250,7 +250,7 @@ up to `critical` when one component is failing.
 ## Notes & scope
 
 - Tuned for **Java 11+ unified logging with G1** (the modern Kafka default).
-- The demo fleet (96 components, 9 clusters) is generated for illustration; swap
+- The demo fleet (20 JVMs, 2 clusters: KRaft + ZooKeeper) is generated for illustration; swap
   in your real inventory + a collection job to make trends accumulate from
   production.
 - Read-only: it never restarts JVMs or changes flags. Recommendations are

@@ -41,17 +41,17 @@ ROLE_PROFILE = {
 # kinds: full_gc_storm, heap_pressure, long_pause, throughput_drop, historical
 def build_incidents():
     return [
-        # --- happening NOW (within the last hour) -> should light up red/amber ---
-        ("EMEA-PROD-broker-2", "full_gc_storm", 2, 2),
-        ("NAM-PROD-broker-4", "heap_pressure", 6, 6),
-        ("APAC-PROD-connect-2", "long_pause", 1, 1),
-        ("EMEA-PHY-broker-1", "throughput_drop", 1, 2),
-        # --- recent but NOT last hour (visible in trends, not in "now" alerts) ---
-        ("NAM-UAT-broker-1", "full_gc_storm", 26, 3),
-        ("EMEA-PROD-schema-registry-1", "long_pause", 50, 2),
-        # --- older, mid-history (pure trend context) ---
-        ("APAC-PROD-broker-3", "heap_pressure", 12 * 24, 18),
-        ("EMEA-PROD-connect-1", "full_gc_storm", 20 * 24, 4),
+        # --- active in the last hour (red / amber "right now") ---
+        ("DEMO-KRAFT-broker-2", "full_gc_storm", 2, 2),
+        ("DEMO-KRAFT-connect-1", "long_pause", 1, 1),
+        ("DEMO-ZK-broker-1", "heap_pressure", 6, 6),
+        ("DEMO-ZK-broker-2", "throughput_drop", 1, 2),
+        # --- recent history (trends only, not in last-hour alerts) ---
+        ("DEMO-ZK-broker-3", "full_gc_storm", 26, 3),
+        ("DEMO-KRAFT-schema-registry-1", "long_pause", 50, 2),
+        # --- mid-history (30-day trend context) ---
+        ("DEMO-KRAFT-broker-1", "heap_pressure", 12 * 24, 18),
+        ("DEMO-ZK-connect-1", "full_gc_storm", 20 * 24, 4),
     ]
 
 
@@ -66,7 +66,7 @@ def base_row(inst, ts: int) -> dict:
     heap = inst.heap_max_mb
     hour = (ts // HOUR) % 24
     load = diurnal(hour, inst.busy_hour_utc)
-    prod_boost = 1.15 if inst.env == "PROD" else (1.05 if inst.env == "PHY" else 0.9)
+    prod_boost = 1.12
 
     live_lo, live_hi = p["live"]
     live_pct = (live_lo + (live_hi - live_lo) * load) * prod_boost

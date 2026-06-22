@@ -1,9 +1,0 @@
-cluster: ONPREM-PROD
-defaults:
-  source: local
-nodes:
-  - {id: broker-1, role: broker, local_paths: [./live-logs/broker1/kafkaServer-gc.log*]}
-  - {id: broker-2, role: broker, local_paths: [./live-logs/broker2/kafkaServer-gc.log*]}
-  - {id: zk-1, role: zookeeper, local_paths: [./live-logs/controller/kafkaServer-gc.log*]}
-  - {id: sr-1, role: schema-registry, local_paths: [./live-logs/broker1/kafkaServer-gc.log*]}
-  - {id: connect-1, role: connect, local_paths: [./live-logs/broker2/kafkaServer-gc.log*]}
