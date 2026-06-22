@@ -189,6 +189,8 @@ def current_snapshot(c, instance_id: str, now: int = None) -> dict | None:
         return {"instance": inst, "metrics": {}, "health": None, "alerts": [], "findings": None}
 
     day = window_rows(c, instance_id, now - 86400, now)
+    if not day and last:
+        day = [last]
     metrics = _metrics_dict_from_window(day, inst["heap_max_mb"])
     health = analyzer.score_health(metrics)
     findings = analyzer.derive_findings(metrics, inst["collector"])
