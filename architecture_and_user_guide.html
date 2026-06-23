@@ -618,6 +618,9 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
       <p>
         Scores metrics and assigns an academic grade (A-F) based on thresholds for GC throughput, time-in-GC percentage, pause averages, and Full GC occurrences. Also generates tuning advice (e.g., advising G1 upgrades, GCTimeRatio modifications, or Metaspace limits).
       </p>
+      <p>
+        The grade is a deterministic report-card summary of the node's GC risk: A = healthy, B = good, C = watch, D = at risk, and F = critical. The score starts at 100 and subtracts risk points for low throughput, long stop-the-world pauses, Full GCs, and high post-GC heap pressure.
+      </p>
     </section>
 
     <!-- 5. User Guide - Onboarding -->
@@ -689,7 +692,54 @@ nodes:
         <li>
           <strong>Instance Detail</strong>: Shows current health scores, recommendations, active alerts, recent charts, and 30-day trend lines.
         </li>
+        <li>
+          <strong>ML Tech Preview</strong>: Opens a separate technology preview for future adaptive baselines, anomaly scoring, and forecast risk. No trained model is running yet; deterministic GC rules remain the source of truth.
+        </li>
       </ul>
+
+      <h3>Health Grade Legend</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Grade</th>
+            <th>Status</th>
+            <th>Score Range</th>
+            <th>Operator Meaning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A = healthy</td>
+            <td>Healthy</td>
+            <td>90-100</td>
+            <td>GC behavior is within healthy bounds.</td>
+          </tr>
+          <tr>
+            <td>B = good</td>
+            <td>Good</td>
+            <td>75-89</td>
+            <td>Minor GC risk only; continue normal monitoring.</td>
+          </tr>
+          <tr>
+            <td>C = watch</td>
+            <td>Watch</td>
+            <td>60-74</td>
+            <td>Investigate the reason text and trend charts before it degrades.</td>
+          </tr>
+          <tr>
+            <td>D = at risk</td>
+            <td>At risk</td>
+            <td>40-59</td>
+            <td>GC pressure is high enough to plan remediation.</td>
+          </tr>
+          <tr>
+            <td>F = critical</td>
+            <td>Critical</td>
+            <td>0-39</td>
+            <td>Immediate investigation is recommended.</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <!-- 7. Alerting & Diagnostics -->

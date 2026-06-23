@@ -15,8 +15,13 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+
+def _tmp_db(name):
+    return os.path.join(tempfile.gettempdir(), f"{name}_{os.getpid()}.db")
+
+
 # Point the store at a temp DB BEFORE importing seed (so seeding writes there).
-_TMP = os.path.join(tempfile.gettempdir(), "gc_history_test.db")
+_TMP = _tmp_db("gc_history_test")
 os.environ["GC_DB"] = _TMP
 
 from gcanalyzer import store, fleet, topology  # noqa: E402
@@ -24,7 +29,7 @@ store.DB_PATH = _TMP
 from seed import seed_history  # noqa: E402
 
 
-def setup():
+def setup_module():
     seed_history.main(_TMP)
 
 
@@ -122,7 +127,7 @@ def test_fleet_renders_non_demo_topology():
     # rather than from the instances actually in the store.
     import time
 
-    db = os.path.join(tempfile.gettempdir(), "gc_live_test.db")
+    db = _tmp_db("gc_live_test")
     if os.path.exists(db):
         os.remove(db)
     store.init_db(db)
@@ -222,7 +227,7 @@ nodes:
 
 
 def run_all():
-    setup()
+    setup_module()
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0
     for fn in fns:

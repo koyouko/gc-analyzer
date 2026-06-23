@@ -21,6 +21,10 @@ from gcanalyzer.collector import NodeConfig  # noqa: E402
 SAMPLES = os.path.join(ROOT, "samples")
 
 
+def _tmp_db(name):
+    return os.path.join(tempfile.gettempdir(), f"{name}_{os.getpid()}.db")
+
+
 def _analyze(name):
     p = parser.parse_file(os.path.join(SAMPLES, name), node_id=name)
     return p, analyzer.analyze(p)
@@ -128,7 +132,7 @@ def test_kafka281_unified_gc_format():
 
 def test_demo_heap_max_survives_empty_incremental_collect(monkeypatch):
     """An empty incremental read must not shrink demo broker heap metadata."""
-    db = os.path.join(tempfile.gettempdir(), "gc_empty_incremental_test.db")
+    db = _tmp_db("gc_empty_incremental_test")
     if os.path.exists(db):
         os.remove(db)
     store.init_db(db)
@@ -173,7 +177,7 @@ def test_demo_heap_max_survives_empty_incremental_collect(monkeypatch):
 
 
 def test_fresh_observed_heap_can_lower_stale_instance_metadata():
-    db = os.path.join(tempfile.gettempdir(), "gc_heap_downsize_test.db")
+    db = _tmp_db("gc_heap_downsize_test")
     if os.path.exists(db):
         os.remove(db)
     store.init_db(db)

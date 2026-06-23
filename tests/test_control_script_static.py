@@ -61,3 +61,15 @@ def test_user_guide_documents_single_control_script():
     assert "./manage-app.sh stop 8083" in guide
     assert "run.sh" not in guide
     assert "start-local.command" not in guide
+
+
+def test_user_guide_documents_health_grades_and_ml_preview():
+    guide = _read("architecture_and_user_guide.html")
+    readme = _read("README.md")
+
+    for text in (guide, readme):
+        assert "A = healthy" in text
+        assert "C = watch" in text
+        assert "D = at risk" in text
+        assert "ML Tech Preview" in text
+        assert "No trained model is running yet" in text

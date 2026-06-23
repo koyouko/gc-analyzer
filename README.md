@@ -115,6 +115,15 @@ ones — click any of them to drill into that node and investigate.
   trend (p99 & max), and Full GCs per day with time-in-GC overlay.
 - Pros / Cons / How-to-improve — Kafka-aware tuning recommendations.
 
+**Health grade legend** — A = healthy (`90-100`), B = good (`75-89`),
+C = watch (`60-74`), D = at risk (`40-59`), and F = critical (`0-39`).
+The score starts at `100` and subtracts risk points for low throughput, long
+stop-the-world pauses, Full GCs, and high post-GC heap pressure.
+
+**ML Tech Preview** — a separate dashboard preview for future adaptive
+baselines, anomaly scoring, and forecast risk. No trained model is running yet;
+deterministic GC rules remain the source of truth.
+
 ### "Last hour" alert triggers (color coding)
 
 | Trigger | Severity | Default |

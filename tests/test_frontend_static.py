@@ -42,3 +42,16 @@ def test_instance_detail_escapes_strings_and_encodes_urls():
     assert "${h.reasons.join" not in html
     assert "encodeURIComponent(id)" in html
     assert "encodeURIComponent(CURRENT_INSTANCE)" in html
+
+
+def test_dashboard_includes_ml_tech_preview_with_guardrails():
+    with open(os.path.join(ROOT, "frontend", "index.html")) as fh:
+        html = fh.read()
+
+    assert "openMlPreview()" in html
+    assert "ML Tech Preview" in html
+    assert "Adaptive baseline" in html
+    assert "Anomaly scoring" in html
+    assert "Forecast risk" in html
+    assert "No trained model is running yet" in html
+    assert "Deterministic rules remain the source of truth" in html
