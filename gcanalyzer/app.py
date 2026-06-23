@@ -54,8 +54,12 @@ async def _auth_guard(request: Request, call_next):
         sess = auth.read_session(request.cookies.get("gc_session"))
         if not sess:
             return JSONResponse({"detail": "login required"}, status_code=401)
-        if (path.startswith("/api/clusters") and request.method in ("POST", "DELETE")
-                and sess["role"] != "admin"):
+        admin_write = (
+            path.startswith("/api/clusters") and request.method in ("POST", "DELETE", "PUT")
+        ) or (
+            path.startswith("/api/jobs/") and request.method == "POST" and path.endswith("/cancel")
+        )
+        if admin_write and sess["role"] != "admin":
             return JSONResponse({"detail": "admin role required"}, status_code=403)
         request.state.user = sess
     return await call_next(request)
@@ -243,6 +247,37 @@ def _persist_cluster_config(cluster: str, text: str) -> str:
 JOBS: dict[str, dict] = {}
 
 
+def _job_cancelled(job_id: str) -> bool:
+    return bool(JOBS.get(job_id, {}).get("cancel_requested"))
+
+
+def _finish_cancelled_job(job_id: str, cluster: str, log_cb=None) -> None:
+    JOBS[job_id]["status"] = "cancelled"
+    JOBS[job_id]["progress"] = 100
+    JOBS[job_id]["completed_at"] = time.time()
+    JOBS[job_id]["message"] = "Job cancelled by user."
+    if log_cb:
+        log_cb("Job cancelled by user.")
+
+
+def _parse_cluster_config(config: str, fmt: str = "yaml", expected_cluster: str | None = None):
+    try:
+        cluster_name, nodes, cfg_region, cfg_env = config_mod.load_cluster_text(config, fmt)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid cluster config: {exc}") from exc
+    if not nodes:
+        raise HTTPException(400, "Config defines no nodes.")
+    derived_region, derived_env, cluster = _derive_identity(cluster_name, None, None)
+    region = cfg_region or derived_region
+    env = cfg_env or derived_env
+    if expected_cluster and cluster != expected_cluster:
+        raise HTTPException(
+            400,
+            f"Config cluster name '{cluster}' must match '{expected_cluster}'.",
+        )
+    return cluster, nodes, region, env
+
+
 def _prune_old_jobs() -> None:
     now = time.time()
     one_week_ago = now - 7 * 86400  # 7 days in seconds
@@ -252,6 +287,10 @@ def _prune_old_jobs() -> None:
 
 
 async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, env: str, cluster: str):
+    if _job_cancelled(job_id):
+        _finish_cancelled_job(job_id, cluster)
+        return
+
     def log_cb(msg: str, node_id: str = "_general"):
         timestamp = time.strftime("%H:%M:%S")
         if "node_logs" not in JOBS[job_id]:
@@ -273,6 +312,10 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
     log_cb(f"Targeting {len(nodes)} node(s).")
     
     try:
+        if _job_cancelled(job_id):
+            _finish_cancelled_job(job_id, cluster, log_cb)
+            return
+
         results = await asyncio.to_thread(
             ingest_mod.ingest_nodes,
             nodes,
@@ -280,8 +323,13 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
             region=region,
             env=env,
             cluster=cluster,
-            log_callback=log_cb
+            log_callback=log_cb,
+            cancel_check=lambda: _job_cancelled(job_id),
         )
+
+        if _job_cancelled(job_id):
+            _finish_cancelled_job(job_id, cluster, log_cb)
+            return
         
         nodes_recorded = sum(1 for r in results if r.recorded)
         if nodes_recorded == 0:
@@ -309,6 +357,8 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
             }
             for r in results
         ]
+    except ingest_mod.JobCancelled:
+        _finish_cancelled_job(job_id, cluster, log_cb)
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["progress"] = 100
@@ -322,18 +372,11 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
 
 @app.post("/api/clusters")
 async def onboard_cluster(req: OnboardRequest) -> dict:
-    try:
-        cluster_name, nodes, cfg_region, cfg_env = config_mod.load_cluster_text(req.config, req.format)
-    except Exception as exc:  # noqa: BLE001 — surface parse errors to the UI
-        raise HTTPException(400, f"Invalid cluster config: {exc}")
-    if not nodes:
-        raise HTTPException(400, "Config defines no nodes.")
-
-    derived_region, derived_env, cluster = _derive_identity(
-        cluster_name, (req.region or "").strip() or None, (req.env or "").strip() or None
-    )
-    region = cfg_region or derived_region
-    env = cfg_env or derived_env
+    cluster, nodes, region, env = _parse_cluster_config(req.config, req.format)
+    if (req.region or "").strip():
+        region = req.region.strip()
+    if (req.env or "").strip():
+        env = req.env.strip()
 
     if cluster in RUNNING_CLUSTERS:
         raise HTTPException(409, f"A job is already running for cluster '{cluster}'. Please try again later.")
@@ -389,6 +432,40 @@ def get_job(job_id: str) -> dict:
         raise HTTPException(404, f"Job {job_id} not found.")
     return JOBS[job_id]
 
+
+class ClusterConfigBody(BaseModel):
+    config: str
+    format: str = "yaml"
+
+
+@app.put("/api/clusters/{cluster}/config")
+def save_cluster_config(cluster: str, req: ClusterConfigBody) -> dict:
+    """Persist cluster.yaml and sync instance metadata without starting collection."""
+    safe = "".join(ch for ch in cluster if ch.isalnum() or ch in "-_") or "cluster"
+    path = os.path.join(CLUSTERS_DIR, safe + ".yaml")
+    if not os.path.exists(path):
+        raise HTTPException(404, f"Config for cluster {cluster} not found.")
+
+    _, nodes, region, env = _parse_cluster_config(req.config, req.format, expected_cluster=cluster)
+    _persist_cluster_config(cluster, req.config)
+    with store.connect() as c:
+        synced = ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
+    return {"cluster": cluster, "region": region, "env": env, "nodes_synced": synced}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id} not found.")
+    if job["status"] not in ("pending", "running"):
+        raise HTTPException(409, f"Job is already {job['status']} and cannot be cancelled.")
+    job["cancel_requested"] = True
+    if job["status"] == "pending":
+        _finish_cancelled_job(job_id, job.get("cluster", ""))
+    else:
+        job["message"] = "Cancellation requested…"
+    return {"job_id": job_id, "status": job["status"]}
 
 
 @app.get("/api/clusters")

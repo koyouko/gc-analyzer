@@ -451,6 +451,7 @@
   .job-card-status.completed { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
   .job-card-status.warning { background: rgba(210, 153, 34, 0.15); color: var(--watch); }
   .job-card-status.failed { background: rgba(248, 81, 73, 0.15); color: var(--crit); }
+  .job-card-status.cancelled { background: rgba(110, 118, 129, 0.2); color: var(--muted); }
   
   .job-progress-bar {
     height: 4px;
@@ -593,6 +594,19 @@
     <div style="display:flex; justify-content:flex-end; gap:10px;">
       <button class="btn ghost" onclick="closeDeleteConfirmModal()">Cancel</button>
       <button class="btn" id="deleteConfirmBtn" disabled style="background:var(--crit); color:#fff;" onclick="executeClusterDeletion()">Delete Cluster</button>
+    </div>
+  </div>
+</div>
+
+<div id="cancelJobModal" class="modal-bg" style="display:none">
+  <div class="modal" style="width:400px; padding:28px;">
+    <h3 style="display:flex; align-items:center; gap:8px; margin:0 0 12px;">Cancel Job</h3>
+    <div class="muted" style="margin-bottom:20px; line-height:1.5; font-size:12.5px;">
+      Cancel the running job for <b id="cancelJobCluster" style="color:var(--txt);"></b>? Collection in progress will stop as soon as possible.
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:10px;">
+      <button class="btn ghost" onclick="closeCancelJobModal()">Keep Running</button>
+      <button class="btn" id="cancelJobConfirmBtn" style="background:var(--crit); color:#fff;" onclick="executeJobCancellation()">Cancel Job</button>
     </div>
   </div>
 </div>
@@ -1347,16 +1361,13 @@ async function updateJobsList() {
         </div>
       ` : '';
       
-      const logsHtml = (j.logs && j.logs.length) ? `
-        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+      const cancelBtnHtml = isRunning ? `<button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px; color: var(--crit);" onclick="openCancelJobModal('${j.id}', '${esc(j.cluster)}')">Cancel</button>` : '';
+      const logsBtnHtml = (j.logs && j.logs.length) ? `<button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px;" onclick="openJobLogsModal('${j.id}', '${esc(j.cluster)}')">View Logs</button>` : '';
+      const logsHtml = `
+        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <span class="job-time" style="margin: 0; color: var(--muted);">${new Date(j.created_at * 1000).toLocaleTimeString()}</span>
-          <button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px;" onclick="openJobLogsModal('${j.id}', '${esc(j.cluster)}')">View Logs</button>
-        </div>
-      ` : `
-        <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
-          <span class="job-time">${new Date(j.created_at * 1000).toLocaleTimeString()}</span>
-        </div>
-      `;
+          <div style="display:flex; gap:6px;">${cancelBtnHtml}${logsBtnHtml}</div>
+        </div>`;
       
       return `
         <div class="job-card">
@@ -1396,6 +1407,104 @@ function stopPollingJobs() {
 }
 
 let EDITING_CLUSTER = null;
+let SELECTED_CLUSTER = null;
+
+function settingsClusterRow(c) {
+  const active = SELECTED_CLUSTER === c;
+  const rowStyle = active
+    ? 'background:var(--panel); border:1px solid var(--accent);'
+    : 'background:var(--panel2); border:1px solid var(--border);';
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; ${rowStyle} border-radius:8px; padding:12px 16px; margin-bottom:8px;">
+      <div style="cursor:pointer; flex:1; min-width:0;" onclick="selectClusterSettings('${esc(c)}')" title="Select ${esc(c)}">
+        <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(c)}</div>
+        <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(c)}.yaml</div>
+      </div>
+      <div style="display:flex; gap:8px; margin-left:12px; flex-shrink:0;">
+        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); editClusterConfig('${esc(c)}')">Edit Config</button>
+        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
+      </div>
+    </div>`;
+}
+
+function setSettingsPanelMode(mode) {
+  const formTitle = document.getElementById('formTitle');
+  const yamlBlock = document.getElementById('obYamlBlock');
+  const saveBtn = document.getElementById('obSaveBtn');
+  const cancelBtn = document.getElementById('cancelEditBtn');
+  const submitBtn = document.getElementById('obSubmit');
+  if (!formTitle || !yamlBlock || !saveBtn || !cancelBtn || !submitBtn) return;
+
+  if (mode === 'onboard') {
+    formTitle.textContent = 'Onboard a new cluster';
+    yamlBlock.style.display = '';
+    saveBtn.style.display = 'none';
+    cancelBtn.style.display = 'none';
+    submitBtn.style.display = '';
+    submitBtn.textContent = 'Onboard & collect';
+    submitBtn.onclick = submitOnboardFromSettings;
+  } else if (mode === 'collect') {
+    formTitle.textContent = SELECTED_CLUSTER || 'Cluster';
+    yamlBlock.style.display = 'none';
+    saveBtn.style.display = 'none';
+    cancelBtn.style.display = 'none';
+    submitBtn.style.display = '';
+    submitBtn.textContent = 'Collect now';
+    submitBtn.onclick = collectSelectedCluster;
+  } else if (mode === 'edit') {
+    formTitle.textContent = 'Edit cluster: ' + (EDITING_CLUSTER || '');
+    yamlBlock.style.display = '';
+    saveBtn.style.display = '';
+    cancelBtn.style.display = '';
+    submitBtn.style.display = 'none';
+  }
+}
+
+function resetOnboardForm() {
+  SELECTED_CLUSTER = null;
+  EDITING_CLUSTER = null;
+  setSettingsPanelMode('onboard');
+  const obYaml = document.getElementById('obYaml');
+  if (obYaml) obYaml.value = ONBOARD_TEMPLATE;
+  const obResult = document.getElementById('obResult');
+  if (obResult) obResult.innerHTML = '';
+}
+
+async function selectClusterSettings(cluster) {
+  SELECTED_CLUSTER = cluster;
+  EDITING_CLUSTER = null;
+  setSettingsPanelMode('collect');
+  const obResult = document.getElementById('obResult');
+  if (obResult) {
+    obResult.innerHTML = '<div class="muted" style="font-size:11px;">Selected <b>' + esc(cluster) + '</b>. Click <b>Collect now</b> to pull and analyze GC logs from all configured nodes.</div>';
+  }
+  await refreshSettingsClusters();
+}
+
+async function collectSelectedCluster() {
+  if (!SELECTED_CLUSTER) return;
+  const btn = document.getElementById('obSubmit');
+  const res = document.getElementById('obResult');
+  btn.disabled = true;
+  btn.textContent = 'Starting collection…';
+  try {
+    const data = await api('/api/clusters/' + encodeURIComponent(SELECTED_CLUSTER) + '/config');
+    const r = await fetch('/api/clusters', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({config: data.config, is_edit: true}),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.detail || ('HTTP ' + r.status));
+    res.innerHTML = '<div style="color:var(--ok); font-size:12px; margin-top:8px;">Collection job started for <b>' + esc(SELECTED_CLUSTER) + '</b>. Check progress in the Jobs panel.</div>';
+    toggleJobsPanel(true);
+  } catch (e) {
+    res.innerHTML = '<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">' + esc(e.message) + '</span></div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Collect now';
+  }
+}
 
 async function openSettings(){
   SELECTED='settings'; renderTree();
@@ -1410,21 +1519,11 @@ async function openSettings(){
 
 function renderSettingsView(clusters) {
   destroy();
+  SELECTED_CLUSTER = null;
   EDITING_CLUSTER = null;
   const main = document.getElementById('main');
   
-  const clusterListHtml = clusters.length ? clusters.map(c => `
-    <div style="display:flex; justify-content:space-between; align-items:center; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-bottom:8px;">
-      <div>
-        <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(c)}</div>
-        <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(c)}.yaml</div>
-      </div>
-      <div style="display:flex; gap:8px;">
-        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="editClusterConfig('${esc(c)}')">Edit Config</button>
-        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
-      </div>
-    </div>
-  `).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
+  const clusterListHtml = clusters.length ? clusters.map(c => settingsClusterRow(c)).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
 
   main.innerHTML = `
     <div class="breadcrumb">Admin Settings</div>
@@ -1441,17 +1540,19 @@ function renderSettingsView(clusters) {
       <div class="panel">
         <h3 id="formTitle">Onboard a new cluster</h3>
         <div class="muted" style="margin-bottom:12px">Paste a <code>cluster.yaml</code> describing the cluster's nodes. GC logs are pulled per node, parsed, and analyzed in the background.</div>
-        <label>cluster.yaml</label>
-        <textarea id="obYaml" class="inp" spellcheck="false" style="height:200px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; margin-bottom:12px;"></textarea>
+        <div id="obYamlBlock"><label>cluster.yaml</label>
+        <textarea id="obYaml" class="inp" spellcheck="false" style="height:200px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; margin-bottom:12px;"></textarea></div>
         <div id="obResult" style="margin-top:10px"></div>
-        <div style="display:flex; justify-content:flex-end;">
+        <div style="display:flex; justify-content:flex-end; gap:8px;" id="obBtnRow">
+          <button class="btn ghost" id="cancelEditBtn" style="display:none" onclick="cancelEditing()">Cancel Edit</button>
+          <button class="btn ghost" id="obSaveBtn" style="display:none" onclick="saveClusterConfig()">Save</button>
           <button class="btn" id="obSubmit" onclick="submitOnboardFromSettings()">Onboard &amp; collect</button>
         </div>
       </div>
     </div>
   `;
   
-  document.getElementById('obYaml').value = ONBOARD_TEMPLATE;
+  resetOnboardForm();
 }
 
 async function refreshSettingsClusters() {
@@ -1461,18 +1562,7 @@ async function refreshSettingsClusters() {
     const count = document.getElementById('settingsClusterCount');
     if (list && count) {
       count.textContent = data.clusters.length;
-      list.innerHTML = data.clusters.length ? data.clusters.map(c => `
-        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-bottom:8px;">
-          <div>
-            <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(c)}</div>
-            <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(c)}.yaml</div>
-          </div>
-          <div style="display:flex; gap:8px;">
-            <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="editClusterConfig('${esc(c)}')">Edit Config</button>
-            <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
-          </div>
-        </div>
-      `).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
+      list.innerHTML = data.clusters.length ? data.clusters.map(c => settingsClusterRow(c)).join('') : '<div class="muted" style="padding:10px 0;">No clusters onboarded yet.</div>';
     }
   } catch(e) {
     console.error("Failed to refresh settings clusters list", e);
@@ -1482,26 +1572,13 @@ async function refreshSettingsClusters() {
 async function editClusterConfig(cluster) {
   try {
     const data = await api('/api/clusters/' + encodeURIComponent(cluster) + '/config');
+    SELECTED_CLUSTER = cluster;
     EDITING_CLUSTER = cluster;
-    
-    document.getElementById('formTitle').textContent = 'Edit cluster: ' + cluster;
-    document.getElementById('obSubmit').textContent = 'Save & collect';
+    setSettingsPanelMode('edit');
     document.getElementById('obYaml').value = data.config;
-    
     document.getElementById('obYaml').focus();
-    
-    if (!document.getElementById('cancelEditBtn')) {
-      const cancelBtn = document.createElement('button');
-      cancelBtn.id = 'cancelEditBtn';
-      cancelBtn.className = 'btn ghost';
-      cancelBtn.style.marginRight = '8px';
-      cancelBtn.textContent = 'Cancel Edit';
-      cancelBtn.onclick = cancelEditing;
-      const btnContainer = document.getElementById('obSubmit').parentNode;
-      btnContainer.insertBefore(cancelBtn, document.getElementById('obSubmit'));
-    }
-    
-    document.getElementById('obResult').innerHTML = '<div class="muted" style="font-size:11px;">Editing config for <b>' + esc(cluster) + '</b>. Saving will restart ingestion for this cluster.</div>';
+    document.getElementById('obResult').innerHTML = '<div class="muted" style="font-size:11px;">Editing <b>' + esc(cluster) + '</b>. <b>Save</b> updates the YAML and instance metadata only.</div>';
+    await refreshSettingsClusters();
   } catch (e) {
     alert('Failed to load config: ' + e.message);
   }
@@ -1509,39 +1586,94 @@ async function editClusterConfig(cluster) {
 
 function cancelEditing() {
   EDITING_CLUSTER = null;
-  const formTitle = document.getElementById('formTitle');
-  if (formTitle) formTitle.textContent = 'Onboard a new cluster';
-  const obSubmit = document.getElementById('obSubmit');
-  if (obSubmit) obSubmit.textContent = 'Onboard & collect';
-  const obYaml = document.getElementById('obYaml');
-  if (obYaml) obYaml.value = ONBOARD_TEMPLATE;
+  const cluster = SELECTED_CLUSTER;
   const obResult = document.getElementById('obResult');
   if (obResult) obResult.innerHTML = '';
-  const cancelBtn = document.getElementById('cancelEditBtn');
-  if (cancelBtn) cancelBtn.remove();
+  if (cluster) {
+    selectClusterSettings(cluster);
+  } else {
+    resetOnboardForm();
+  }
+}
+
+async function saveClusterConfig(){
+  if (!EDITING_CLUSTER) return;
+  const btn = document.getElementById('obSaveBtn');
+  const res = document.getElementById('obResult');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/clusters/' + encodeURIComponent(EDITING_CLUSTER) + '/config', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({config: document.getElementById('obYaml').value}),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+    const cluster = EDITING_CLUSTER;
+    EDITING_CLUSTER = null;
+    SELECTED_CLUSTER = cluster;
+    setSettingsPanelMode('collect');
+    res.innerHTML = '<div style="color:var(--ok); font-size:12px; margin-top:8px;">Config saved for <b>' + esc(cluster) + '</b> (' + (data.nodes_synced || 0) + ' nodes synced).</div>';
+    await refreshSettingsClusters();
+    load();
+  } catch (e) {
+    res.innerHTML = '<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">' + esc(e.message) + '</span></div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
 }
 
 async function submitOnboardFromSettings(){
   const btn=document.getElementById('obSubmit');btn.disabled=true;
-  btn.textContent = EDITING_CLUSTER ? 'Saving job…' : 'Submitting job…';
+  btn.textContent='Submitting job…';
   const res=document.getElementById('obResult');res.innerHTML='';
   try{
-    const body={config:document.getElementById('obYaml').value,
-                is_edit:!!EDITING_CLUSTER};
+    const body={config:document.getElementById('obYaml').value, is_edit:false};
     const r=await fetch('/api/clusters',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await r.json();
     if(!r.ok) throw new Error(data.detail||('HTTP '+r.status));
-    
-    const wasEditing = EDITING_CLUSTER;
-    cancelEditing();
-    
-    res.innerHTML = `<div style="color:var(--ok); font-size:12px; margin-top:8px;">${wasEditing ? 'Cluster updated' : 'Job submitted'} successfully! Check progress in the Jobs panel.</div>`;
-    
+    resetOnboardForm();
+    res.innerHTML='<div style="color:var(--ok); font-size:12px; margin-top:8px;">Job submitted successfully! Check progress in the Jobs panel.</div>';
     await refreshSettingsClusters();
     toggleJobsPanel(true);
   }catch(e){
     res.innerHTML=`<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">${e.message}</span></div>`;
-  }finally{btn.disabled=false;btn.textContent = EDITING_CLUSTER ? 'Save & collect' : 'Onboard & collect';}
+  }finally{btn.disabled=false;btn.textContent='Onboard & collect';}
+}
+
+let JOB_TO_CANCEL = null;
+
+function openCancelJobModal(jobId, clusterName) {
+  JOB_TO_CANCEL = jobId;
+  document.getElementById('cancelJobCluster').textContent = clusterName;
+  document.getElementById('cancelJobModal').style.display = 'flex';
+}
+
+function closeCancelJobModal() {
+  JOB_TO_CANCEL = null;
+  document.getElementById('cancelJobModal').style.display = 'none';
+}
+
+async function executeJobCancellation() {
+  if (!JOB_TO_CANCEL) return;
+  const jobId = JOB_TO_CANCEL;
+  const btn = document.getElementById('cancelJobConfirmBtn');
+  btn.disabled = true;
+  btn.textContent = 'Cancelling…';
+  try {
+    const r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/cancel', {method: 'POST'});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+    closeCancelJobModal();
+    await updateJobsList();
+  } catch (e) {
+    alert('Failed to cancel job: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Cancel Job';
+  }
 }
 
 let CLUSTER_TO_DELETE = null;

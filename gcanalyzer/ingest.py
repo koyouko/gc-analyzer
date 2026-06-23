@@ -40,6 +40,10 @@ _FALLBACK_HEAP_MB = {"broker": 512, "controller": 256}
 _DEFAULT_HEAP_MB = 1024
 
 
+class JobCancelled(Exception):
+    """Raised when an ingest job is cancelled mid-flight."""
+
+
 @dataclass(frozen=True)
 class NodeResult:
     """Outcome of ingesting one node — for the run summary."""
@@ -97,6 +101,25 @@ def build_instance(
     )
 
 
+def sync_instances_from_nodes(
+    conn,
+    nodes: list[NodeConfig],
+    region: str,
+    env: str,
+    cluster: str,
+    collector: str = "G1",
+) -> int:
+    """Upsert instance rows from a cluster config without collecting GC logs."""
+    count = 0
+    for ordinal, node in enumerate(nodes, start=1):
+        index = _index_of(node.id, ordinal)
+        heap_max = _heap_max_mb(node.role, 0)
+        inst = build_instance(node, region, env, cluster, index, heap_max)
+        store.upsert_instance(conn, inst, collector=collector)
+        count += 1
+    return count
+
+
 def _analyze_node(node: NodeConfig, log_callback=None) -> dict | None:
     """collect -> parse -> analyze for one node. None if nothing was collected."""
     if log_callback:
@@ -125,11 +148,18 @@ def ingest_nodes(
     cluster: str | None = None,
     now: int | None = None,
     log_callback=None,
+    cancel_check=None,
 ) -> list[NodeResult]:
     """Collect, analyze, and record an already-parsed node list (used by the
     dashboard onboarding endpoint, which has nodes parsed from pasted YAML)."""
     cluster = cluster or f"{region}-{env}"
     ts = now if now is not None else (int(time.time()) // 60) * 60
+
+    def _cancelled() -> bool:
+        return bool(cancel_check and cancel_check())
+
+    if _cancelled():
+        raise JobCancelled("Job cancelled by user")
 
     # 1. Run node analysis concurrently
     if log_callback:
@@ -151,12 +181,17 @@ def ingest_nodes(
             future_to_node[future] = node
 
         for future in concurrent.futures.as_completed(future_to_node):
+            if _cancelled():
+                raise JobCancelled("Job cancelled by user")
             node = future_to_node[future]
             try:
                 analysis = future.result()
                 analysis_results[node.id] = (analysis, None)
             except Exception as exc:
                 analysis_results[node.id] = (None, exc)
+
+    if _cancelled():
+        raise JobCancelled("Job cancelled by user")
 
     # 2. Record findings sequentially in a database connection context
     store.init_db(db_path)
@@ -166,6 +201,8 @@ def ingest_nodes(
     results: list[NodeResult] = []
     with store.connect(db_path) as conn:
         for ordinal, node in enumerate(nodes, start=1):
+            if _cancelled():
+                raise JobCancelled("Job cancelled by user")
             res_tuple = analysis_results.get(node.id)
             if not res_tuple:
                 results.append(NodeResult(node.id, "-", node.role, False, "skipped"))
