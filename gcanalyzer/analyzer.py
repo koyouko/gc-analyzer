@@ -26,6 +26,17 @@ FULL_GC_IS_BAD = True           # any Full GC on a broker is a red flag
 HIGH_HEAP_USE_PCT = 80.0        # sustained post-GC occupancy above this = memory pressure
 HOTSPOT_BUCKET_S = 60           # 1-minute buckets for hotspot detection
 
+# Last-hour fleet alerts (see store.evaluate_alerts). Override at runtime via GC_ALERT_* env vars.
+ALERT_RECENT_WINDOW_S = 3600
+ALERT_PAUSE_CRITICAL_MS = WARN_PAUSE_MS       # single STW pause — Kafka request timeout risk
+ALERT_P99_WARNING_MS = MAX_HEALTHY_PAUSE_MS # tail latency vs G1 MaxGCPauseMillis target
+ALERT_HEAP_WARNING_PCT = 85.0                 # peak post-GC live set (% of heap)
+ALERT_HEAP_BY_ROLE = {"zookeeper": 90.0, "connect": 88.0, "schema-registry": 88.0}
+ALERT_STORM_TIME_IN_GC_PCT = 5.0
+ALERT_STORM_BASELINE_MULT = 3.0
+ALERT_GC_FREQ_MIN = 20.0                    # /min floor (with 2x baseline) for gc_freq alert
+ALERT_GC_FREQ_BASELINE_MULT = 2.0
+
 
 def _pct(values: list[float], p: float) -> float:
     if not values:

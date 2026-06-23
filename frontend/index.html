@@ -473,6 +473,8 @@
   .job-progress-fill.completed { background: var(--ok); }
   .job-progress-fill.warning { background: var(--watch); }
   .job-progress-fill.failed { background: var(--crit); }
+  .job-progress-fill.cancelled { background: var(--muted); }
+  .job-card-status.cancelling { background: rgba(210, 153, 34, 0.15); color: var(--watch); }
   
   @keyframes pulseGlow {
     0% { opacity: 0.8; }
@@ -759,6 +761,11 @@ function diagCards(m, alerts){
   return cards;
 }
 
+function fmtMetric(v, unit){
+  if(v===null||v===undefined||v===''||(typeof v==='number'&&Number.isNaN(v))) return '—';
+  return unit ? v + unit : String(v);
+}
+
 function explorerTabsHtml(){
   const tabs=[
     ['heap','Heap live set'],['util','Utilization %'],['pause','Pause spikes'],
@@ -775,7 +782,7 @@ function renderNodeDeepDive(m, tr, s){
     <p class="muted" style="margin:-6px 0 10px">GC analytics for this JVM — summary from the last 24 hours.</p>
     <div class="kpi-strip">
       <div class="kpi ${m.throughput_pct>=99?'good':m.throughput_pct>=95?'warn':'bad'}"><div class="kl">Throughput</div><div class="kv">${m.throughput_pct}%</div><div class="ks">app time vs GC</div></div>
-      <div class="kpi ${m.max_pause_ms<=200?'good':m.max_pause_ms<=500?'warn':'bad'}"><div class="kl">Avg pause</div><div class="kv">${m.avg_pause_ms}<span style="font-size:13px;font-weight:600"> ms</span></div><div class="ks">p99 ${m.p99_pause_ms} ms</div></div>
+      <div class="kpi ${(m.max_pause_ms||0)<=200?'good':(m.max_pause_ms||0)<=500?'warn':'bad'}"><div class="kl">Avg pause</div><div class="kv">${fmtMetric(m.avg_pause_ms)}<span style="font-size:13px;font-weight:600"> ms</span></div><div class="ks">p99 ${fmtMetric(m.p99_pause_ms)} ms</div></div>
       <div class="kpi"><div class="kl">GC frequency</div><div class="kv">${m.gc_per_min}</div><div class="ks">collections / min</div></div>
       <div class="kpi ${m.full_count?'bad':'good'}"><div class="kl">Full GCs</div><div class="kv">${m.full_count}</div><div class="ks">last 24 hours</div></div>
     </div>
@@ -836,10 +843,10 @@ function renderNodeExplorerBoard(m, tr, s){
         <h3>Latency board</h3>
         <table class="stat-table">
           <tr><th>Metric</th><th class="num">Value</th></tr>
-          <tr><td>Avg pause</td><td class="num">${m.avg_pause_ms} ms</td></tr>
-          <tr><td>p99 pause</td><td class="num">${m.p99_pause_ms} ms</td></tr>
-          <tr><td>Max pause</td><td class="num">${m.max_pause_ms} ms</td></tr>
-          <tr><td>Time in GC</td><td class="num">${m.pct_time_in_gc}%</td></tr>
+          <tr><td>Avg pause</td><td class="num">${fmtMetric(m.avg_pause_ms,' ms')}</td></tr>
+          <tr><td>p99 pause</td><td class="num">${fmtMetric(m.p99_pause_ms,' ms')}</td></tr>
+          <tr><td>Max pause</td><td class="num">${fmtMetric(m.max_pause_ms,' ms')}</td></tr>
+          <tr><td>Time in GC</td><td class="num">${fmtMetric(m.pct_time_in_gc,'%')}</td></tr>
         </table>
       </div>
       <div class="panel">
@@ -1348,8 +1355,9 @@ async function updateJobsList() {
     
     list.innerHTML = data.jobs.map(j => {
       const isRunning = j.status === 'running' || j.status === 'pending';
-      const progressClass = j.status;
-      const progressWidth = j.progress + '%';
+      const displayStatus = (j.cancel_requested && j.status === 'running') ? 'cancelling' : j.status;
+      const progressClass = (j.status === 'running' || j.status === 'pending') ? 'running' : j.status;
+      const progressWidth = Math.max(0, Math.min(100, j.progress || 0)) + '%';
       
       const nodeDetailsHtml = j.nodes ? `
         <div class="job-node-details" style="margin-top: 8px; font-size: 11px; border-top: 1px solid var(--border); padding-top: 6px; display: flex; flex-direction: column; gap: 4px;">
@@ -1373,7 +1381,7 @@ async function updateJobsList() {
         <div class="job-card">
           <div class="job-card-header">
             <span class="job-card-title">${esc(j.cluster)}</span>
-            <span class="job-card-status ${j.status}">${j.status}</span>
+            <span class="job-card-status ${displayStatus}">${displayStatus}</span>
           </div>
           <div class="job-message">${esc(j.message)}</div>
           <div class="job-progress-bar">
@@ -1476,9 +1484,15 @@ async function selectClusterSettings(cluster) {
   setSettingsPanelMode('collect');
   const obResult = document.getElementById('obResult');
   if (obResult) {
-    obResult.innerHTML = '<div class="muted" style="font-size:11px;">Selected <b>' + esc(cluster) + '</b>. Click <b>Collect now</b> to pull and analyze GC logs from all configured nodes.</div>';
+    obResult.innerHTML = '<div class="muted" style="font-size:11px;">Selected <b>' + esc(cluster) + '</b>. <b>Collect now</b> pulls and analyzes GC logs (full on first run, incremental when history exists). Background scheduler runs every 5 minutes. Dashboard KPIs use a 24-hour window.</div>';
   }
   await refreshSettingsClusters();
+}
+
+function apiErrorDetail(body, status) {
+  if (body && typeof body.detail === 'string') return body.detail;
+  if (body && Array.isArray(body.detail)) return body.detail.map(d => d.msg || JSON.stringify(d)).join('; ');
+  return 'HTTP ' + (status || '');
 }
 
 async function collectSelectedCluster() {
@@ -1492,10 +1506,10 @@ async function collectSelectedCluster() {
     const r = await fetch('/api/clusters', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({config: data.config, is_edit: true}),
+      body: JSON.stringify({config: data.config, is_edit: true, collect_mode: 'auto'}),
     });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.detail || ('HTTP ' + r.status));
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErrorDetail(body, r.status));
     res.innerHTML = '<div style="color:var(--ok); font-size:12px; margin-top:8px;">Collection job started for <b>' + esc(SELECTED_CLUSTER) + '</b>. Check progress in the Jobs panel.</div>';
     toggleJobsPanel(true);
     load();

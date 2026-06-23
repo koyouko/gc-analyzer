@@ -17,3 +17,10 @@ web/*.tsbuildinfo
 # OS
 .DS_Store
 .gstack/
+
+# Local env (use .env.example as template)
+.env
+
+# manage-app.sh runtime files
+gcanalyzer-*.log
+gcanalyzer-*.pid

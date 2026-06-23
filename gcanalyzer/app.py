@@ -28,6 +28,10 @@ import uuid
 
 import asyncio
 
+from .env import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request, Response, Cookie
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -87,6 +91,8 @@ async def _start_scheduler():
                 "completed_at": None,
                 "error": None,
                 "nodes": [],
+                "nodes_total": 0,
+                "cancel_requested": False,
                 "logs": [f"[{time.strftime('%H:%M:%S')}] Started scheduler re-collection tick for cluster {cluster}."],
                 "node_logs": {"_general": [f"[{time.strftime('%H:%M:%S')}] Started scheduler re-collection tick for cluster {cluster}."]}
             }
@@ -121,6 +127,9 @@ async def _start_scheduler():
                     "recorded": success,
                     "detail": msg
                 })
+                total = JOBS[job_id].get("nodes_total") or len(JOBS[job_id]["nodes"])
+                done = len(JOBS[job_id]["nodes"])
+                JOBS[job_id]["progress"] = min(99, 10 + int(90 * done / max(total, 1)))
                 
         def on_tick_complete(ts, cluster, summary):
             job_id = f"sched-{cluster}-{ts}"
@@ -225,6 +234,7 @@ class OnboardRequest(BaseModel):
     region: str | None = None         # optional override; else derived from cluster name
     env: str | None = None
     is_edit: bool = False
+    collect_mode: str = "auto"  # auto | full | incremental
 
 
 def _derive_identity(cluster_name: str, region: str | None, env: str | None) -> tuple[str, str, str]:
@@ -247,6 +257,23 @@ def _persist_cluster_config(cluster: str, text: str) -> str:
 
 JOBS: dict[str, dict] = {}
 
+
+
+
+def _set_job_progress(job_id: str, pct: int, message: str | None = None, node_entry: dict | None = None) -> None:
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    job["progress"] = min(99, max(int(job.get("progress", 0)), int(pct)))
+    if message:
+        if job.get("cancel_requested") and job.get("status") == "running":
+            job["message"] = f"Cancellation requested… ({message})"
+        else:
+            job["message"] = message
+    if node_entry:
+        if job.get("nodes") is None:
+            job["nodes"] = []
+        job["nodes"].append(node_entry)
 
 def _job_cancelled(job_id: str) -> bool:
     return bool(JOBS.get(job_id, {}).get("cancel_requested"))
@@ -309,7 +336,7 @@ def _prune_old_jobs() -> None:
         JOBS.pop(jid, None)
 
 
-async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, env: str, cluster: str):
+async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, env: str, cluster: str, collect_mode: str = "auto"):
     if _job_cancelled(job_id):
         _finish_cancelled_job(job_id, cluster)
         return
@@ -328,7 +355,7 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
 
     RUNNING_CLUSTERS.add(cluster)
     JOBS[job_id]["status"] = "running"
-    JOBS[job_id]["progress"] = 20
+    JOBS[job_id]["progress"] = 8
     JOBS[job_id]["message"] = f"Connecting to {len(nodes)} nodes to collect and parse GC logs..."
     log_cb(f"Starting onboarding job for cluster '{cluster}'...")
     log_cb(f"Environment: {env}, Region: {region}")
@@ -348,6 +375,8 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
             cluster=cluster,
             log_callback=log_cb,
             cancel_check=lambda: _job_cancelled(job_id),
+            collect_mode=collect_mode,
+            progress_callback=lambda pct, msg, node=None: _set_job_progress(job_id, pct, msg, node),
         )
 
         if _job_cancelled(job_id):
@@ -370,16 +399,17 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
 
         JOBS[job_id]["progress"] = 100
         JOBS[job_id]["completed_at"] = time.time()
-        JOBS[job_id]["nodes"] = [
-            {
-                "node_id": r.node_id,
-                "instance_id": r.instance_id,
-                "role": r.role,
-                "recorded": r.recorded,
-                "detail": r.detail
-            }
-            for r in results
-        ]
+        if not JOBS[job_id].get("nodes"):
+            JOBS[job_id]["nodes"] = [
+                {
+                    "node_id": r.node_id,
+                    "instance_id": r.instance_id,
+                    "role": r.role,
+                    "recorded": r.recorded,
+                    "detail": r.detail,
+                }
+                for r in results
+            ]
     except ingest_mod.JobCancelled:
         _finish_cancelled_job(job_id, cluster, log_cb)
     except Exception as e:
@@ -422,18 +452,20 @@ async def onboard_cluster(req: OnboardRequest) -> dict:
         "region": region,
         "env": env,
         "status": "pending",
-        "progress": 10,
-        "message": "Queued onboarding job...",
+        "progress": 5,
+        "message": "Queued collection job...",
         "created_at": time.time(),
         "completed_at": None,
         "error": None,
-        "nodes": None,
+        "nodes": [],
+        "nodes_total": len(nodes),
+        "cancel_requested": False,
         "logs": [],
         "node_logs": {"_general": []}
     }
 
     # Start the job in the background using asyncio.create_task
-    asyncio.create_task(run_onboard_job(job_id, nodes, store.DB_PATH, region, env, cluster))
+    asyncio.create_task(run_onboard_job(job_id, nodes, store.DB_PATH, region, env, cluster, req.collect_mode))
 
     return {
         "job_id": job_id,
@@ -478,6 +510,9 @@ def save_cluster_config(cluster: str, req: ClusterConfigBody) -> dict:
     with store.connect() as c:
         synced = ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
     return {"cluster": cluster, "region": region, "env": env, "nodes_synced": synced}
+
+
+
 
 
 @app.post("/api/jobs/{job_id}/cancel")

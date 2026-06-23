@@ -17,6 +17,15 @@
 set -e
 cd "$(dirname "$0")"
 
+load_env() {
+  if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+  fi
+}
+
 CMD="${1}"
 PORT="${2:-8083}"
 DB_PATH="${3}"
@@ -61,6 +70,8 @@ start_app() {
     echo "GC Analyzer is ALREADY running on port $PORT (PID: $pid)."
     return 0
   fi
+
+  load_env
 
   echo "Starting GC Analyzer on port $PORT..."
   

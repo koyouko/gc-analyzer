@@ -178,6 +178,30 @@ def collect_ssh(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
     return out
 
 
+
+def read_increment_local(node: NodeConfig, prev: dict) -> tuple[str, dict]:
+    """Read only bytes appended since last offset (local files)."""
+    patterns = node.local_paths or node.effective_globs()
+    parts: list[str] = []
+    new_offsets: dict[str, dict] = {}
+    for pat in patterns:
+        for path in sorted(glob.glob(pat)):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            inode, size = st.st_ino, st.st_size
+            seen = prev.get(path)
+            start = seen["offset"] if (seen and seen["inode"] == inode and seen["offset"] <= size) else 0
+            try:
+                with open(path, "r", errors="replace") as fh:
+                    fh.seek(start)
+                    parts.append(fh.read())
+            except OSError:
+                continue
+            new_offsets[path] = {"inode": inode, "offset": size}
+    return "\n".join(parts), new_offsets
+
 def collect(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
     if node.source == "local":
         return collect_local(node, log_callback=log_callback)

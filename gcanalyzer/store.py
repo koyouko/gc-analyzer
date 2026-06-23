@@ -28,12 +28,20 @@ DB_PATH = os.environ.get(
     "GC_DB", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gc_history.db")
 )
 
-# Last-hour alert thresholds (tunable to your SLOs).
-PAUSE_ALERT_MS = 500.0
-HEAP_ALERT_PCT = 85.0
-STORM_TIME_IN_GC_PCT = 5.0     # absolute floor for a "GC storm"
-STORM_BASELINE_MULT = 3.0      # ... or 3x the node's own baseline
-RECENT_WINDOW_S = 3600         # "last hour"
+# Last-hour alert thresholds — defaults from analyzer SLOs; override via env.
+def _alert_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    return float(raw) if raw not in (None, "") else float(default)
+
+
+PAUSE_ALERT_MS = _alert_env("GC_ALERT_PAUSE_MS", analyzer.ALERT_PAUSE_CRITICAL_MS)
+P99_PAUSE_ALERT_MS = _alert_env("GC_ALERT_P99_MS", analyzer.ALERT_P99_WARNING_MS)
+HEAP_ALERT_PCT = _alert_env("GC_ALERT_HEAP_PCT", analyzer.ALERT_HEAP_WARNING_PCT)
+STORM_TIME_IN_GC_PCT = _alert_env("GC_ALERT_STORM_TIG_PCT", analyzer.ALERT_STORM_TIME_IN_GC_PCT)
+STORM_BASELINE_MULT = _alert_env("GC_ALERT_STORM_MULT", analyzer.ALERT_STORM_BASELINE_MULT)
+GC_FREQ_ALERT_MIN = _alert_env("GC_ALERT_GC_FREQ_MIN", analyzer.ALERT_GC_FREQ_MIN)
+GC_FREQ_BASELINE_MULT = _alert_env("GC_ALERT_GC_FREQ_MULT", analyzer.ALERT_GC_FREQ_BASELINE_MULT)
+RECENT_WINDOW_S = int(_alert_env("GC_ALERT_WINDOW_S", analyzer.ALERT_RECENT_WINDOW_S))
 
 
 SCHEMA = """
@@ -199,7 +207,9 @@ def current_snapshot(c, instance_id: str, now: int = None) -> dict | None:
     day = window_rows(c, instance_id, now - 86400, now)
     if not day and last:
         day = [last]
-    metrics = _metrics_dict_from_window(day, inst["heap_max_mb"])
+    observed_heap = max((r["heap_max_mb"] for r in day if r.get("heap_max_mb")), default=0)
+    effective_heap = max(inst["heap_max_mb"] or 0, observed_heap)
+    metrics = _metrics_dict_from_window(day, effective_heap)
     health = analyzer.score_health(metrics)
     findings = analyzer.derive_findings(metrics, inst["collector"])
     alerts = evaluate_alerts(c, instance_id, now)
@@ -213,15 +223,24 @@ def current_snapshot(c, instance_id: str, now: int = None) -> dict | None:
     }
 
 
+def _heap_alert_pct(role: str) -> float:
+    return analyzer.ALERT_HEAP_BY_ROLE.get(role or "", HEAP_ALERT_PCT)
+
+
 def evaluate_alerts(c, instance_id: str, now: int = None) -> list[dict]:
     """Issues observed in the last hour, color-coded."""
     now = now or now_ts(c)
     recent = window_rows(c, instance_id, now - RECENT_WINDOW_S, now)
     if not recent:
         return []
+    inst = get_instance(c, instance_id)
+    role = (inst or {}).get("role") or "broker"
+    heap_thresh = _heap_alert_pct(role)
+
     alerts = []
     full = sum(r["full_gc_count"] for r in recent)
     max_pause = max(r["pause_max_ms"] for r in recent)
+    max_p99 = max(r["pause_p99_ms"] for r in recent)
     peak_heap = max(r["heap_after_pct"] for r in recent)
     recent_tig = max(r["time_in_gc_pct"] for r in recent)
     recent_freq = max(r["gc_per_min"] for r in recent)
@@ -237,13 +256,17 @@ def evaluate_alerts(c, instance_id: str, now: int = None) -> list[dict]:
     if max_pause > PAUSE_ALERT_MS:
         alerts.append({"type": "long_pause", "severity": "critical",
                        "msg": f"Stop-the-world pause {max_pause:.0f}ms (> {PAUSE_ALERT_MS:.0f}ms)"})
-    if peak_heap > HEAP_ALERT_PCT:
+    elif max_p99 > P99_PAUSE_ALERT_MS:
+        alerts.append({"type": "tail_pause", "severity": "warning",
+                       "msg": f"p99 pause {max_p99:.0f}ms exceeds {P99_PAUSE_ALERT_MS:.0f}ms G1 target"})
+    if peak_heap > heap_thresh:
         alerts.append({"type": "heap_pressure", "severity": "warning",
-                       "msg": f"Heap live set at {peak_heap:.0f}% (> {HEAP_ALERT_PCT:.0f}%)"})
-    if recent_tig > max(STORM_TIME_IN_GC_PCT, base_tig * STORM_BASELINE_MULT):
+                       "msg": f"Heap live set at {peak_heap:.0f}% (> {heap_thresh:.0f}% for {role})"})
+    storm_thresh = max(STORM_TIME_IN_GC_PCT, base_tig * STORM_BASELINE_MULT)
+    if recent_tig > storm_thresh:
         alerts.append({"type": "gc_storm", "severity": "warning",
-                       "msg": f"Time-in-GC {recent_tig:.1f}% vs {base_tig:.1f}% baseline"})
-    elif recent_freq > base_freq * 2 and recent_freq > 20:
+                       "msg": f"Time-in-GC {recent_tig:.1f}% vs {base_tig:.1f}% baseline (>{storm_thresh:.1f}%)"})
+    elif recent_freq > base_freq * GC_FREQ_BASELINE_MULT and recent_freq > GC_FREQ_ALERT_MIN:
         alerts.append({"type": "gc_freq", "severity": "warning",
                        "msg": f"GC frequency {recent_freq:.0f}/min vs {base_freq:.0f}/min baseline"})
     return alerts
@@ -349,14 +372,29 @@ def set_offset(c, instance_id: str, file_path: str, inode: int, offset: int, ts:
 # --------------------------------------------------------------------------- #
 # Admin cluster management + retention
 # --------------------------------------------------------------------------- #
+def delete_instance(c, instance_id: str) -> None:
+    c.execute("DELETE FROM metrics WHERE instance_id=?", (instance_id,))
+    c.execute("DELETE FROM collector_state WHERE instance_id=?", (instance_id,))
+    c.execute("DELETE FROM instances WHERE id=?", (instance_id,))
+
+
+def migrate_instance(c, old_id: str, new_id: str) -> None:
+    if old_id == new_id:
+        return
+    c.execute("UPDATE OR IGNORE metrics SET instance_id=? WHERE instance_id=?", (new_id, old_id))
+    c.execute("DELETE FROM metrics WHERE instance_id=?", (old_id,))
+    c.execute("UPDATE OR IGNORE collector_state SET instance_id=? WHERE instance_id=?", (new_id, old_id))
+    c.execute("DELETE FROM collector_state WHERE instance_id=?", (old_id,))
+    c.execute("DELETE FROM instances WHERE id=?", (old_id,))
+
+
 def delete_cluster(c, cluster: str) -> int:
     """Remove a cluster's instances, metrics, and collector offsets. Returns
     the number of instances removed."""
     ids = [r["id"] for r in c.execute("SELECT id FROM instances WHERE cluster=?", (cluster,))]
     for iid in ids:
-        c.execute("DELETE FROM metrics WHERE instance_id=?", (iid,))
-        c.execute("DELETE FROM collector_state WHERE instance_id=?", (iid,))
-    c.execute("DELETE FROM instances WHERE cluster=?", (cluster,))
+        delete_instance(c, iid)
+
     return len(ids)
 
 

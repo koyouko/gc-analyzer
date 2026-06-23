@@ -25,7 +25,7 @@ import concurrent.futures
 import json
 
 from . import analyzer, config, ingest, parser, store
-from .collector import NodeConfig, collect_ssh, collect_ssh_incremental
+from .collector import NodeConfig, collect_ssh, collect_ssh_incremental, read_increment_local
 
 CLUSTERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clusters")
 DEFAULT_INTERVAL_S = int(os.environ.get("GC_SCHED_INTERVAL", "300"))
@@ -59,38 +59,10 @@ def _derive_identity(cluster_name: str) -> tuple[str, str, str]:
     return region, env, cluster_name
 
 
-def _read_increment_local(node: NodeConfig, prev: dict) -> tuple[str, dict]:
-    """Read only bytes appended since last offset, per matched file.
-
-    Resets a file to offset 0 if its inode changed or it shrank (log rotation /
-    truncation), so rotated logs are picked up without missing or duplicating.
-    """
-    patterns = node.local_paths or node.effective_globs()
-    parts: list[str] = []
-    new_offsets: dict[str, dict] = {}
-    for pat in patterns:
-        for path in sorted(glob.glob(pat)):
-            try:
-                st = os.stat(path)
-            except OSError:
-                continue
-            inode, size = st.st_ino, st.st_size
-            seen = prev.get(path)
-            start = seen["offset"] if (seen and seen["inode"] == inode and seen["offset"] <= size) else 0
-            try:
-                with open(path, "r", errors="replace") as fh:
-                    fh.seek(start)
-                    parts.append(fh.read())
-            except OSError:
-                continue
-            new_offsets[path] = {"inode": inode, "offset": size}
-    return "\n".join(parts), new_offsets
-
-
 def _scrape_node_task(node: NodeConfig, ts: int, prev_offsets: dict) -> dict:
     try:
         if node.source == "local":
-            text, new_offsets = _read_increment_local(node, prev_offsets)
+            text, new_offsets = read_increment_local(node, prev_offsets)
         else:
             text, new_offsets = collect_ssh_incremental(node, prev_offsets)
         return {
@@ -151,7 +123,7 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
     # Call on_tick_start for each cluster in configs before starting concurrent scrapers
     for cluster, region, env, nodes in configs:
         if on_tick_start:
-            on_tick_start(ts, cluster, region, env)
+            on_tick_start(ts, cluster, region, env, len(nodes))
 
     # 2. Run scrapers concurrently
     scrape_results = {}
@@ -218,7 +190,7 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                     heap_max = ingest._heap_max_mb(node.role, metrics["heap_max_mb"])
                     inst = ingest.build_instance(node, region, env, cluster, index, heap_max, instance_id=instance_id)
                     store.upsert_instance(conn, inst, collector=analysis["collector"])
-                    ingest.record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts)
+                    ingest.record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts, incremental=True, new_offsets=res.get("new_offsets"))
                     
                     cluster_collected += 1
                     collected += 1

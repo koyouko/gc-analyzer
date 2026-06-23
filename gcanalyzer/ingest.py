@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 
 from . import analyzer, parser, store, topology
-from .collector import NodeConfig, collect
+from .collector import NodeConfig, collect, collect_ssh_incremental, read_increment_local
 from .config import load_cluster
 
 # role -> component-group key, reusing the dashboard's own taxonomy so live
@@ -97,13 +97,12 @@ def _index_of(node_id: str, fallback: int) -> int:
 
 
 def _instance_id_for(cluster: str, node: NodeConfig, ordinal: int, used: set[str]) -> tuple[str, int]:
+    """Stable id from YAML node id — survives config edits without duplicating hosts."""
     index = _index_from_node_id(node.id) or ordinal
-    base = f"{cluster}-{node.role}-{index}"
-    if base not in used:
-        used.add(base)
-        return base, index
     safe = re.sub(r"[^a-zA-Z0-9_-]", "-", node.id).strip("-") or f"node-{ordinal}"
     iid = f"{cluster}--{safe}"
+    if iid in used:
+        iid = f"{cluster}--{safe}-{ordinal}"
     used.add(iid)
     return iid, index
 
@@ -150,24 +149,62 @@ def sync_instances_from_nodes(
     cluster: str,
     collector: str = "G1",
 ) -> int:
-    """Upsert instance rows from a cluster config without collecting GC logs."""
-    count = 0
+    """Upsert YAML nodes and remove stale instance rows for this cluster."""
     used_ids: set[str] = set()
+    expected: list[tuple[str, topology.Instance]] = []
+    yaml_node_ids = {n.id for n in nodes}
     for ordinal, node in enumerate(nodes, start=1):
         iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
-        heap_max = _heap_max_mb(node.role, 0)
-        inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
+        heap = _heap_max_mb(node.role, 0)
+        existing = store.get_instance(conn, iid)
+        if existing and (existing["heap_max_mb"] or 0) > heap:
+            heap = existing["heap_max_mb"]
+        inst = build_instance(node, region, env, cluster, index, heap, instance_id=iid)
+        expected.append((iid, inst))
+
+    expected_ids = {iid for iid, _ in expected}
+    for iid, inst in expected:
+        for row in conn.execute(
+            "SELECT id FROM instances WHERE cluster=? AND node_id=? AND id!=?",
+            (cluster, inst.node_id, iid),
+        ):
+            store.migrate_instance(conn, row["id"], iid)
+
+    for row in conn.execute("SELECT id, node_id FROM instances WHERE cluster=?", (cluster,)):
+        rid, nid = row["id"], row["node_id"] or ""
+        if rid in expected_ids:
+            continue
+        if nid and nid in yaml_node_ids:
+            continue
+        store.delete_instance(conn, rid)
+
+    for iid, inst in expected:
         store.upsert_instance(conn, inst, collector=collector)
-        count += 1
-    return count
+    return len(expected)
 
 
 
 
-def record_analysis_metrics(conn, inst_id: str, parsed, analysis: dict, ts: int | None = None) -> int:
-    """Persist hourly buckets from the log plus a latest snapshot row."""
+def record_analysis_metrics(
+    conn,
+    inst_id: str,
+    parsed,
+    analysis: dict,
+    ts: int | None = None,
+    *,
+    incremental: bool = False,
+    new_offsets: dict | None = None,
+) -> int:
+    """Persist metrics: full log backfill on first collect, one row per incremental tick."""
     ts = ts if ts is not None else (int(time.time()) // 60) * 60
     metrics = analysis["metrics"]
+    if incremental:
+        store.record_metric(conn, inst_id, ts, metrics_to_row(metrics))
+        if new_offsets:
+            for fp, stt in new_offsets.items():
+                store.set_offset(conn, inst_id, fp, stt["inode"], stt["offset"], ts)
+        return 1
+
     buckets = analyzer.bucket_metrics(parsed)
     written = 0
     if buckets:
@@ -177,27 +214,70 @@ def record_analysis_metrics(conn, inst_id: str, parsed, analysis: dict, ts: int 
     else:
         store.record_metric(conn, inst_id, ts, metrics_to_row(metrics))
         written = 1
+    if new_offsets:
+        for fp, stt in new_offsets.items():
+            store.set_offset(conn, inst_id, fp, stt["inode"], stt["offset"], ts)
     return written
 
 
-def _analyze_node(node: NodeConfig, log_callback=None) -> dict | None:
-    """collect -> parse -> analyze for one node. None if nothing was collected."""
+@dataclass(frozen=True)
+class _CollectCtx:
+    instance_id: str
+    prev_offsets: dict
+    has_history: bool
+    collect_mode: str  # auto | full | incremental
+
+
+def _should_incremental(ctx: _CollectCtx) -> bool:
+    if ctx.collect_mode == "full":
+        return False
+    if ctx.collect_mode == "incremental":
+        return ctx.has_history or bool(ctx.prev_offsets)
+    return ctx.has_history or bool(ctx.prev_offsets)
+
+
+def _collect_log_text(node: NodeConfig, ctx: _CollectCtx, log_callback=None) -> tuple[str, dict | None, bool]:
+    """Return (text, new_offsets, used_incremental)."""
+    incremental = _should_incremental(ctx)
+    if incremental:
+        if log_callback:
+            log_callback(f"Incremental GC log fetch for '{node.id}' (offsets on file)...")
+        if node.source == "local":
+            text, new_offsets = read_increment_local(node, ctx.prev_offsets)
+        else:
+            text, new_offsets = collect_ssh_incremental(node, ctx.prev_offsets, log_callback=log_callback)
+        if not text.strip():
+            return "", new_offsets, True
+        return text, new_offsets, True
+
     if log_callback:
-        log_callback(f"Starting GC log collection for node '{node.id}'...")
+        log_callback(f"Full GC log fetch for '{node.id}'...")
     logs = collect(node, log_callback=log_callback)
     if not logs:
+        return "", None, False
+    return "\n".join(log.text for log in logs), None, False
+
+
+def _analyze_node(node: NodeConfig, ctx: _CollectCtx, log_callback=None) -> dict | None:
+    """collect -> parse -> analyze for one node."""
+    text, new_offsets, used_inc = _collect_log_text(node, ctx, log_callback=log_callback)
+    if not text.strip():
+        if used_inc:
+            if log_callback:
+                log_callback(f"No new GC log bytes for '{node.id}'.")
+            return {"_empty_incremental": True, "_parsed": None, "metrics": {}, "collector": "G1"}
         if log_callback:
             log_callback(f"No GC log files collected for node '{node.id}'.")
         return None
-    text = "\n".join(log.text for log in logs)
     if log_callback:
         log_callback(f"Parsing {len(text)} bytes of GC logs for node '{node.id}'...")
     parsed = parser.parse(text, node_id=node.id)
     if log_callback:
         log_callback(f"Analyzing parsed GC data for node '{node.id}'...")
     result = analyzer.analyze(parsed)
-    result["_files"] = [log.source_detail for log in logs]
     result["_parsed"] = parsed
+    result["_incremental"] = used_inc
+    result["_new_offsets"] = new_offsets
     return result
 
 
@@ -210,6 +290,8 @@ def ingest_nodes(
     now: int | None = None,
     log_callback=None,
     cancel_check=None,
+    collect_mode: str = "auto",
+    progress_callback=None,
 ) -> list[NodeResult]:
     """Collect, analyze, and record an already-parsed node list (used by the
     dashboard onboarding endpoint, which has nodes parsed from pasted YAML)."""
@@ -222,15 +304,34 @@ def ingest_nodes(
     if _cancelled():
         raise JobCancelled("Job cancelled by user")
 
-    # 1. Run node analysis concurrently
+    total_nodes = len(nodes) or 1
+
+    def _progress(pct: int, message: str, node_entry: dict | None = None) -> None:
+        if not progress_callback:
+            return
+        progress_callback(pct, message, node_entry)
+
+    store.init_db(db_path)
+    contexts: dict[str, _CollectCtx] = {}
+    with store.connect(db_path) as conn:
+        used_pre: set[str] = set()
+        for ordinal, node in enumerate(nodes, start=1):
+            iid, _ = _instance_id_for(cluster, node, ordinal, used_pre)
+            prev = store.get_offsets(conn, iid)
+            has_hist = store.latest_row(conn, iid) is not None
+            contexts[node.id] = _CollectCtx(iid, prev, has_hist, collect_mode)
+
+    _progress(10, f"Starting collection of {total_nodes} nodes")
     if log_callback:
-        log_callback(f"Analyzing {len(nodes)} nodes concurrently (max workers: 5)...")
+        mode_label = collect_mode if collect_mode != "auto" else "auto (incremental when history exists)"
+        log_callback(f"Collecting and analyzing {len(nodes)} nodes ({mode_label}, max workers: 5)...")
 
     analysis_results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_node = {}
         for node in nodes:
-            # Bind the node_id to log messages for this node
+            ctx = contexts[node.id]
+
             def node_log_cb(msg: str, nid=node.id):
                 if log_callback:
                     try:
@@ -238,9 +339,10 @@ def ingest_nodes(
                     except TypeError:
                         log_callback(msg)
 
-            future = executor.submit(_analyze_node, node, log_callback=node_log_cb)
+            future = executor.submit(_analyze_node, node, ctx, log_callback=node_log_cb)
             future_to_node[future] = node
 
+        collected = 0
         for future in concurrent.futures.as_completed(future_to_node):
             if _cancelled():
                 raise JobCancelled("Job cancelled by user")
@@ -250,24 +352,42 @@ def ingest_nodes(
                 analysis_results[node.id] = (analysis, None)
             except Exception as exc:
                 analysis_results[node.id] = (None, exc)
+            collected += 1
+            _progress(10 + int(70 * collected / total_nodes), f"Collected {collected}/{total_nodes} nodes")
 
     if _cancelled():
         raise JobCancelled("Job cancelled by user")
 
     # 2. Record findings sequentially in a database connection context
-    store.init_db(db_path)
     if log_callback:
         log_callback(f"Connecting to database at {db_path} to record findings...")
 
     results: list[NodeResult] = []
     used_ids: set[str] = set()
+    recorded = 0
+
+    def _append_result(nr: NodeResult) -> None:
+        nonlocal recorded
+        results.append(nr)
+        recorded += 1
+        entry = {
+            "node_id": nr.node_id,
+            "instance_id": nr.instance_id,
+            "role": nr.role,
+            "recorded": nr.recorded,
+            "detail": nr.detail,
+        }
+        _progress(80 + int(18 * recorded / total_nodes), f"Recorded {recorded}/{total_nodes} nodes", entry)
+
     with store.connect(db_path) as conn:
+        sync_instances_from_nodes(conn, nodes, region, env, cluster)
+        _progress(78, "Writing results to database")
         for ordinal, node in enumerate(nodes, start=1):
             if _cancelled():
                 raise JobCancelled("Job cancelled by user")
             res_tuple = analysis_results.get(node.id)
             if not res_tuple:
-                results.append(NodeResult(node.id, "-", node.role, False, "skipped"))
+                _append_result(NodeResult(node.id, "-", node.role, False, "skipped"))
                 continue
 
             analysis, exc = res_tuple
@@ -278,12 +398,23 @@ def ingest_nodes(
                     except TypeError:
                         log_callback(f"Failed to process node '{node.id}': {exc}")
                 inst = _register_instance(conn, node, region, env, cluster, ordinal, used_ids)
-                results.append(NodeResult(node.id, inst.id, node.role, False, f"error: {exc}"))
+                _append_result(NodeResult(node.id, inst.id, node.role, False, f"error: {exc}"))
                 continue
 
             if analysis is None:
                 inst = _register_instance(conn, node, region, env, cluster, ordinal, used_ids)
-                results.append(NodeResult(node.id, inst.id, node.role, False, "no GC log files found"))
+                _append_result(NodeResult(node.id, inst.id, node.role, False, "no GC log files found"))
+                continue
+
+            if analysis.get("_empty_incremental"):
+                iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
+                inst = build_instance(node, region, env, cluster, index, _heap_max_mb(node.role, 0), instance_id=iid)
+                store.upsert_instance(conn, inst, collector="G1")
+                new_off = analysis.get("_new_offsets")
+                if new_off:
+                    for fp, stt in new_off.items():
+                        store.set_offset(conn, inst.id, fp, stt["inode"], stt["offset"], ts)
+                _append_result(NodeResult(node.id, inst.id, node.role, True, "no new GC bytes (incremental)"))
                 continue
 
             metrics = analysis["metrics"]
@@ -299,12 +430,16 @@ def ingest_nodes(
                         log_callback(f"Successfully upserted node '{node.id}' to topology, but no GC events were parsed.", node_id=node.id)
                     except TypeError:
                         log_callback(f"Successfully upserted node '{node.id}' to topology, but no GC events were parsed.")
-                results.append(NodeResult(node.id, inst.id, node.role, False, "no GC events parsed yet"))
+                _append_result(NodeResult(node.id, inst.id, node.role, False, "no GC events parsed yet"))
                 continue
 
             store.upsert_instance(conn, inst, collector=analysis["collector"])
             if parsed:
-                record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts)
+                record_analysis_metrics(
+                    conn, inst.id, parsed, analysis, ts=ts,
+                    incremental=analysis.get("_incremental", False),
+                    new_offsets=analysis.get("_new_offsets"),
+                )
             else:
                 store.record_metric(conn, inst.id, ts, metrics_to_row(metrics))
             detail = (
@@ -317,7 +452,7 @@ def ingest_nodes(
                     log_callback(f"Successfully recorded metrics for node '{node.id}': {detail}", node_id=node.id)
                 except TypeError:
                     log_callback(f"Successfully recorded metrics for node '{node.id}': {detail}")
-            results.append(NodeResult(node.id, inst.id, node.role, True, detail))
+            _append_result(NodeResult(node.id, inst.id, node.role, True, detail))
 
     return results
 
