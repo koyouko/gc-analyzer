@@ -1,0 +1,30 @@
+# Compact cluster.yaml — inline node entries (same semantics as cluster.example.yaml)
+#
+# Onboard via Settings → paste this file, or save as clusters/EMEA-DEV.yaml
+
+cluster: EMEA-DEV
+region: EMEA
+env: DEV
+
+defaults:
+  source: ssh
+  user: kafka
+  key_path: ~/.ssh/id_rsa
+  port: 22
+  kafka_home: /opt/kafka
+
+nodes:
+  - { id: broker-1, role: broker, host: 10.20.1.11, log_paths: [/opt/kafka/logs/kafkaServer-gc.log*] }
+  - { id: broker-2, role: broker, host: 10.20.1.12, log_paths: [/opt/kafka/logs/kafkaServer-gc.log*] }
+  - { id: broker-3, role: broker, host: 10.20.1.13, log_paths: [/opt/kafka/logs/kafkaServer-gc.log*] }
+  - { id: controller-1, role: controller, host: 10.20.1.21, log_paths: [/opt/kafka/logs/kafkaServer-gc.log*] }
+  - { id: controller-2, role: controller, host: 10.20.1.22, log_paths: [/opt/kafka/logs/kafkaServer-gc.log*] }
+  - { id: controller-3, role: controller, host: 10.20.1.23, log_paths: [/opt/kafka/logs/kafkaServer-gc.log*] }
+  - { id: connect-1, role: connect, host: 10.20.1.31, log_paths: [/opt/kafka/logs/connect-gc.log*] }
+  - { id: connect-2, role: connect, host: 10.20.1.32, log_paths: [/opt/kafka/logs/connect-gc.log*] }
+  - { id: schema-registry-1, role: schema-registry, host: 10.20.1.41, log_paths: [/opt/schema-registry/logs/schema-registry-gc.log*] }
+  - { id: schema-registry-2, role: schema-registry, host: 10.20.1.42, log_paths: [/opt/schema-registry/logs/schema-registry-gc.log*] }
+
+# Local log example (uncomment and replace SSH nodes if needed):
+# nodes:
+#   - { id: broker-1, role: broker, source: local, local_paths: [./incoming/broker-1/kafkaServer-gc.log*] }

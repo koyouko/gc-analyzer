@@ -695,9 +695,9 @@ const METRIC_HELP={
   'Time in GC':'Share of wall-clock time spent inside stop-the-world GC pauses. The inverse of throughput; lower is better.',
   'Avg pause':'Average duration of a stop-the-world GC pause over the window. Application threads are frozen during each pause.',
   'p99 pause':'99th-percentile GC pause — 99% of pauses were shorter than this. Tail latency that directly affects Kafka request times.',
-  'Max pause':'Longest single stop-the-world pause in the window. Long pauses can trip request.timeout, shrink the ISR, and stall produce/fetch.',
+  'Max pause':'Longest single stop-the-world pause in the window (young, mixed, or full). A long pause does not always mean a Full GC — check the Full GC chart for Pause Full events only.',
   'GC freq':'Garbage collections per minute. Very high frequency points to a hot allocation path or an undersized young generation.',
-  'Full GCs (24h)':'Count of Full GCs (whole-heap compaction with all threads stopped) in the last 24h. Should be 0 on a healthy broker.',
+  'Full GCs (24h)':'Count of JVM Pause Full events only (whole-heap compaction). Long young/mixed G1 pauses are not Full GCs but still raise max-pause alerts.',
   'Heap max':'Configured maximum heap size (-Xmx) for this JVM process.',
   'Avg live set':'Average post-GC heap occupancy as a percentage of max heap — the steady-state live memory footprint after collections.',
   'Peak live set':'Highest post-GC heap occupancy as a percentage of max heap. Near 100% means little headroom before OutOfMemoryError.',
@@ -751,7 +751,8 @@ function diagCards(m, alerts){
   const full=m.full_count||0;
   cards.push({t:'Full GC (24h)',d:full?`${full} Full GC event(s) — whole-heap stop-the-world.`:'No Full GCs in the last 24 hours.',s:full?'bad':'ok'});
   const mp=m.max_pause_ms||0;
-  cards.push({t:'Longest pause',d:mp>500?`Max pause ${mp} ms exceeds 500 ms Kafka tolerance.`:`Max pause ${mp} ms within acceptable range.`,s:mp>500?'bad':mp>200?'warn':'ok'});
+  const pauseNote=mp>200&&!full?' (young/mixed STW — not a Full GC)':'';
+  cards.push({t:'Longest pause',d:mp>500?`Max pause ${mp} ms exceeds 500 ms Kafka tolerance.${pauseNote}`:mp>200?`Max pause ${mp} ms elevated.${pauseNote}`:`Max pause ${mp} ms within acceptable range.`,s:mp>500?'bad':mp>200?'warn':'ok'});
   const prom=m.promotion_trend_pct||0;
   cards.push({t:'Live-set trend',d:prom>60?`Live set rose after ${prom}% of collections — check for leak.`:`Promotion trend ${prom}% — stable live set.`,s:prom>60?'warn':'ok'});
   const tig=m.pct_time_in_gc||0;
@@ -769,7 +770,7 @@ function fmtMetric(v, unit){
 function explorerTabsHtml(){
   const tabs=[
     ['heap','Heap live set'],['util','Utilization %'],['pause','Pause spikes'],
-    ['tig','Time in GC'],['full','Full GC events'],['thru','Throughput']
+    ['tig','Time in GC'],['full','Full GC count (Pause Full)'],['thru','Throughput']
   ];
   return tabs.map(([k,l])=>`<button type="button" class="xtab${EXPLORER_TAB===k?' on':''}" data-tab="${k}" onclick="setExplorerTab('${k}')">${l}</button>`).join('');
 }
@@ -953,7 +954,7 @@ function renderTree(){
           if(!go) continue;
           for(const i of g.instances){
             const sel=SELECTED===i.id?'sel':'';
-            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance('${i.id}',event)">${dot(i.status)}<span class="lbl">${esc(i.node_id || i.id.split('-').slice(-2).join('-'))}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
+            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance('${i.id}',event)">${dot(i.status)}<span class="lbl">${esc(instanceLabel(i.id, i.node_id))}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
           }
         }
       }
@@ -1017,9 +1018,17 @@ async function selectCluster(cluster){
   catch(e){ main.innerHTML=`<div class="empty">Failed: ${e.message}</div>`; }
 }
 
+function instanceLabel(id, nodeId){
+  if(nodeId) return nodeId;
+  const sep=id.indexOf('--');
+  if(sep>=0) return id.slice(sep+2);
+  const parts=id.split('-');
+  return parts.length>1?parts.slice(-2).join('-'):id;
+}
+
 function ncard(n){
   return `<div class="ncard ${SC[n.status]}" onclick="selectInstance('${n.id}')">
-    <div class="nid"><span>${n.id.split('-').slice(-2).join('-')}</span>
+    <div class="nid"><span>${esc(instanceLabel(n.id, n.node_id))}</span>
       ${n.grade?`<span class="minigrade ${n.grade}">${n.grade}</span>`:''}</div>
     <div class="nmeta"><span>${n.role}</span><span>heap ${n.heap_after_pct!=null?n.heap_after_pct+'%':'—'}</span></div>
     ${n.full_gc_1h?'<div class="nmeta" style="color:var(--crit)">🔴 Full GC in last hour</div>':''}
@@ -1128,7 +1137,7 @@ function renderInstance(s,tr){
       <div class="panel"><h3>Heap live set vs max (MB)</h3><div class="chartbox"><canvas id="cHeap"></canvas></div></div>
       <div class="panel"><h3>Heap utilization (%)</h3><div class="chartbox"><canvas id="cUtil"></canvas></div></div>
       <div class="panel"><h3>GC pause trend — p99 &amp; max (ms)</h3><div class="chartbox"><canvas id="cPause"></canvas></div></div>
-      <div class="panel"><h3>Full GCs per day &amp; time-in-GC (%)</h3><div class="chartbox"><canvas id="cFull"></canvas></div></div>
+      <div class="panel"><h3>Full GC count (Pause Full only) &amp; time-in-GC (%)</h3><div class="chartbox"><canvas id="cFull"></canvas></div></div>
     </div>
     <div class="node-deep">${renderNodeExplorerBoard(m,tr,s)}</div>
     <div class="panels">
@@ -1417,20 +1426,26 @@ function stopPollingJobs() {
 let EDITING_CLUSTER = null;
 let SELECTED_CLUSTER = null;
 
+
+function clusterKey(c){ return (c && typeof c === 'object') ? c.key : c; }
+function clusterLabel(c){ return (c && typeof c === 'object') ? (c.name || c.key) : c; }
+
 function settingsClusterRow(c) {
-  const active = SELECTED_CLUSTER === c;
+  const key = clusterKey(c);
+  const label = clusterLabel(c);
+  const active = SELECTED_CLUSTER === key;
   const rowStyle = active
     ? 'background:var(--panel); border:1px solid var(--accent);'
     : 'background:var(--panel2); border:1px solid var(--border);';
   return `
     <div style="display:flex; justify-content:space-between; align-items:center; ${rowStyle} border-radius:8px; padding:12px 16px; margin-bottom:8px;">
-      <div style="cursor:pointer; flex:1; min-width:0;" onclick="selectClusterSettings('${esc(c)}')" title="Select ${esc(c)}">
-        <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(c)}</div>
-        <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(c)}.yaml</div>
+      <div style="cursor:pointer; flex:1; min-width:0;" onclick="selectClusterSettings('${esc(key)}')" title="Select ${esc(label)}">
+        <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(label)}</div>
+        <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(key)}.yaml</div>
       </div>
       <div style="display:flex; gap:8px; margin-left:12px; flex-shrink:0;">
-        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); editClusterConfig('${esc(c)}')">Edit Config</button>
-        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); openDeleteConfirmModal('${esc(c)}')">Remove Cluster</button>
+        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); editClusterConfig('${esc(key)}')">Edit Config</button>
+        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); openDeleteConfirmModal('${esc(key)}')">Remove Cluster</button>
       </div>
     </div>`;
 }

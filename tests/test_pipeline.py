@@ -47,6 +47,27 @@ def test_healthy_broker_profile():
     assert h["grade"] in ("A", "B"), h
 
 
+def test_long_young_pause_is_not_counted_as_full_gc():
+    line = (
+        "[2026-06-08T10:00:00.000+0000][info][gc] GC(99) Pause Young (Normal) "
+        "(G1 Evacuation Pause) 3990M->1200M(4096M) 869.123ms\n"
+    )
+    p = parser.parse(line, "t")
+    a = analyzer.analyze(p)
+    assert a["metrics"]["full_count"] == 0
+    assert a["metrics"]["max_pause_ms"] >= 869
+
+
+def test_split_line_pause_full_is_counted():
+    text = (
+        "[2026-06-08T10:00:00.000+0000][info][gc,start] GC(42) Pause Full (Allocation Failure)\n"
+        "[2026-06-08T10:00:00.869+0000][info][gc,heap] GC(42) Eden: 8192M->4096M(8192M) 869.123ms\n"
+    )
+    p = parser.parse(text, "t")
+    a = analyzer.analyze(p)
+    assert a["metrics"]["full_count"] == 1, a["metrics"]
+
+
 def test_pressured_broker_detects_full_gc_and_hotspots():
     _, a = _analyze("broker-2-gc.log")
     m, h = a["metrics"], a["health"]

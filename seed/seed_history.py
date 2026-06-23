@@ -42,16 +42,16 @@ ROLE_PROFILE = {
 def build_incidents():
     return [
         # --- active in the last hour (red / amber "right now") ---
-        ("DEMO-KRAFT-broker-2", "full_gc_storm", 2, 2),
-        ("DEMO-KRAFT-connect-1", "long_pause", 1, 1),
-        ("DEMO-ZK-broker-1", "heap_pressure", 6, 6),
-        ("DEMO-ZK-broker-2", "throughput_drop", 1, 2),
+        ("DEMO-KRAFT--broker-2", "full_gc_storm", 2, 2),
+        ("DEMO-KRAFT--connect-1", "long_pause", 1, 1),
+        ("DEMO-ZK--broker-1", "heap_pressure", 6, 6),
+        ("DEMO-ZK--broker-2", "throughput_drop", 1, 2),
         # --- recent history (trends only, not in last-hour alerts) ---
-        ("DEMO-ZK-broker-3", "full_gc_storm", 26, 3),
-        ("DEMO-KRAFT-schema-registry-1", "long_pause", 50, 2),
+        ("DEMO-ZK--broker-3", "full_gc_storm", 26, 3),
+        ("DEMO-KRAFT--schema-registry-1", "long_pause", 50, 2),
         # --- mid-history (30-day trend context) ---
-        ("DEMO-KRAFT-broker-1", "heap_pressure", 12 * 24, 18),
-        ("DEMO-ZK-connect-1", "full_gc_storm", 20 * 24, 4),
+        ("DEMO-KRAFT--broker-1", "heap_pressure", 12 * 24, 18),
+        ("DEMO-ZK--connect-1", "full_gc_storm", 20 * 24, 4),
     ]
 
 

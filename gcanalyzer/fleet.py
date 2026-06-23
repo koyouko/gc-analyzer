@@ -242,6 +242,7 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
 
         nodes.append({
             "id": inst["id"],
+            "node_id": inst.get("node_id") or "",
             "role": inst["role"],
             "group": inst["grp"],
             "status": status,
@@ -263,7 +264,7 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     # Do NOT parse the cluster name — names like "demo" have no "-" and would crash.
     region = insts[0]["region"]
     env = insts[0]["env"]
-    cluster_status = "ok"
+    cluster_status = "unknown"
     for n in nodes:
         cluster_status = _worse(cluster_status, n["status"])
 

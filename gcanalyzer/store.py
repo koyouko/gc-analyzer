@@ -398,6 +398,23 @@ def delete_cluster(c, cluster: str) -> int:
     return len(ids)
 
 
+def delete_clusters(c, names: set[str] | list[str]) -> int:
+    removed = 0
+    for name in set(names):
+        removed += delete_cluster(c, name)
+    return removed
+
+
+def prune_orphan_clusters(c, onboarded: set[str]) -> int:
+    """Drop instance rows whose cluster name is not declared in any clusters/*.yaml."""
+    removed = 0
+    for row in c.execute("SELECT DISTINCT cluster FROM instances"):
+        cl = row["cluster"]
+        if cl not in onboarded:
+            removed += delete_cluster(c, cl)
+    return removed
+
+
 def prune_before(c, before_ts: int) -> int:
     """Delete metric rows older than before_ts (retention). Returns rows deleted."""
     cur = c.execute("DELETE FROM metrics WHERE ts < ?", (before_ts,))

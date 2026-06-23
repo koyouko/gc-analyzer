@@ -107,9 +107,27 @@ def _instance_id_for(cluster: str, node: NodeConfig, ordinal: int, used: set[str
     return iid, index
 
 
-def _heap_max_mb(role: str, observed: float) -> int:
+def _legacy_instance_ids(cluster: str, node: NodeConfig, index: int) -> list[str]:
+    """Pre-stable-id formats still present in seeded gc_history.db."""
+    return [
+        f"{cluster}-{node.role}-{index}",
+        f"{cluster}-{node.id}",
+    ]
+
+
+def _migrate_legacy_instance(conn, cluster: str, node: NodeConfig, index: int, new_id: str) -> None:
+    for legacy in _legacy_instance_ids(cluster, node, index):
+        if legacy == new_id or not store.get_instance(conn, legacy):
+            continue
+        store.migrate_instance(conn, legacy, new_id)
+        return
+
+
+def _heap_max_mb(role: str, observed: float, cluster: str | None = None) -> int:
     if observed and observed > 0:
         return int(round(observed))
+    if cluster and cluster in {c["id"] for c in topology.DEMO_CLUSTERS}:
+        return topology.default_heap_mb(role)
     return _FALLBACK_HEAP_MB.get(role, _DEFAULT_HEAP_MB)
 
 
@@ -155,7 +173,8 @@ def sync_instances_from_nodes(
     yaml_node_ids = {n.id for n in nodes}
     for ordinal, node in enumerate(nodes, start=1):
         iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
-        heap = _heap_max_mb(node.role, 0)
+        _migrate_legacy_instance(conn, cluster, node, index, iid)
+        heap = _heap_max_mb(node.role, 0, cluster)
         existing = store.get_instance(conn, iid)
         if existing and (existing["heap_max_mb"] or 0) > heap:
             heap = existing["heap_max_mb"]

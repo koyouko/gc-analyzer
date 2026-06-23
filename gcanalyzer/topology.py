@@ -86,14 +86,20 @@ class Instance:
         return asdict(self)
 
 
+def default_heap_mb(role: str) -> int:
+    return _HEAP.get(role, 1024)
+
+
 def build_instances() -> list[Instance]:
+    """Demo fleet inventory — ids match ingest._instance_id_for (cluster--node_id)."""
     out: list[Instance] = []
     for cl in DEMO_CLUSTERS:
         for group_key, role, count in cl["groups"]:
             for i in range(1, count + 1):
+                node_id = f"{role}-{i}"
                 out.append(
                     Instance(
-                        id=f"{cl['id']}-{role}-{i}",
+                        id=f"{cl['id']}--{node_id}",
                         region=cl["region"],
                         env=cl["env"],
                         cluster=cl["id"],
@@ -103,6 +109,7 @@ def build_instances() -> list[Instance]:
                         heap_max_mb=_HEAP[role],
                         busy_hour_utc=cl["busy_hour_utc"],
                         mode=cl["mode"],
+                        node_id=node_id,
                     )
                 )
     return out

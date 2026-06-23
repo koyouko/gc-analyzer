@@ -153,8 +153,8 @@ def _classify_unified(line: str) -> tuple[str, str, bool]:
     cause = causes[-1] if causes else ""
 
     low = line.lower()
-    if "pause full" in low:
-        return "full", cause, True
+    if "pause full" in low or re.search(r"\bfull\s+gc\b", low):
+        return "full", cause or "Full GC", True
     if "pause young" in low and "mixed" in low:
         return "mixed", cause, True
     if "pause young" in low:
@@ -172,6 +172,19 @@ def _classify_unified(line: str) -> tuple[str, str, bool]:
     return "other", cause, True
 
 
+def _record_phase_hint(line: str, pending: dict[int, tuple[str, str, bool]]) -> None:
+    """Remember Pause Full/Young from gc,start lines that lack a heap summary."""
+    if "->" in line:
+        return
+    seq_m = _SEQ_RE.search(line)
+    if not seq_m:
+        return
+    seq = int(seq_m.group(1))
+    phase, cause, is_stw = _classify_unified(line)
+    if phase != "other":
+        pending[seq] = (phase, cause, is_stw)
+
+
 # --------------------------------------------------------------------------- #
 # Main entry point
 # --------------------------------------------------------------------------- #
@@ -182,8 +195,10 @@ def parse(text: str, node_id: str = "node") -> ParsedLog:
 
     heap_max = 0.0
     matched = 0
+    pending_phase: dict[int, tuple[str, str, bool]] = {}
 
     for line in text.splitlines():
+        _record_phase_hint(line, pending_phase)
         if "->" not in line:
             continue
 
@@ -220,6 +235,10 @@ def parse(text: str, node_id: str = "node") -> ParsedLog:
                 phase, cause, is_stw = "young", "Young GC", True
         else:
             phase, cause, is_stw = _classify_unified(line)
+            if phase == "other" and seq is not None and seq in pending_phase:
+                phase, cause, is_stw = pending_phase[seq]
+            elif phase == "other" and re.search(r"\bfull\s+gc\b", low):
+                phase, cause, is_stw = "full", "Full GC", True
 
         parsed.events.append(
             GCEvent(

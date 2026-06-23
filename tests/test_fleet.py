@@ -41,7 +41,7 @@ def test_inventory_shape():
 
 def test_trends_cover_30_days():
     with store.connect(_TMP) as c:
-        tr = store.trends(c, "DEMO-KRAFT-broker-1", days=30)
+        tr = store.trends(c, "DEMO-KRAFT--broker-1", days=30)
     assert 29 <= len(tr["series"]) <= 32, len(tr["series"])
     assert tr["heap_max_mb"] == 6144
     for pt in tr["series"]:
@@ -50,7 +50,7 @@ def test_trends_cover_30_days():
 
 def test_injected_incident_raises_last_hour_alert():
     with store.connect(_TMP) as c:
-        alerts = store.evaluate_alerts(c, "DEMO-KRAFT-broker-2")
+        alerts = store.evaluate_alerts(c, "DEMO-KRAFT--broker-2")
         types = {a["type"] for a in alerts}
     assert "full_gc" in types, types
     assert any(a["severity"] == "critical" for a in alerts)
@@ -58,20 +58,20 @@ def test_injected_incident_raises_last_hour_alert():
 
 def test_heap_pressure_alert():
     with store.connect(_TMP) as c:
-        alerts = store.evaluate_alerts(c, "DEMO-ZK-broker-1")
+        alerts = store.evaluate_alerts(c, "DEMO-ZK--broker-1")
     assert any(a["type"] == "heap_pressure" for a in alerts), alerts
 
 
 def test_old_incident_not_in_last_hour():
-    # DEMO-ZK-broker-3 Full GC storm was ~26h ago: must NOT alert "now".
+    # DEMO-ZK--broker-3 Full GC storm was ~26h ago: must NOT alert "now".
     with store.connect(_TMP) as c:
-        alerts = store.evaluate_alerts(c, "DEMO-ZK-broker-3")
+        alerts = store.evaluate_alerts(c, "DEMO-ZK--broker-3")
     assert not any(a["type"] == "full_gc" for a in alerts), alerts
 
 
 def test_healthy_instance_is_ok():
     with store.connect(_TMP) as c:
-        snap = store.current_snapshot(c, "DEMO-ZK-zookeeper-1")
+        snap = store.current_snapshot(c, "DEMO-ZK--zookeeper-1")
     assert snap["health"]["grade"] in ("A", "B")
     assert snap["alerts"] == []
 
@@ -103,13 +103,13 @@ def test_cluster_overview():
     assert "broker" in v["config"]["heap_by_role"]
     # Attention list contains only unhealthy nodes, critical first.
     assert all(n["status"] in ("critical", "watch") for n in v["attention"])
-    assert any(n["id"] == "DEMO-KRAFT-broker-2" for n in v["attention"])
+    assert any(n["id"] == "DEMO-KRAFT--broker-2" for n in v["attention"])
 
 
 def test_zookeeper_cluster_has_healthy_ensemble():
     with store.connect(_TMP) as c:
         for i in (1, 2, 3):
-            snap = store.current_snapshot(c, f"DEMO-ZK-zookeeper-{i}")
+            snap = store.current_snapshot(c, f"DEMO-ZK--zookeeper-{i}")
             assert snap["health"]["grade"] in ("A", "B"), snap
             assert snap["alerts"] == []
 

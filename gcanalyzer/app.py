@@ -75,7 +75,7 @@ async def _start_scheduler():
     if os.environ.get("GC_SCHED_ENABLED", "1") != "0":
         interval = int(os.environ.get("GC_SCHED_INTERVAL", "300"))
         
-        def on_tick_start(ts, cluster, region, env):
+        def on_tick_start(ts, cluster, region, env, node_count=0):
             job_id = f"sched-{cluster}-{ts}"
             _prune_old_jobs()
             RUNNING_CLUSTERS.add(cluster)
@@ -307,6 +307,48 @@ def _parse_cluster_config(config: str, fmt: str = "yaml", expected_cluster: str 
 
 
 
+
+def _safe_cluster_slug(cluster: str) -> str:
+    return "".join(ch for ch in cluster if ch.isalnum() or ch in "-_") or "cluster"
+
+
+def _onboarded_cluster_names() -> set[str]:
+    """Cluster names declared in clusters/*.yaml (the fleet inventory source of truth)."""
+    names: set[str] = set()
+    if not os.path.isdir(CLUSTERS_DIR):
+        return names
+    for fname in os.listdir(CLUSTERS_DIR):
+        if not fname.endswith(".yaml"):
+            continue
+        path = os.path.join(CLUSTERS_DIR, fname)
+        try:
+            cluster_name, _, _, _ = config_mod.load_cluster(path)
+            names.add(cluster_name)
+        except Exception:
+            pass
+    return names
+
+
+def _cluster_delete_names(cluster: str) -> set[str]:
+    """All cluster name variants that may exist in the instances table."""
+    names = {cluster, _safe_cluster_slug(cluster)}
+    if os.path.isdir(CLUSTERS_DIR):
+        for fname in os.listdir(CLUSTERS_DIR):
+            if not fname.endswith(".yaml"):
+                continue
+            stem = fname[:-5]
+            if stem not in (cluster, _safe_cluster_slug(cluster)):
+                continue
+            path = os.path.join(CLUSTERS_DIR, fname)
+            try:
+                cluster_name, _, _, _ = config_mod.load_cluster(path)
+                names.add(cluster_name)
+                names.add(stem)
+            except Exception:
+                names.add(stem)
+    return names
+
+
 def _sync_cluster_inventory_from_configs() -> None:
     """Ensure every onboarded clusters/*.yaml appears in the fleet tree."""
     if not os.path.isdir(CLUSTERS_DIR):
@@ -326,6 +368,7 @@ def _sync_cluster_inventory_from_configs() -> None:
             region = cfg_region or derived_region
             env = cfg_env or derived_env
             ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
+        store.prune_orphan_clusters(c, _onboarded_cluster_names())
 
 
 def _prune_old_jobs() -> None:
@@ -534,8 +577,18 @@ def cancel_job(job_id: str) -> dict:
 def list_clusters() -> dict:
     if not os.path.isdir(CLUSTERS_DIR):
         return {"clusters": []}
-    names = sorted(f[:-5] for f in os.listdir(CLUSTERS_DIR) if f.endswith(".yaml"))
-    return {"clusters": names}
+    clusters = []
+    for fname in sorted(os.listdir(CLUSTERS_DIR)):
+        if not fname.endswith(".yaml"):
+            continue
+        stem = fname[:-5]
+        path = os.path.join(CLUSTERS_DIR, fname)
+        try:
+            cluster_name, _, _, _ = config_mod.load_cluster(path)
+            clusters.append({"key": stem, "name": cluster_name})
+        except Exception:
+            clusters.append({"key": stem, "name": stem})
+    return {"clusters": clusters}
 
 
 @app.get("/api/clusters/{cluster}/config")
@@ -556,9 +609,11 @@ def get_cluster_config(cluster: str) -> dict:
 def remove_cluster(cluster: str) -> dict:
     """Admin-only (enforced by middleware): drop a cluster's instances, metrics,
     collector offsets, and its persisted config."""
+    names = _cluster_delete_names(cluster)
     with store.connect() as c:
-        removed = store.delete_cluster(c, cluster)
-    safe = "".join(ch for ch in cluster if ch.isalnum() or ch in "-_")
+        removed = store.delete_clusters(c, names)
+        store.prune_orphan_clusters(c, _onboarded_cluster_names())
+    safe = _safe_cluster_slug(cluster)
     cfg = os.path.join(CLUSTERS_DIR, safe + ".yaml")
     config_existed = os.path.exists(cfg)
     if config_existed:
