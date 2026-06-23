@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import re
 import time
 from dataclasses import dataclass
 
@@ -72,10 +73,39 @@ def metrics_to_row(m: dict) -> dict:
     }
 
 
-def _index_of(node_id: str, fallback: int) -> int:
-    """Best-effort 1-based index from a trailing number in the node id."""
+_INDEX_PATTERNS = (
+    re.compile(r"^(?:br|broker)-(\d+)(?:-|_|$)", re.I),
+    re.compile(r"^(?:zk|zookeeper)-(\d+)(?:-|_|$)", re.I),
+    re.compile(r"^(?:sr|schema-registry)-(\d+)(?:-|_|$)", re.I),
+    re.compile(r"^(?:connect)-(\d+)(?:-|_|$)", re.I),
+    re.compile(r"^(?:ctrl|controller)-(\d+)(?:-|_|$)", re.I),
+)
+
+
+def _index_from_node_id(node_id: str) -> int | None:
+    """Parse br-1-host, zk-2-host, broker-3, etc."""
+    for pat in _INDEX_PATTERNS:
+        m = pat.match(node_id)
+        if m:
+            return int(m.group(1))
     tail = node_id.rsplit("-", 1)[-1]
-    return int(tail) if tail.isdigit() else fallback
+    return int(tail) if tail.isdigit() else None
+
+
+def _index_of(node_id: str, fallback: int) -> int:
+    return _index_from_node_id(node_id) or fallback
+
+
+def _instance_id_for(cluster: str, node: NodeConfig, ordinal: int, used: set[str]) -> tuple[str, int]:
+    index = _index_from_node_id(node.id) or ordinal
+    base = f"{cluster}-{node.role}-{index}"
+    if base not in used:
+        used.add(base)
+        return base, index
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", node.id).strip("-") or f"node-{ordinal}"
+    iid = f"{cluster}--{safe}"
+    used.add(iid)
+    return iid, index
 
 
 def _heap_max_mb(role: str, observed: float) -> int:
@@ -85,11 +115,12 @@ def _heap_max_mb(role: str, observed: float) -> int:
 
 
 def build_instance(
-    node: NodeConfig, region: str, env: str, cluster: str, index: int, heap_max_mb: int
+    node: NodeConfig, region: str, env: str, cluster: str, index: int, heap_max_mb: int,
+    instance_id: str | None = None,
 ) -> topology.Instance:
     """Construct a topology.Instance so the live node joins the dashboard tree."""
     return topology.Instance(
-        id=f"{cluster}-{node.role}-{index}",
+        id=instance_id or f"{cluster}-{node.role}-{index}",
         region=region,
         env=env,
         cluster=cluster,
@@ -98,7 +129,17 @@ def build_instance(
         index=index,
         heap_max_mb=heap_max_mb,
         busy_hour_utc=0,
+        node_id=node.id,
     )
+
+
+
+def _register_instance(conn, node, region, env, cluster, ordinal, used_ids, collector="G1"):
+    iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
+    heap_max = _heap_max_mb(node.role, 0)
+    inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
+    store.upsert_instance(conn, inst, collector=collector)
+    return inst
 
 
 def sync_instances_from_nodes(
@@ -111,13 +152,32 @@ def sync_instances_from_nodes(
 ) -> int:
     """Upsert instance rows from a cluster config without collecting GC logs."""
     count = 0
+    used_ids: set[str] = set()
     for ordinal, node in enumerate(nodes, start=1):
-        index = _index_of(node.id, ordinal)
+        iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
         heap_max = _heap_max_mb(node.role, 0)
-        inst = build_instance(node, region, env, cluster, index, heap_max)
+        inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
         store.upsert_instance(conn, inst, collector=collector)
         count += 1
     return count
+
+
+
+
+def record_analysis_metrics(conn, inst_id: str, parsed, analysis: dict, ts: int | None = None) -> int:
+    """Persist hourly buckets from the log plus a latest snapshot row."""
+    ts = ts if ts is not None else (int(time.time()) // 60) * 60
+    metrics = analysis["metrics"]
+    buckets = analyzer.bucket_metrics(parsed)
+    written = 0
+    if buckets:
+        for bts, m in buckets:
+            store.record_metric(conn, inst_id, bts, metrics_to_row(m))
+            written += 1
+    else:
+        store.record_metric(conn, inst_id, ts, metrics_to_row(metrics))
+        written = 1
+    return written
 
 
 def _analyze_node(node: NodeConfig, log_callback=None) -> dict | None:
@@ -137,6 +197,7 @@ def _analyze_node(node: NodeConfig, log_callback=None) -> dict | None:
         log_callback(f"Analyzing parsed GC data for node '{node.id}'...")
     result = analyzer.analyze(parsed)
     result["_files"] = [log.source_detail for log in logs]
+    result["_parsed"] = parsed
     return result
 
 
@@ -199,6 +260,7 @@ def ingest_nodes(
         log_callback(f"Connecting to database at {db_path} to record findings...")
 
     results: list[NodeResult] = []
+    used_ids: set[str] = set()
     with store.connect(db_path) as conn:
         for ordinal, node in enumerate(nodes, start=1):
             if _cancelled():
@@ -215,17 +277,20 @@ def ingest_nodes(
                         log_callback(f"Failed to process node '{node.id}': {exc}", node_id=node.id)
                     except TypeError:
                         log_callback(f"Failed to process node '{node.id}': {exc}")
-                results.append(NodeResult(node.id, "-", node.role, False, f"error: {exc}"))
+                inst = _register_instance(conn, node, region, env, cluster, ordinal, used_ids)
+                results.append(NodeResult(node.id, inst.id, node.role, False, f"error: {exc}"))
                 continue
 
             if analysis is None:
-                results.append(NodeResult(node.id, "-", node.role, False, "no GC log files found"))
+                inst = _register_instance(conn, node, region, env, cluster, ordinal, used_ids)
+                results.append(NodeResult(node.id, inst.id, node.role, False, "no GC log files found"))
                 continue
 
             metrics = analysis["metrics"]
-            index = _index_of(node.id, ordinal)
+            parsed = analysis.get("_parsed")
+            iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
             heap_max = _heap_max_mb(node.role, metrics["heap_max_mb"])
-            inst = build_instance(node, region, env, cluster, index, heap_max)
+            inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
 
             if metrics["stw_count"] <= 0:
                 store.upsert_instance(conn, inst, collector=analysis["collector"])
@@ -238,7 +303,10 @@ def ingest_nodes(
                 continue
 
             store.upsert_instance(conn, inst, collector=analysis["collector"])
-            store.record_metric(conn, inst.id, ts, metrics_to_row(metrics))
+            if parsed:
+                record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts)
+            else:
+                store.record_metric(conn, inst.id, ts, metrics_to_row(metrics))
             detail = (
                 f"{analysis['collector']} | {metrics['stw_count']} GCs "
                 f"| p99 {metrics['p99_pause_ms']:.0f}ms | max {metrics['max_pause_ms']:.0f}ms "

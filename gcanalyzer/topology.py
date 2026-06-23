@@ -80,6 +80,7 @@ class Instance:
     heap_max_mb: int
     busy_hour_utc: int
     mode: str = ""
+    node_id: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

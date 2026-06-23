@@ -67,6 +67,7 @@ async def _auth_guard(request: Request, call_next):
 
 @app.on_event("startup")
 async def _start_scheduler():
+    _sync_cluster_inventory_from_configs()
     if os.environ.get("GC_SCHED_ENABLED", "1") != "0":
         interval = int(os.environ.get("GC_SCHED_INTERVAL", "300"))
         
@@ -278,6 +279,28 @@ def _parse_cluster_config(config: str, fmt: str = "yaml", expected_cluster: str 
     return cluster, nodes, region, env
 
 
+
+def _sync_cluster_inventory_from_configs() -> None:
+    """Ensure every onboarded clusters/*.yaml appears in the fleet tree."""
+    if not os.path.isdir(CLUSTERS_DIR):
+        return
+    with store.connect() as c:
+        for fname in sorted(os.listdir(CLUSTERS_DIR)):
+            if not fname.endswith(".yaml"):
+                continue
+            path = os.path.join(CLUSTERS_DIR, fname)
+            try:
+                cluster_name, nodes, cfg_region, cfg_env = config_mod.load_cluster(path)
+            except Exception:
+                continue
+            derived_region, derived_env, cluster = _derive_identity(
+                cluster_name, cfg_region, cfg_env
+            )
+            region = cfg_region or derived_region
+            env = cfg_env or derived_env
+            ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
+
+
 def _prune_old_jobs() -> None:
     now = time.time()
     one_week_ago = now - 7 * 86400  # 7 days in seconds
@@ -389,6 +412,9 @@ async def onboard_cluster(req: OnboardRequest) -> dict:
 
     config_path = _persist_cluster_config(cluster, req.config)
 
+    with store.connect() as c:
+        synced = ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
+
     job_id = str(uuid.uuid4())
     JOBS[job_id] = {
         "id": job_id,
@@ -414,7 +440,8 @@ async def onboard_cluster(req: OnboardRequest) -> dict:
         "cluster": cluster,
         "region": region,
         "env": env,
-        "status": "pending"
+        "status": "pending",
+        "nodes_synced": synced,
     }
 
 

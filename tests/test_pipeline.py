@@ -81,6 +81,28 @@ def test_recommendations_present():
     assert f["recommendations"], "should produce recommendations"
 
 
+
+KAFKA281_GC_SNIPPET = """
+[2026-06-23T01:19:37.269+0100][gc,start] GC(139421) Pause Young (Normal) (G1 Evacuation Pause)
+[2026-06-23T01:19:37.269+0100][gc,phases] GC(139421)   Evacuate Collection Set: 10.5ms
+[2026-06-23T01:19:37.282+0100][gc] GC(139421) Pause Young (Normal) (G1 Evacuation Pause) 4953M->2909M(8192M) 12.178ms
+[2026-06-23T01:20:36.765+0100][gc] GC(139425) Pause Young (Normal) (G1 Evacuation Pause) 5100M->3000M(8192M) 13.176ms
+[2026-06-23T01:21:36.765+0100][gc] GC(139426) Pause Young (Normal) (G1 Evacuation Pause) 5200M->3100M(8192M) 11.500ms
+"""
+
+
+def test_kafka281_unified_gc_format():
+    """Kafka 2.8.x / Java 11+ unified GC logs without [info] tag prefix."""
+    p = parser.parse(KAFKA281_GC_SNIPPET, node_id="br-1-host")
+    assert p.collector == "G1", p.collector
+    assert p.java_hint == "unified", p.java_hint
+    assert len(p.events) == 3, len(p.events)
+    assert p.heap_max_mb == 8192.0
+    assert all(e.timestamp is not None for e in p.events)
+    buckets = analyzer.bucket_metrics(p)
+    assert len(buckets) >= 2, f"expected trend buckets, got {len(buckets)}"
+
+
 def run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

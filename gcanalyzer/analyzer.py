@@ -337,6 +337,92 @@ def _findings(m: dict, parsed: ParsedLog) -> dict:
     return {"pros": pros, "cons": cons, "recommendations": recs}
 
 
+
+
+def _event_epoch(e: GCEvent, uptime_offset: float) -> float | None:
+    if e.timestamp is not None:
+        return float(e.timestamp)
+    if e.uptime is not None:
+        return float(e.uptime) + uptime_offset
+    return None
+
+
+def auto_bucket_s(parsed: ParsedLog) -> int:
+    """Pick bucket width so trend charts get useful granularity."""
+    stw = [e for e in parsed.events if e.is_stw and e.pause_ms > 0]
+    if len(stw) < 2:
+        return 3600
+    import time
+
+    has_epoch = any(e.timestamp is not None for e in stw)
+    if has_epoch:
+        offset = 0.0
+    else:
+        uptimes = [e.uptime for e in stw if e.uptime is not None]
+        if not uptimes:
+            return 3600
+        offset = time.time() - max(uptimes)
+    times = [t for e in stw if (t := _event_epoch(e, offset)) is not None]
+    if len(times) < 2:
+        return 3600
+    span = max(times) - min(times)
+    if span <= 3600:
+        return 60
+    if span <= 6 * 3600:
+        return 300
+    if span <= 86400:
+        return 900
+    if span <= 7 * 86400:
+        return 3600
+    if span <= 90 * 86400:
+        return 6 * 3600
+    return 86400
+
+
+def bucket_metrics(parsed: ParsedLog, bucket_s: int | None = None) -> list[tuple[int, dict]]:
+    """Roll parsed GC events into time buckets for trend charts."""
+    stw = [e for e in parsed.events if e.is_stw and e.pause_ms > 0]
+    if not stw:
+        return []
+
+    if bucket_s is None:
+        bucket_s = auto_bucket_s(parsed)
+
+    import time
+
+    has_epoch = any(e.timestamp is not None for e in stw)
+    if has_epoch:
+        uptime_offset = 0.0
+    else:
+        uptimes = [e.uptime for e in stw if e.uptime is not None]
+        if not uptimes:
+            return []
+        uptime_offset = time.time() - max(uptimes)
+
+    buckets: dict[int, list[GCEvent]] = {}
+    for e in stw:
+        t = _event_epoch(e, uptime_offset)
+        if t is None:
+            continue
+        b = int(t // bucket_s) * bucket_s
+        buckets.setdefault(b, []).append(e)
+
+    if not buckets:
+        return []
+
+    out: list[tuple[int, dict]] = []
+    for bts in sorted(buckets):
+        sub = ParsedLog(
+            node_id=parsed.node_id,
+            collector=parsed.collector,
+            java_hint=parsed.java_hint,
+            events=buckets[bts],
+            heap_max_mb=parsed.heap_max_mb,
+            warnings=[],
+        )
+        out.append((bts, analyze(sub)["metrics"]))
+    return out
+
 # --------------------------------------------------------------------------- #
 # Public helpers reused by the history store (operate on a metrics dict, so the
 # same scoring/advice applies whether metrics come from a parsed log or from the

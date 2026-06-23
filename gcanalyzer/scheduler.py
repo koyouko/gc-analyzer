@@ -134,9 +134,9 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
             env = cfg_env or derived_env
             configs.append((cluster, region, env, nodes))
             
+            used_ids: set[str] = set()
             for ordinal, node in enumerate(nodes, start=1):
-                index = ingest._index_of(node.id, ordinal)
-                instance_id = f"{cluster}-{node.role}-{index}"
+                instance_id, index = ingest._instance_id_for(cluster, node, ordinal, used_ids)
                 prev_offsets = store.get_offsets(conn, instance_id)
                 
                 tasks.append({
@@ -184,9 +184,9 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
     with store.connect(db_path) as conn:
         for cluster, region, env, nodes in configs:
             cluster_collected = 0
+            used_ids: set[str] = set()
             for ordinal, node in enumerate(nodes, start=1):
-                index = ingest._index_of(node.id, ordinal)
-                instance_id = f"{cluster}-{node.role}-{index}"
+                instance_id, index = ingest._instance_id_for(cluster, node, ordinal, used_ids)
                 res = scrape_results.get(instance_id)
                 if not res:
                     continue
@@ -216,9 +216,9 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                         continue
                     
                     heap_max = ingest._heap_max_mb(node.role, metrics["heap_max_mb"])
-                    inst = ingest.build_instance(node, region, env, cluster, index, heap_max)
+                    inst = ingest.build_instance(node, region, env, cluster, index, heap_max, instance_id=instance_id)
                     store.upsert_instance(conn, inst, collector=analysis["collector"])
-                    store.record_metric(conn, inst.id, ts, ingest.metrics_to_row(metrics))
+                    ingest.record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts)
                     
                     cluster_collected += 1
                     collected += 1

@@ -946,7 +946,7 @@ function renderTree(){
           if(!go) continue;
           for(const i of g.instances){
             const sel=SELECTED===i.id?'sel':'';
-            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance('${i.id}',event)">${dot(i.status)}<span class="lbl">${i.id.split('-').slice(-2).join('-')}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
+            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance('${i.id}',event)">${dot(i.status)}<span class="lbl">${esc(i.node_id || i.id.split('-').slice(-2).join('-'))}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
           }
         }
       }
@@ -1498,6 +1498,7 @@ async function collectSelectedCluster() {
     if (!r.ok) throw new Error(body.detail || ('HTTP ' + r.status));
     res.innerHTML = '<div style="color:var(--ok); font-size:12px; margin-top:8px;">Collection job started for <b>' + esc(SELECTED_CLUSTER) + '</b>. Check progress in the Jobs panel.</div>';
     toggleJobsPanel(true);
+    load();
   } catch (e) {
     res.innerHTML = '<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">' + esc(e.message) + '</span></div>';
   } finally {
@@ -1638,6 +1639,7 @@ async function submitOnboardFromSettings(){
     res.innerHTML='<div style="color:var(--ok); font-size:12px; margin-top:8px;">Job submitted successfully! Check progress in the Jobs panel.</div>';
     await refreshSettingsClusters();
     toggleJobsPanel(true);
+    load();
   }catch(e){
     res.innerHTML=`<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">${e.message}</span></div>`;
   }finally{btn.disabled=false;btn.textContent='Onboard & collect';}

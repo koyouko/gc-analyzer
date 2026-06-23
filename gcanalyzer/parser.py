@@ -137,7 +137,9 @@ def detect_java_hint(text: str) -> str:
     head = text[:20000]
     if "secs]" in head or "PrintGCDetails" in head or "[Full GC" in head:
         return "legacy"
-    if re.search(r"\]\[info\s*\]\[gc", head) or _UPTIME_RE.search(head) or (_TS_RE.search(head) and "ms" in head):
+    if re.search(r"\]\[info\s*\]\[gc", head) or re.search(r"\]\[gc", head):
+        return "unified"
+    if _UPTIME_RE.search(head) or (_TS_RE.search(head) and "ms" in head):
         return "unified"
     return "unknown"
 

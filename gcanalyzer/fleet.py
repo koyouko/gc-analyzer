@@ -132,6 +132,7 @@ def build_fleet(c, now: int = None) -> dict:
                         cluster_alerts += len(st["alerts"])
                         ginsts.append({
                             "id": iid,
+                            "node_id": insts[iid].get("node_id") or "",
                             "role": insts[iid]["role"],
                             "status": st["status"],
                             "grade": st["grade"],

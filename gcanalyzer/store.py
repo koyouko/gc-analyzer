@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS instances (
     id          TEXT PRIMARY KEY,
     region      TEXT, env TEXT, cluster TEXT,
     grp         TEXT, role TEXT, idx INTEGER,
-    heap_max_mb INTEGER, collector TEXT
+    heap_max_mb INTEGER, collector TEXT,
+    node_id TEXT
 );
 CREATE TABLE IF NOT EXISTS metrics (
     ts             INTEGER,
@@ -82,17 +83,24 @@ def connect(db_path: str = None):
         conn.close()
 
 
+def _ensure_columns(c) -> None:
+    cols = {r[1] for r in c.execute('PRAGMA table_info(instances)')}
+    if 'node_id' not in cols:
+        c.execute('ALTER TABLE instances ADD COLUMN node_id TEXT')
+
+
 def init_db(db_path: str = None) -> None:
     with connect(db_path) as c:
         c.executescript(SCHEMA)
+        _ensure_columns(c)
 
 
 def upsert_instance(c, inst, collector="G1") -> None:
     c.execute(
-        "INSERT OR REPLACE INTO instances(id,region,env,cluster,grp,role,idx,heap_max_mb,collector)"
-        " VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO instances(id,region,env,cluster,grp,role,idx,heap_max_mb,collector,node_id)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
         (inst.id, inst.region, inst.env, inst.cluster, inst.group, inst.role,
-         inst.index, inst.heap_max_mb, collector),
+         inst.index, inst.heap_max_mb, collector, getattr(inst, 'node_id', None) or ''),
     )
 
 
