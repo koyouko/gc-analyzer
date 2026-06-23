@@ -10,6 +10,7 @@ Run:  python -m tests.test_fleet
 import os
 import sys
 import tempfile
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -149,6 +150,75 @@ def test_fleet_renders_non_demo_topology():
     assert local, [r["region"] for r in f["regions"]]
     ids = [i["id"] for c in local[0]["envs"][0]["clusters"] for g in c["groups"] for i in g["instances"]]
     assert ids == ["LOCAL-DEV-broker-1"], ids
+
+
+def test_startup_inventory_sync_does_not_prune_unconfigured_data(tmp_path, monkeypatch):
+    """Startup config sync should not delete telemetry from an empty config dir."""
+    pytest.importorskip("fastapi")
+    from gcanalyzer import app as app_mod  # noqa: E402
+
+    db = os.path.join(tmp_path, "gc_prune_guard.db")
+    store.init_db(db)
+    inst = topology.Instance(
+        id="LOCAL-DEV--broker-1",
+        region="LOCAL",
+        env="DEV",
+        cluster="LOCAL-DEV",
+        group="brokers",
+        role="broker",
+        index=1,
+        heap_max_mb=512,
+        busy_hour_utc=0,
+        node_id="broker-1",
+    )
+    with store.connect(db) as c:
+        store.upsert_instance(c, inst, collector="G1")
+
+    clusters_dir = os.path.join(tmp_path, "clusters")
+    os.makedirs(clusters_dir)
+    monkeypatch.setattr(app_mod, "CLUSTERS_DIR", clusters_dir)
+    monkeypatch.setattr(app_mod.store, "DB_PATH", db)
+
+    app_mod._sync_cluster_inventory_from_configs()
+
+    with store.connect(db) as c:
+        assert store.get_instance(c, "LOCAL-DEV--broker-1") is not None
+
+
+def test_save_cluster_config_accepts_config_key_with_display_name(tmp_path, monkeypatch):
+    """Editing KafkaCluster.yaml should accept cluster: Kafka Cluster."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("yaml")
+    from gcanalyzer import app as app_mod  # noqa: E402
+
+    db = os.path.join(tmp_path, "gc_edit_key.db")
+    clusters_dir = os.path.join(tmp_path, "clusters")
+    os.makedirs(clusters_dir)
+    store.init_db(db)
+    yaml_text = """
+cluster: Kafka Cluster
+region: LOCAL
+env: DEV
+nodes:
+  - id: broker-1
+    role: broker
+    source: local
+    local_paths: []
+"""
+    with open(os.path.join(clusters_dir, "KafkaCluster.yaml"), "w") as fh:
+        fh.write(yaml_text)
+
+    monkeypatch.setattr(app_mod, "CLUSTERS_DIR", clusters_dir)
+    monkeypatch.setattr(app_mod.store, "DB_PATH", db)
+
+    result = app_mod.save_cluster_config(
+        "KafkaCluster",
+        app_mod.ClusterConfigBody(config=yaml_text, format="yaml"),
+    )
+
+    assert result["cluster"] == "Kafka Cluster"
+    with store.connect(db) as c:
+        assert store.get_instance(c, "Kafka Cluster--broker-1") is not None
 
 
 def run_all():

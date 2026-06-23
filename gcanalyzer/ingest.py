@@ -131,6 +131,16 @@ def _heap_max_mb(role: str, observed: float, cluster: str | None = None) -> int:
     return _FALLBACK_HEAP_MB.get(role, _DEFAULT_HEAP_MB)
 
 
+def _heap_max_for_instance(conn, role: str, observed: float, cluster: str, instance_id: str) -> int:
+    heap = _heap_max_mb(role, observed, cluster)
+    if observed and observed > 0:
+        return heap
+    existing = store.get_instance(conn, instance_id)
+    if existing and (existing["heap_max_mb"] or 0) > heap:
+        return existing["heap_max_mb"]
+    return heap
+
+
 def build_instance(
     node: NodeConfig, region: str, env: str, cluster: str, index: int, heap_max_mb: int,
     instance_id: str | None = None,
@@ -153,7 +163,7 @@ def build_instance(
 
 def _register_instance(conn, node, region, env, cluster, ordinal, used_ids, collector="G1"):
     iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
-    heap_max = _heap_max_mb(node.role, 0)
+    heap_max = _heap_max_for_instance(conn, node.role, 0, cluster, iid)
     inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
     store.upsert_instance(conn, inst, collector=collector)
     return inst
@@ -174,10 +184,7 @@ def sync_instances_from_nodes(
     for ordinal, node in enumerate(nodes, start=1):
         iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
         _migrate_legacy_instance(conn, cluster, node, index, iid)
-        heap = _heap_max_mb(node.role, 0, cluster)
-        existing = store.get_instance(conn, iid)
-        if existing and (existing["heap_max_mb"] or 0) > heap:
-            heap = existing["heap_max_mb"]
+        heap = _heap_max_for_instance(conn, node.role, 0, cluster, iid)
         inst = build_instance(node, region, env, cluster, index, heap, instance_id=iid)
         expected.append((iid, inst))
 
@@ -427,7 +434,8 @@ def ingest_nodes(
 
             if analysis.get("_empty_incremental"):
                 iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
-                inst = build_instance(node, region, env, cluster, index, _heap_max_mb(node.role, 0), instance_id=iid)
+                heap_max = _heap_max_for_instance(conn, node.role, 0, cluster, iid)
+                inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
                 store.upsert_instance(conn, inst, collector="G1")
                 new_off = analysis.get("_new_offsets")
                 if new_off:
@@ -439,7 +447,7 @@ def ingest_nodes(
             metrics = analysis["metrics"]
             parsed = analysis.get("_parsed")
             iid, index = _instance_id_for(cluster, node, ordinal, used_ids)
-            heap_max = _heap_max_mb(node.role, metrics["heap_max_mb"])
+            heap_max = _heap_max_for_instance(conn, node.role, metrics["heap_max_mb"], cluster, iid)
             inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
 
             if metrics["stw_count"] <= 0:

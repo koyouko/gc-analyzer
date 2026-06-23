@@ -10,11 +10,13 @@ analyzer's health judgements line up with each node's designed profile.
 
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from gcanalyzer import parser, analyzer  # noqa: E402
+from gcanalyzer import parser, analyzer, ingest, store  # noqa: E402
+from gcanalyzer.collector import NodeConfig  # noqa: E402
 
 SAMPLES = os.path.join(ROOT, "samples")
 
@@ -122,6 +124,75 @@ def test_kafka281_unified_gc_format():
     assert all(e.timestamp is not None for e in p.events)
     buckets = analyzer.bucket_metrics(p)
     assert len(buckets) >= 2, f"expected trend buckets, got {len(buckets)}"
+
+
+def test_demo_heap_max_survives_empty_incremental_collect(monkeypatch):
+    """An empty incremental read must not shrink demo broker heap metadata."""
+    db = os.path.join(tempfile.gettempdir(), "gc_empty_incremental_test.db")
+    if os.path.exists(db):
+        os.remove(db)
+    store.init_db(db)
+    node = NodeConfig(id="broker-1", role="broker", source="local", local_paths=[])
+    inst_id = "DEMO-KRAFT--broker-1"
+    with store.connect(db) as c:
+        ingest.sync_instances_from_nodes(c, [node], "DEMO", "KRAFT", "DEMO-KRAFT")
+        store.record_metric(
+            c,
+            inst_id,
+            1000,
+            {
+                "heap_used_mb": 100.0,
+                "heap_max_mb": 6144.0,
+                "heap_after_pct": 2.0,
+                "pause_avg_ms": 1.0,
+                "pause_p99_ms": 1.0,
+                "pause_max_ms": 1.0,
+                "full_gc_count": 0,
+                "young_count": 1,
+                "gc_per_min": 1.0,
+                "time_in_gc_pct": 0.1,
+                "throughput_pct": 99.9,
+            },
+        )
+
+    monkeypatch.setattr(ingest, "read_increment_local", lambda _node, _prev: ("", {}))
+
+    results = ingest.ingest_nodes(
+        [node],
+        db,
+        region="DEMO",
+        env="KRAFT",
+        cluster="DEMO-KRAFT",
+        collect_mode="incremental",
+    )
+
+    assert results[0].recorded is True
+    with store.connect(db) as c:
+        inst = store.get_instance(c, inst_id)
+    assert inst["heap_max_mb"] == 6144
+
+
+def test_fresh_observed_heap_can_lower_stale_instance_metadata():
+    db = os.path.join(tempfile.gettempdir(), "gc_heap_downsize_test.db")
+    if os.path.exists(db):
+        os.remove(db)
+    store.init_db(db)
+    node = NodeConfig(id="broker-1", role="broker", source="local", local_paths=[])
+    inst_id = "DEMO-KRAFT--broker-1"
+    with store.connect(db) as c:
+        ingest.sync_instances_from_nodes(c, [node], "DEMO", "KRAFT", "DEMO-KRAFT")
+        assert store.get_instance(c, inst_id)["heap_max_mb"] == 6144
+        heap = ingest._heap_max_for_instance(c, "broker", 4096.0, "DEMO-KRAFT", inst_id)
+
+    assert heap == 4096
+
+
+def test_scheduler_uses_cluster_aware_heap_resolution():
+    with open(os.path.join(ROOT, "gcanalyzer", "scheduler.py")) as fh:
+        scheduler_source = fh.read()
+
+    assert "ingest._heap_max_mb(node.role, metrics[\"heap_max_mb\"])" not in scheduler_source
+    assert "ingest._heap_max_for_instance(conn, node.role, metrics[\"heap_max_mb\"], cluster, instance_id)" in scheduler_source
 
 
 def run_all():

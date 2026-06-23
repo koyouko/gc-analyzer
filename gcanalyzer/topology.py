@@ -8,7 +8,7 @@ Demo fleet: two Kafka clusters that showcase every component type and GC scenari
         -> Cluster  (DEMO-KRAFT or DEMO-ZK)
           -> Component group (brokers, schema-registry, connect,
                               controllers *or* zookeeper)
-            -> Instance (a single JVM, e.g. DEMO-KRAFT-broker-2)
+            -> Instance (a single JVM, e.g. DEMO-KRAFT--broker-2)
 
 DEMO-KRAFT is a KRaft cluster (controllers, no ZooKeeper).
 DEMO-ZK is a classic ZooKeeper-backed cluster (no KRaft controllers).

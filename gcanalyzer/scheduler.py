@@ -187,7 +187,7 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                             on_node_result(cluster, f"Node '{node.id}' scraped but no new GC events parsed.", True, node.id)
                         continue
                     
-                    heap_max = ingest._heap_max_mb(node.role, metrics["heap_max_mb"])
+                    heap_max = ingest._heap_max_for_instance(conn, node.role, metrics["heap_max_mb"], cluster, instance_id)
                     inst = ingest.build_instance(node, region, env, cluster, index, heap_max, instance_id=instance_id)
                     store.upsert_instance(conn, inst, collector=analysis["collector"])
                     ingest.record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts, incremental=True, new_offsets=res.get("new_offsets"))

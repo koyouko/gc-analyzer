@@ -718,7 +718,13 @@ const TEL_HELP={
   'Worst pause (now)':'Longest stop-the-world GC pause observed on any node in the most recent sample. Long pauses risk request timeouts and ISR shrink.',
   'Heap sizing':'Configured max heap (-Xmx) per component role in this cluster.'
 };
-const esc=s=>String(s).replace(/"/g,'&quot;');
+const esc=s=>String(s)
+  .replace(/&/g,'&amp;')
+  .replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;')
+  .replace(/'/g,'&#39;');
+const jsArg=s=>esc(JSON.stringify(String(s)));
 const memMetric=(label,valueHtml)=>{const h=MEM_HELP[label]||'';return `<div class="metric"${h?` title="${esc(h)}"`:''}><div class="l">${label}${h?'<span class="info">ⓘ</span>':''}</div><div class="v">${valueHtml}</div>${h?`<span class="tip">${h}</span>`:''}</div>`;};
 const cfgKey=label=>{const h=TEL_HELP[label]||'';return h?`<span class="k help" title="${esc(h)}">${label}<span class="info">ⓘ</span><span class="tip">${h}</span></span>`:`<span class="k">${label}</span>`;};
 const PILL={ok:'var(--ok)',watch:'var(--watch)',critical:'var(--crit)',unknown:'var(--unknown)'};
@@ -772,7 +778,7 @@ function explorerTabsHtml(){
     ['heap','Heap live set'],['util','Utilization %'],['pause','Pause spikes'],
     ['tig','Time in GC'],['full','Full GC count (Pause Full)'],['thru','Throughput']
   ];
-  return tabs.map(([k,l])=>`<button type="button" class="xtab${EXPLORER_TAB===k?' on':''}" data-tab="${k}" onclick="setExplorerTab('${k}')">${l}</button>`).join('');
+  return tabs.map(([k,l])=>`<button type="button" class="xtab${EXPLORER_TAB===k?' on':''}" data-tab="${esc(k)}" onclick="setExplorerTab(${jsArg(k)})">${esc(l)}</button>`).join('');
 }
 
 function renderNodeDeepDive(m, tr, s){
@@ -931,30 +937,30 @@ function renderTree(){
   const sb=document.getElementById('sidebar'); let h='';
   for(const r of FLEET.regions){
     const rk='r:'+r.region, ro=expanded[rk]!==false; // regions default open
-    h+=`<div class="tree-row" onclick="toggle('${rk}')">${tw(ro)}${dot(r.status)}<span class="lbl"><b>${r.region}</b></span></div>`;
+    h+=`<div class="tree-row" onclick="toggle(${jsArg(rk)})">${tw(ro)}${dot(r.status)}<span class="lbl"><b>${esc(r.region)}</b></span></div>`;
     if(!ro) continue;
     for(const e of r.envs){
       const ek='e:'+r.region+e.env, eo=expanded[ek]===true;
       const al=e.alert_count?`<span class="cnt"> ⚠${e.alert_count}</span>`:'';
-      h+=`<div class="tree-row indent1" onclick="toggle('${ek}')">`
+      h+=`<div class="tree-row indent1" onclick="toggle(${jsArg(ek)})">`
         +`<span class="tw">${eo?'▾':'▸'}</span>`
-        +`${dot(e.status)}<span class="lbl">${e.env}</span>${al}</div>`;
+        +`${dot(e.status)}<span class="lbl">${esc(e.env)}</span>${al}</div>`;
       if(!eo) continue;
       for(const c of e.clusters){
         const ck='c:'+c.cluster, co=expanded[ck]===true;
         const cal=c.alert_count?`<span class="cnt"> ⚠${c.alert_count}</span>`:'';
         const sel=SELECTED==='cluster:'+c.cluster?'sel':'';
-        h+=`<div class="tree-row indent2 ${sel}" onclick="selectCluster('${c.cluster}')" title="Open ${c.cluster} cluster dashboard">`
-          +`<span class="tw" onclick="toggle('${ck}');event.stopPropagation()">${co?'▾':'▸'}</span>`
-          +`${dot(c.status)}<span class="lbl">${c.cluster}</span>${cal}</div>`;
+        h+=`<div class="tree-row indent2 ${sel}" onclick="selectCluster(${jsArg(c.cluster)})" title="Open ${esc(c.cluster)} cluster dashboard">`
+          +`<span class="tw" onclick="toggle(${jsArg(ck)});event.stopPropagation()">${co?'▾':'▸'}</span>`
+          +`${dot(c.status)}<span class="lbl">${esc(c.cluster)}</span>${cal}</div>`;
         if(!co) continue;
         for(const g of c.groups){
           const gk='g:'+c.cluster+g.group, go=expanded[gk]===true;
-          h+=`<div class="tree-row indent3" onclick="toggle('${gk}')">${tw(go)}${dot(g.status)}<span class="lbl">${g.label}</span><span class="cnt">${g.count}</span></div>`;
+          h+=`<div class="tree-row indent3" onclick="toggle(${jsArg(gk)})">${tw(go)}${dot(g.status)}<span class="lbl">${esc(g.label)}</span><span class="cnt">${g.count}</span></div>`;
           if(!go) continue;
           for(const i of g.instances){
             const sel=SELECTED===i.id?'sel':'';
-            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance('${i.id}',event)">${dot(i.status)}<span class="lbl">${esc(instanceLabel(i.id, i.node_id))}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
+            h+=`<div class="tree-row indent4 ${sel}" onclick="selectInstance(${jsArg(i.id)},event)">${dot(i.status)}<span class="lbl">${esc(instanceLabel(i.id, i.node_id))}</span>${i.full_gc_1h?'<span class="cnt">🔴</span>':''}</div>`;
           }
         }
       }
@@ -1001,10 +1007,10 @@ function renderFleet(){
       <span>${dot('critical')} critical</span><span>🔴 Full GC in last hour</span>
     </div>
     <div class="alerts">${FLEET.active_alerts.length?FLEET.active_alerts.map(a=>`
-      <div class="alert ${a.severity}" onclick="selectInstance('${a.instance_id}')">
+      <div class="alert ${a.severity}" onclick="selectInstance(${jsArg(a.instance_id)})">
         <span class="sev ${a.severity}">${a.severity}</span>
-        <span class="where">${a.instance_id}</span>
-        <span class="msg">${a.msg}</span>
+        <span class="where">${esc(a.instance_id)}</span>
+        <span class="msg">${esc(a.msg)}</span>
       </div>`).join(''):'<div class="muted">No GC issues detected across the fleet in the last hour.</div>'}</div>
     <h2 style="margin-top:26px">Tip</h2>
     <div class="muted">Pick any component in the left tree (or click an alert) to see its current health and 30-day JVM heap / GC trends.</div>`;
@@ -1013,9 +1019,9 @@ function renderFleet(){
 /* ---------------- cluster overview ---------------- */
 async function selectCluster(cluster){
   SELECTED='cluster:'+cluster; renderTree();
-  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+cluster+'…</div>';
-  try{ renderCluster(await api('/api/cluster/'+cluster)); }
-  catch(e){ main.innerHTML=`<div class="empty">Failed: ${e.message}</div>`; }
+  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(cluster)+'…</div>';
+  try{ renderCluster(await api('/api/cluster/'+encodeURIComponent(cluster))); }
+  catch(e){ main.innerHTML=`<div class="empty">Failed: ${esc(e.message)}</div>`; }
 }
 
 function instanceLabel(id, nodeId){
@@ -1027,10 +1033,10 @@ function instanceLabel(id, nodeId){
 }
 
 function ncard(n){
-  return `<div class="ncard ${SC[n.status]}" onclick="selectInstance('${n.id}')">
+  return `<div class="ncard ${SC[n.status]}" onclick="selectInstance(${jsArg(n.id)})">
     <div class="nid"><span>${esc(instanceLabel(n.id, n.node_id))}</span>
       ${n.grade?`<span class="minigrade ${n.grade}">${n.grade}</span>`:''}</div>
-    <div class="nmeta"><span>${n.role}</span><span>heap ${n.heap_after_pct!=null?n.heap_after_pct+'%':'—'}</span></div>
+    <div class="nmeta"><span>${esc(n.role)}</span><span>heap ${n.heap_after_pct!=null?n.heap_after_pct+'%':'—'}</span></div>
     ${n.full_gc_1h?'<div class="nmeta" style="color:var(--crit)">🔴 Full GC in last hour</div>':''}
   </div>`;
 }
@@ -1048,10 +1054,10 @@ function renderCluster(v){
     {l:'GC engine',v:cfg.gc_engine.join(', ')},
   ];
   const attention=v.attention.length?v.attention.map(n=>`
-    <div class="alert ${n.status==='critical'?'critical':'warning'}" onclick="selectInstance('${n.id}')">
+    <div class="alert ${n.status==='critical'?'critical':'warning'}" onclick="selectInstance(${jsArg(n.id)})">
       <span class="sev ${n.status==='critical'?'critical':'warning'}">${n.status}</span>
-      <span class="where">${n.id}</span>
-      <span class="msg">${(n.alerts[0]&&n.alerts[0].msg)||n.reason||('grade '+n.grade)}</span>
+      <span class="where">${esc(n.id)}</span>
+      <span class="msg">${esc((n.alerts[0]&&n.alerts[0].msg)||n.reason||('grade '+n.grade))}</span>
       ${n.grade?`<span class="minigrade ${n.grade}" style="margin-left:auto">${n.grade}</span>`:''}
     </div>`).join(''):'<div class="muted">All nodes healthy — nothing needs attention. 🟢</div>';
 
@@ -1098,16 +1104,21 @@ function renderCluster(v){
 async function selectInstance(id,ev){
   if(ev) ev.stopPropagation();
   SELECTED=id; CURRENT_INSTANCE=id; renderTree();
-  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+id+'…</div>';
-  const [snap,ser]=await Promise.all([api('/api/instance/'+id),api('/api/instance/'+id+'/series?range='+CURRENT_RANGE)]);
+  const encodedId = encodeURIComponent(id);
+  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(id)+'…</div>';
+  const [snap,ser]=await Promise.all([
+    api('/api/instance/'+encodedId),
+    api('/api/instance/'+encodedId+'/series?range='+encodeURIComponent(CURRENT_RANGE)),
+  ]);
   renderInstance(snap,ser);
 }
 
 function renderInstance(s,tr){
   const m=s.metrics,h=s.health,inst=s.instance;
   const status = s.alerts.some(a=>a.severity==='critical')?'critical':(s.alerts.length||['C','D','F'].includes(h.grade))?'watch':'ok';
+  const grade = ['A','B','C','D','F'].includes(h.grade) ? h.grade : 'F';
   const alertHtml=s.alerts.length?`<div class="alerts" style="margin:6px 0 4px">${s.alerts.map(a=>`
-    <div class="alert ${a.severity}"><span class="sev ${a.severity}">${a.severity}</span><span class="msg">${a.msg}</span></div>`).join('')}</div>`:'';
+    <div class="alert ${a.severity==='critical'?'critical':'warning'}"><span class="sev ${a.severity==='critical'?'critical':'warning'}">${esc(a.severity)}</span><span class="msg">${esc(a.msg)}</span></div>`).join('')}</div>`:'';
   const mc=[
     ['Throughput',m.throughput_pct+'%'],['Time in GC',m.pct_time_in_gc+'%'],
     ['Avg pause',m.avg_pause_ms+' ms'],['p99 pause',m.p99_pause_ms+' ms'],['Max pause',m.max_pause_ms+' ms'],
@@ -1116,17 +1127,17 @@ function renderInstance(s,tr){
     ['Promotion trend',m.promotion_trend_pct+'%'],
   ];
   document.getElementById('main').innerHTML=`
-    <div class="breadcrumb">${inst.region} › ${inst.env} › ${inst.cluster} › ${inst.role}</div>
+    <div class="breadcrumb">${esc(inst.region)} › ${esc(inst.env)} › ${esc(inst.cluster)} › ${esc(inst.role)}</div>
     <div class="ihdr">
-      <div class="grade ${h.grade}">${h.grade}</div>
-      <div><div style="font-size:18px;font-weight:700">${inst.id}</div>
-        <div class="muted">${h.score} / 100 · ${h.status} · heap ${inst.heap_max_mb} MB</div></div>
-      <span class="engine"><span class="dot ${SC[status]}"></span> ${inst.collector} · ${inst.role}</span>
+      <div class="grade ${grade}">${grade}</div>
+      <div><div style="font-size:18px;font-weight:700">${esc(inst.id)}</div>
+        <div class="muted">${esc(h.score)} / 100 · ${esc(h.status)} · heap ${esc(inst.heap_max_mb)} MB</div></div>
+      <span class="engine"><span class="dot ${SC[status]}"></span> ${esc(inst.collector)} · ${esc(inst.role)}</span>
     </div>
-    <div class="muted" style="margin-bottom:8px">${h.reasons.join(' · ')||'No issues detected.'}</div>
+    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||'No issues detected.'}</div>
     ${alertHtml}
     <h2>Current metrics (24h window)</h2>
-    <div class="metric-grid">${mc.map(([l,v])=>{const hlp=METRIC_HELP[l]||'';return `<div class="metric"${hlp?` title="${hlp.replace(/"/g,'&quot;')}"`:''}><div class="l">${l}${hlp?'<span class="info">ⓘ</span>':''}</div><div class="v">${v}</div>${hlp?`<span class="tip">${hlp}</span>`:''}</div>`;}).join('')}</div>
+    <div class="metric-grid">${mc.map(([l,v])=>{const hlp=METRIC_HELP[l]||'';return `<div class="metric"${hlp?` title="${esc(hlp)}"`:''}><div class="l">${esc(l)}${hlp?'<span class="info">ⓘ</span>':''}</div><div class="v">${esc(v)}</div>${hlp?`<span class="tip">${esc(hlp)}</span>`:''}</div>`;}).join('')}</div>
     <div class="node-deep">${renderNodeDeepDive(m,tr,s)}</div>
     <h2 style="display:flex;align-items:center;gap:12px">Trends
       <select class="inp" style="width:auto;margin:0;text-transform:none;letter-spacing:0" onchange="changeRange(this.value)">
@@ -1141,9 +1152,9 @@ function renderInstance(s,tr){
     </div>
     <div class="node-deep">${renderNodeExplorerBoard(m,tr,s)}</div>
     <div class="panels">
-      <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(s.findings.pros||[]).map(x=>`<li>${x}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
-      <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${x}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
-      <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${x}</li>`).join('')}</ul></div>
+      <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(s.findings.pros||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
+      <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
+      <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
     </div>`;
   _lastMetrics=m; _lastSeries=tr;
   EXPLORER_TAB='heap';
@@ -1285,7 +1296,7 @@ function updateModalJobLogs() {
   tabKeys.forEach(key => {
     const label = key === '_general' ? 'General' : key;
     const isActive = key === activeLogTab;
-    tabsHtml += `<button class="log-tab ${isActive ? 'active' : ''}" onclick="selectLogTab('${key}')">${label}</button>`;
+    tabsHtml += `<button class="log-tab ${isActive ? 'active' : ''}" onclick="selectLogTab(${jsArg(key)})">${esc(label)}</button>`;
   });
   
   if (tabsContainer.innerHTML !== tabsHtml) {
@@ -1378,8 +1389,8 @@ async function updateJobsList() {
         </div>
       ` : '';
       
-      const cancelBtnHtml = isRunning ? `<button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px; color: var(--crit);" onclick="openCancelJobModal('${j.id}', '${esc(j.cluster)}')">Cancel</button>` : '';
-      const logsBtnHtml = (j.logs && j.logs.length) ? `<button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px;" onclick="openJobLogsModal('${j.id}', '${esc(j.cluster)}')">View Logs</button>` : '';
+      const cancelBtnHtml = isRunning ? `<button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px; color: var(--crit);" onclick="openCancelJobModal(${jsArg(j.id)}, ${jsArg(j.cluster)})">Cancel</button>` : '';
+      const logsBtnHtml = (j.logs && j.logs.length) ? `<button class="btn ghost" style="font-size: 10px; padding: 2px 8px; height: auto; border-radius: 4px;" onclick="openJobLogsModal(${jsArg(j.id)}, ${jsArg(j.cluster)})">View Logs</button>` : '';
       const logsHtml = `
         <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <span class="job-time" style="margin: 0; color: var(--muted);">${new Date(j.created_at * 1000).toLocaleTimeString()}</span>
@@ -1433,19 +1444,20 @@ function clusterLabel(c){ return (c && typeof c === 'object') ? (c.name || c.key
 function settingsClusterRow(c) {
   const key = clusterKey(c);
   const label = clusterLabel(c);
+  const keyArg = jsArg(key);
   const active = SELECTED_CLUSTER === key;
   const rowStyle = active
     ? 'background:var(--panel); border:1px solid var(--accent);'
     : 'background:var(--panel2); border:1px solid var(--border);';
   return `
     <div style="display:flex; justify-content:space-between; align-items:center; ${rowStyle} border-radius:8px; padding:12px 16px; margin-bottom:8px;">
-      <div style="cursor:pointer; flex:1; min-width:0;" onclick="selectClusterSettings('${esc(key)}')" title="Select ${esc(label)}">
+      <div style="cursor:pointer; flex:1; min-width:0;" onclick="selectClusterSettings(${keyArg})" title="Select ${esc(label)}">
         <div style="font-weight:600; font-size:13px; color:var(--txt);">${esc(label)}</div>
         <div style="font-size:11px; color:var(--muted); margin-top:2px;">Configured in ${esc(key)}.yaml</div>
       </div>
       <div style="display:flex; gap:8px; margin-left:12px; flex-shrink:0;">
-        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); editClusterConfig('${esc(key)}')">Edit Config</button>
-        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); openDeleteConfirmModal('${esc(key)}')">Remove Cluster</button>
+        <button class="btn ghost" style="font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); editClusterConfig(${keyArg})">Edit Config</button>
+        <button class="btn" style="background:var(--crit); color:#fff; font-size:11px; padding:6px 12px;" onclick="event.stopPropagation(); openDeleteConfirmModal(${keyArg})">Remove Cluster</button>
       </div>
     </div>`;
 }
@@ -1543,7 +1555,7 @@ async function openSettings(){
     const data = await api('/api/clusters');
     renderSettingsView(data.clusters);
   } catch(e) {
-    main.innerHTML=`<div class="empty">Failed to load settings: ${e.message}</div>`;
+    main.innerHTML=`<div class="empty">Failed to load settings: ${esc(e.message)}</div>`;
   }
 }
 
@@ -1644,7 +1656,7 @@ async function saveClusterConfig(){
     EDITING_CLUSTER = null;
     SELECTED_CLUSTER = cluster;
     setSettingsPanelMode('collect');
-    res.innerHTML = '<div style="color:var(--ok); font-size:12px; margin-top:8px;">Config saved for <b>' + esc(cluster) + '</b> (' + (data.nodes_synced || 0) + ' nodes synced).</div>';
+    res.innerHTML = '<div style="color:var(--ok); font-size:12px; margin-top:8px;">Config saved for <b>' + esc(data.cluster || cluster) + '</b> (' + (data.nodes_synced || 0) + ' nodes synced).</div>';
     await refreshSettingsClusters();
     load();
   } catch (e) {
@@ -1670,7 +1682,7 @@ async function submitOnboardFromSettings(){
     toggleJobsPanel(true);
     load();
   }catch(e){
-    res.innerHTML=`<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">${e.message}</span></div>`;
+    res.innerHTML='<div class="alert critical" style="cursor:default"><span class="sev critical">error</span><span class="msg">' + esc(e.message) + '</span></div>';
   }finally{btn.disabled=false;btn.textContent='Onboard & collect';}
 }
 
@@ -1809,7 +1821,7 @@ async function logout(){ try{await fetch('/api/logout',{method:'POST'});}catch(e
 async function changeRange(r){
   CURRENT_RANGE=r;
   if(!CURRENT_INSTANCE) return;
-  const tr=await api('/api/instance/'+CURRENT_INSTANCE+'/series?range='+r);
+  const tr=await api('/api/instance/'+encodeURIComponent(CURRENT_INSTANCE)+'/series?range='+encodeURIComponent(r));
   _lastSeries=tr;
   drawTrends(tr);
   drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));

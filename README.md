@@ -13,7 +13,7 @@ Region (DEMO — extensible to NAM · EMEA · APAC in production)
        └─ Cluster (DEMO-KRAFT or DEMO-ZK)
             └─ Component group (Brokers · Schema Registry · Kafka Connect ·
                                Controllers/KRaft *or* ZooKeeper)
-                 └─ Instance (a single JVM, e.g. DEMO-KRAFT-broker-2)
+                 └─ Instance (a single JVM, e.g. DEMO-KRAFT--broker-2)
 ```
 
 Analysis depth is inspired by [gceasy.io](https://gceasy.io/) (throughput, pause
@@ -22,18 +22,41 @@ percentiles, Full-GC detection, heap occupancy, tuning advice) but runs
 
 ---
 
-## Two ways to run the UI
+## Running The App
+
+Use `manage-app.sh` as the single control surface for local setup, deployment,
+startup, shutdown, status, and logs:
+
+```bash
+./manage-app.sh deploy 8083        # setup .venv, install deps, seed if needed, restart app
+./manage-app.sh start 8083 --open  # start in the background and open the dashboard
+./manage-app.sh status 8083
+./manage-app.sh logs 8083
+./manage-app.sh restart 8083
+./manage-app.sh stop 8083
+```
+
+Useful overrides:
+
+```bash
+GC_HOST=0.0.0.0 ./manage-app.sh start 8083
+GC_DB=gc_live.db ./manage-app.sh deploy 8083
+PYTHON=python3.14 ./manage-app.sh setup
+```
+
+The legacy `run.sh` and macOS `start-local.command` entrypoints are still
+present, but they now delegate to `manage-app.sh`.
 
 There are two interchangeable frontends over the **same FastAPI backend**:
 
 1. **Next.js app** (`web/`) — the primary UI: a TypeScript App-Router app.
    Clicking the **BSP Kafka GC Analyzer** title returns to the fleet overview;
    clusters and instances are real routes (`/cluster/DEMO-KRAFT`,
-   `/instance/DEMO-KRAFT-broker-2`).
+   `/instance/DEMO-KRAFT--broker-2`).
 2. **Single-file dashboard** (`frontend/index.html`) — the same dashboard with
    no build step; also used to produce the standalone `dashboard-preview.html`.
 
-### Quick start — backend + Next.js app
+### Optional Manual Run — Backend + Next.js App
 
 ```bash
 cd kafka-gc-analyzer
@@ -51,12 +74,10 @@ npm run build && npm start           # Next.js UI on http://127.0.0.1:3000
 The Next.js app proxies `/api/*` to the backend, so the browser stays
 same-origin (no CORS). Point it elsewhere with `BACKEND_URL=http://host:8000`.
 
-### Quick start — no build (single-file UI)
+### Quick Start — No Build
 
 ```bash
-python -m seed.seed_history
-python -m gcanalyzer.app             # then open http://127.0.0.1:8000
-# or just: ./run.sh
+./manage-app.sh start 8083 --open
 ```
 
 Want to look without running anything? Open **`dashboard-preview.html`** — a

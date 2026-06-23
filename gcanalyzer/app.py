@@ -245,10 +245,10 @@ def _derive_identity(cluster_name: str, region: str | None, env: str | None) -> 
     return r, e, cluster_name
 
 
-def _persist_cluster_config(cluster: str, text: str) -> str:
+def _persist_cluster_config(cluster: str, text: str, config_key: str | None = None) -> str:
     """Save the submitted config so a scheduled job can re-collect later."""
     os.makedirs(CLUSTERS_DIR, exist_ok=True)
-    safe = "".join(ch for ch in cluster if ch.isalnum() or ch in "-_") or "cluster"
+    safe = _safe_cluster_slug(config_key or cluster)
     path = os.path.join(CLUSTERS_DIR, safe + ".yaml")
     with open(path, "w") as fh:
         fh.write(text)
@@ -368,7 +368,6 @@ def _sync_cluster_inventory_from_configs() -> None:
             region = cfg_region or derived_region
             env = cfg_env or derived_env
             ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
-        store.prune_orphan_clusters(c, _onboarded_cluster_names())
 
 
 def _prune_old_jobs() -> None:
@@ -548,11 +547,19 @@ def save_cluster_config(cluster: str, req: ClusterConfigBody) -> dict:
     if not os.path.exists(path):
         raise HTTPException(404, f"Config for cluster {cluster} not found.")
 
-    _, nodes, region, env = _parse_cluster_config(req.config, req.format, expected_cluster=cluster)
-    _persist_cluster_config(cluster, req.config)
+    expected_cluster = None
+    try:
+        expected_cluster, _, _, _ = config_mod.load_cluster(path)
+    except Exception:
+        pass
+
+    actual_cluster, nodes, region, env = _parse_cluster_config(
+        req.config, req.format, expected_cluster=expected_cluster
+    )
+    _persist_cluster_config(actual_cluster, req.config, config_key=cluster)
     with store.connect() as c:
-        synced = ingest_mod.sync_instances_from_nodes(c, nodes, region, env, cluster)
-    return {"cluster": cluster, "region": region, "env": env, "nodes_synced": synced}
+        synced = ingest_mod.sync_instances_from_nodes(c, nodes, region, env, actual_cluster)
+    return {"cluster": actual_cluster, "key": safe, "region": region, "env": env, "nodes_synced": synced}
 
 
 
@@ -612,7 +619,6 @@ def remove_cluster(cluster: str) -> dict:
     names = _cluster_delete_names(cluster)
     with store.connect() as c:
         removed = store.delete_clusters(c, names)
-        store.prune_orphan_clusters(c, _onboarded_cluster_names())
     safe = _safe_cluster_slug(cluster)
     cfg = os.path.join(CLUSTERS_DIR, safe + ".yaml")
     config_existed = os.path.exists(cfg)

@@ -409,6 +409,7 @@
 
       <div class="nav-title">User Guide</div>
       <ul class="nav-list">
+        <li><a href="#control" class="nav-link">Application Control</a></li>
         <li><a href="#onboarding" class="nav-link">Cluster Onboarding</a></li>
         <li><a href="#dashboard" class="nav-link">Dashboard Reference</a></li>
         <li><a href="#alerts" class="nav-link">Alerting & Detections</a></li>
@@ -436,6 +437,66 @@
       <p>
         By focusing specifically on GC metrics (rather than general VM metrics), it isolates issues related to long Stop-the-world (STW) pauses, throughput degradation, heap occupancy peaks, and allocation rates, allowing administrators to optimize JVM tunings.
       </p>
+    </section>
+
+    <!-- 1b. Application Control -->
+    <section id="control" class="doc-section">
+      <h2>Application Control</h2>
+      <p>
+        Operators should use <code>manage-app.sh</code> as the single control surface for local setup, deployment, startup, shutdown, status checks, and log access. It creates or repairs the Python virtual environment, installs dependencies, seeds demo/history data when the selected database is empty, starts the FastAPI server in the background, and waits for <code>/api/health</code> before reporting the app as started.
+      </p>
+
+      <h3>Primary Commands</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Command</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>./manage-app.sh deploy 8083</code></td>
+            <td>Prepare the environment, seed data if needed, stop any existing process on the port, and start a fresh app process.</td>
+          </tr>
+          <tr>
+            <td><code>./manage-app.sh start 8083 --open</code></td>
+            <td>Start the app in the background and open the local dashboard after the health check succeeds.</td>
+          </tr>
+          <tr>
+            <td><code>./manage-app.sh status 8083</code></td>
+            <td>Show whether the tracked app process for that port is running, plus PID, log file, and dashboard URL.</td>
+          </tr>
+          <tr>
+            <td><code>./manage-app.sh logs 8083</code></td>
+            <td>Tail the Uvicorn/application log for that port.</td>
+          </tr>
+          <tr>
+            <td><code>./manage-app.sh restart 8083</code></td>
+            <td>Stop the tracked process, then start it again with the same setup and health-check behavior.</td>
+          </tr>
+          <tr>
+            <td><code>./manage-app.sh stop 8083</code></td>
+            <td>Stop the tracked app process and remove the PID file.</td>
+          </tr>
+          <tr>
+            <td><code>./manage-app.sh seed gc_live.db</code></td>
+            <td>Seed the selected SQLite database with the demo fleet history.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Environment Overrides</h3>
+      <pre><code>GC_HOST=0.0.0.0 ./manage-app.sh start 8083
+GC_DB=gc_live.db ./manage-app.sh deploy 8083
+PYTHON=python3.14 ./manage-app.sh setup</code></pre>
+
+      <div class="callout">
+        <div class="callout-title">One Entry Point</div>
+        <p class="callout-body">
+          Older launcher files are kept only as compatibility wrappers; operational documentation and troubleshooting should refer to <code>manage-app.sh</code>.
+        </p>
+      </div>
     </section>
 
     <!-- 2. Ingestion Pipeline -->
@@ -687,7 +748,7 @@ nodes:
     <section id="admin" class="doc-section">
       <h2>Administration &amp; Troubleshooting</h2>
       <p>
-        The backend serves static files and handles scheduler tasks in the background. Here are operational routines for operators:
+        The backend serves static files and handles scheduler tasks in the background. Use <code>manage-app.sh status 8083</code>, <code>manage-app.sh logs 8083</code>, and <code>manage-app.sh stop 8083</code> for routine process control before dropping down to module-level commands.
       </p>
 
       <h3>Managing Concurrency</h3>
