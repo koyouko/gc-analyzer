@@ -224,21 +224,25 @@ start_app() {
   seed_demo_history "${DB_PATH:-${GC_DB:-gc_history.db}}"
 
   local py new_pid
-  local -a db_arg=()
   py="$(python_bin)"
-  if [ -n "${DB_PATH:-}" ]; then
-    db_arg=(--db "$DB_PATH")
-    export GC_DB="$DB_PATH"
-  fi
 
   echo "Starting GC Analyzer on ${HOST}:${PORT}..."
-  nohup "$py" -m gcanalyzer.app --host "$HOST" --port "$PORT" "${db_arg[@]}" > "$LOG_FILE" 2>&1 &
+  if [ -n "${DB_PATH:-}" ]; then
+    export GC_DB="$DB_PATH"
+    nohup "$py" -m gcanalyzer.app --host "$HOST" --port "$PORT" --db "$DB_PATH" > "$LOG_FILE" 2>&1 &
+  else
+    nohup "$py" -m gcanalyzer.app --host "$HOST" --port "$PORT" > "$LOG_FILE" 2>&1 &
+  fi
   new_pid=$!
   echo "$new_pid" > "$PID_FILE"
 
   if ! wait_for_health "$new_pid"; then
     echo "ERROR: GC Analyzer failed to start. Recent logs:"
-    tail -n 30 "$LOG_FILE" || true
+    if [ -f "$LOG_FILE" ]; then
+      tail -n 30 "$LOG_FILE" || true
+    else
+      echo "Log file was not created: $LOG_FILE"
+    fi
     rm -f "$PID_FILE"
     return 1
   fi

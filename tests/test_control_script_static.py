@@ -23,6 +23,15 @@ def test_manage_app_is_the_only_full_startup_control_script():
     assert "Dashboard URL:" in script
 
 
+def test_manage_app_avoids_empty_array_expansion_under_nounset():
+    script = _read("manage-app.sh")
+
+    assert 'local -a db_arg=()' not in script
+    assert '"${db_arg[@]}"' not in script
+    assert 'if [ -f "$LOG_FILE" ]; then' in script
+    assert "Log file was not created:" in script
+
+
 def test_legacy_launchers_delegate_to_manage_app():
     run_sh = _read("run.sh")
     start_local = _read("start-local.command")
