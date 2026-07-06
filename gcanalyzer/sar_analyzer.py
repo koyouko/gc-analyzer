@@ -102,17 +102,32 @@ def _rollup(samples: list[SarSample]) -> dict:
         "cpu_iowait_pct_max": _max([s.cpu_iowait_pct for s in samples]),
         "cpu_busy_pct_avg": _avg(cpu_busy),
         "cpu_busy_pct_max": _max(cpu_busy),
+        "cpu_steal_pct_avg": _avg([s.cpu_steal_pct for s in samples]),
+        "cpu_steal_pct_max": _max([s.cpu_steal_pct for s in samples]),
         "load1_avg": _avg([s.load1 for s in samples]),
         "load1_max": _max([s.load1 for s in samples]),
         "load5_avg": _avg([s.load5 for s in samples]),
+        "load15_avg": _avg([s.load15 for s in samples]),
         "runq_sz_avg": _avg([s.runq_sz for s in samples]),
         "plist_sz_avg": _avg([s.plist_sz for s in samples]),
+        "blocked_avg": _avg([s.blocked for s in samples]),
+        "proc_per_s_avg": _avg([s.proc_per_s for s in samples]),
         "cswch_per_s_avg": _avg([s.cswch_per_s for s in samples]),
         "mem_used_pct_avg": _avg([s.mem_used_pct for s in samples]),
         "mem_used_pct_max": _max([s.mem_used_pct for s in samples]),
+        "mem_avail_mb_avg": _avg([s.mem_avail_mb for s in samples]),
         "mem_cached_mb_avg": _avg([s.mem_cached_mb for s in samples]),
+        "mem_commit_pct_avg": _avg([s.mem_commit_pct for s in samples]),
         "swap_used_pct_avg": _avg([s.swap_used_pct for s in samples]),
         "swap_used_pct_max": _max([s.swap_used_pct for s in samples]),
+        "pgpgin_kbs_avg": _avg([s.pgpgin_kbs for s in samples]),
+        "pgpgout_kbs_avg": _avg([s.pgpgout_kbs for s in samples]),
+        "fault_per_s_avg": _avg([s.fault_per_s for s in samples]),
+        "majflt_per_s_avg": _avg([s.majflt_per_s for s in samples]),
+        "majflt_per_s_max": _max([s.majflt_per_s for s in samples]),
+        "pswpin_per_s_avg": _avg([s.pswpin_per_s for s in samples]),
+        "pswpout_per_s_avg": _avg([s.pswpout_per_s for s in samples]),
+        "pswpout_per_s_max": _max([s.pswpout_per_s for s in samples]),
         "disk_util_pct_max": _max([d.get("util_pct", 0.0) for s in samples for d in s.disks]),
         "disk_await_ms_max": _max([d.get("await_ms", 0.0) for s in samples for d in s.disks]),
         "disk_tps_avg": _avg([sum(d.get("tps", 0.0) for d in s.disks) for s in samples]),
@@ -231,6 +246,20 @@ def _findings(m: dict) -> dict:
         cons.append(f"NIC '{busiest_if}' peaked at {m['net_util_pct_max']:.0f}% utilization.")
         recs.append("Network is approaching its ceiling — consider a faster NIC, multiple NICs/bonding, or "
                      "horizontally adding brokers so replication/produce/fetch traffic spreads across more links.")
+
+    # Paging / swap *activity* (RHEL `sar -B` / `sar -W`) — early-warning
+    # signals that occupancy numbers hide.
+    if m.get("pswpout_per_s_max", 0.0) > 0.5:
+        cons.append(f"Active swap-out observed (peak {m['pswpout_per_s_max']:.1f} pages/s) — the kernel is "
+                     f"evicting anonymous memory under pressure.")
+        recs.append("Swap-out on a Kafka host is an emergency-grade memory signal (worse than mere swap "
+                     "occupancy): find the memory hog, reduce heap/off-heap footprint, or add RAM — and keep "
+                     "vm.swappiness=1.")
+    if m.get("majflt_per_s_max", 0.0) > 20.0:
+        cons.append(f"Major page faults peaked at {m['majflt_per_s_max']:.0f}/s — code or data pages are being "
+                     f"re-read from disk.")
+        recs.append("Sustained major faults mean the page cache is being reclaimed faster than Kafka can use "
+                     "it — check for memory-hungry co-tenants and watch consumer fetch latency during these windows.")
 
     if not recs:
         recs.append("No host-level resource pressure detected — this node's headroom looks healthy.")

@@ -3,8 +3,9 @@
 import { useRouter } from "next/navigation";
 import { useApi, PILL_COLOR, fmtTime, shortId } from "@/lib/api";
 import { useFleet } from "@/lib/fleetContext";
-import { ClusterView as CV, ClusterNode, ScalingResult } from "@/lib/types";
+import { ClusterView as CV, ClusterNode, ClusterHostNode, ScalingResult, ClusterForecast } from "@/lib/types";
 import ScalingAdvisorPanel from "./ScalingAdvisorPanel";
+import ForecastPanel from "./ForecastPanel";
 
 // Plain-language explanations shown on hover.
 const MEM_HELP: Record<string, string> = {
@@ -69,11 +70,34 @@ function NodeCard({ n, onClick }: { n: ClusterNode; onClick: () => void }) {
   );
 }
 
+function HostCard({ n, onClick }: { n: ClusterHostNode; onClick: () => void }) {
+  return (
+    <div className={"ncard " + n.status} onClick={onClick}>
+      <div className="nid">
+        <span>{n.node_id || shortId(n.id)}</span>
+        {n.grade ? <span className={"minigrade " + n.grade}>{n.grade}</span> : null}
+      </div>
+      <div className="nmeta">
+        <span>cpu {n.cpu_busy_pct_avg != null ? n.cpu_busy_pct_avg + "%" : "—"}</span>
+        <span>mem {n.mem_used_pct_avg != null ? n.mem_used_pct_avg + "%" : "—"}</span>
+      </div>
+      <div className="nmeta">
+        <span>disk {n.disk_util_pct_max != null ? n.disk_util_pct_max + "%" : "—"}</span>
+        <span>nic {n.net_util_pct_max != null ? n.net_util_pct_max + "%" : "—"}</span>
+      </div>
+      {(n.swap_used_pct_max ?? 0) > 0 ? (
+        <div className="nmeta" style={{ color: "var(--crit)" }}>swap touched</div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ClusterView({ cluster }: { cluster: string }) {
   const router = useRouter();
   const { tick } = useFleet();
   const { data: v, error } = useApi<CV>(`/api/cluster/${cluster}`, tick);
   const { data: scaling } = useApi<ScalingResult>(`/api/cluster/${cluster}/scaling?role=broker`, tick);
+  const { data: fc } = useApi<ClusterForecast>(`/api/cluster/${cluster}/forecast?role=broker`, tick);
 
   if (error) return <div className="empty">Failed to load {cluster}: {error}</div>;
   if (!v) return <div className="empty">Loading {cluster}…</div>;
@@ -179,9 +203,77 @@ export default function ClusterView({ cluster }: { cluster: string }) {
         )}
       </div>
 
+      {v.host_nodes && v.host_summary ? (
+        <>
+          <h2 className="sec" style={{ marginTop: 24, display: "flex", alignItems: "center", gap: 10 }}>
+            Hosts — server health (SAR)
+            {v.host_status ? (
+              <span className="statuspill" style={{ background: PILL_COLOR[v.host_status], fontSize: 11 }}>
+                {v.host_status}
+              </span>
+            ) : null}
+            <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>
+              {v.host_counts?.healthy ?? 0} healthy · {v.host_counts?.unhealthy ?? 0} under pressure ·{" "}
+              {v.host_summary.n_with_data}/{v.host_counts?.total ?? 0} reporting
+            </span>
+          </h2>
+
+          <div className="panels">
+            <div className="panel full">
+              <h3>Cluster host metrics (24h)</h3>
+              <div className="metric-grid">
+                <div className="metric"><div className="l">CPU busy (avg / peak node)</div><div className="v">{v.host_summary.cpu_busy_avg}% / {v.host_summary.cpu_busy_peak}%</div></div>
+                <div className="metric"><div className="l">iowait (avg)</div><div className="v">{v.host_summary.iowait_avg}%</div></div>
+                <div className="metric"><div className="l">Memory used (avg / peak node)</div><div className="v">{v.host_summary.mem_used_avg}% / {v.host_summary.mem_used_peak}%</div></div>
+                <div className="metric"><div className="l">Worst disk util / await</div><div className="v">{v.host_summary.disk_util_worst}% / {v.host_summary.disk_await_worst} ms</div></div>
+                <div className="metric"><div className="l">Worst NIC util</div><div className="v">{v.host_summary.net_util_worst}%</div></div>
+                <div className="metric"><div className="l">Cluster ingress / egress</div><div className="v">{(v.host_summary.net_rx_total_kbs / 1024).toFixed(1)} / {(v.host_summary.net_tx_total_kbs / 1024).toFixed(1)} MB/s</div></div>
+                <div className="metric"><div className="l">Nodes with swap touched</div><div className="v" style={{ color: v.host_summary.swap_touched_nodes ? "var(--crit)" : "inherit" }}>{v.host_summary.swap_touched_nodes}</div></div>
+                <div className="metric"><div className="l">Nodes with majflt storms</div><div className="v" style={{ color: v.host_summary.majflt_hot_nodes ? "var(--crit)" : "inherit" }}>{v.host_summary.majflt_hot_nodes}</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div className="legend" style={{ marginTop: 10 }}>
+            <span><span className="dot ok" /> healthy</span>
+            <span><span className="dot watch" /> watch</span>
+            <span><span className="dot crit" /> critical</span>
+            <span className="muted">click a host card for the full SAR analysis; GC cards above open the JVM view</span>
+          </div>
+          <div className="nodegrid">
+            {v.host_nodes.map((n) => (
+              <HostCard key={n.id} n={n} onClick={() => router.push(`/host/${n.id}`)} />
+            ))}
+          </div>
+
+          <h2 className="sec" style={{ marginTop: 24 }}>
+            Host needs attention{v.host_attention?.length ? ` (${v.host_attention.length})` : ""} — click to investigate
+          </h2>
+          <div className="alerts">
+            {v.host_attention?.length ? (
+              v.host_attention.map((n) => (
+                <div
+                  key={n.id}
+                  className={"alert " + (n.status === "critical" ? "critical" : "warning")}
+                  onClick={() => router.push(`/host/${n.id}`)}
+                >
+                  <span className={"sev " + (n.status === "critical" ? "critical" : "warning")}>{n.status}</span>
+                  <span className="where">{n.id}</span>
+                  <span className="msg">{n.reason || "grade " + n.grade}</span>
+                  {n.grade ? <span className={"minigrade " + n.grade} style={{ marginLeft: "auto" }}>{n.grade}</span> : null}
+                </div>
+              ))
+            ) : (
+              <div className="muted">All hosts healthy — no OS-level resource pressure. 🟢</div>
+            )}
+          </div>
+        </>
+      ) : null}
+
       <h2 className="sec" style={{ marginTop: 24 }}>Capacity &amp; scaling</h2>
       <div className="panels">
         <ScalingAdvisorPanel scaling={scaling ?? null} />
+        <ForecastPanel forecast={fc ?? null} />
       </div>
     </>
   );

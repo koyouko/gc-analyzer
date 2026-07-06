@@ -98,6 +98,8 @@ def base_row(inst, ts: int) -> dict:
 
     load1 = max(0.05, cpu_busy / 100 * 8 * random.uniform(0.8, 1.2))
 
+    mem_used_capped = max(5.0, min(97.0, mem_used))
+    total_mem_mb = inst.heap_max_mb * 6.0  # plausible box size relative to heap
     return {
         "sample_count": 6,
         "cpu_user_pct_avg": round(cpu_user, 2),
@@ -106,15 +108,30 @@ def base_row(inst, ts: int) -> dict:
         "cpu_busy_pct_avg": round(cpu_busy, 2),
         "cpu_busy_pct_max": round(min(99.5, cpu_busy * random.uniform(1.05, 1.2)), 2),
         "cpu_iowait_pct_max": round(min(99.0, iowait * random.uniform(1.2, 1.8)), 2),
+        "cpu_steal_pct_avg": round(random.uniform(0.0, 0.4), 2),
         "load1_avg": round(load1, 2),
         "load5_avg": round(load1 * 0.92, 2),
+        "load15_avg": round(load1 * 0.85, 2),
         "runq_sz_avg": round(max(0.0, (cpu_busy - 60) / 20), 2),
+        "plist_sz_avg": round(210 + cpu_busy * 1.2 + random.uniform(-8, 8), 1),
+        "blocked_avg": round(max(0.0, (iowait - 2) / 3), 2),
+        "proc_per_s_avg": round(0.3 + cpu_busy / 90, 2),
         "cswch_per_s_avg": round(300 + cpu_busy * 12, 1),
-        "mem_used_pct_avg": round(max(5.0, min(97.0, mem_used)), 2),
+        "mem_used_pct_avg": round(mem_used_capped, 2),
         "mem_used_pct_max": round(max(5.0, min(98.0, mem_used + random.uniform(1, 4))), 2),
+        "mem_avail_mb_avg": round(total_mem_mb * (1 - mem_used_capped / 100.0), 1),
         "mem_cached_mb_avg": round(inst.heap_max_mb * random.uniform(2.5, 4.0), 1),
+        "mem_commit_pct_avg": round(min(95.0, mem_used_capped * 0.85 + random.uniform(-2, 2)), 2),
         "swap_used_pct_avg": 0.0,
         "swap_used_pct_max": 0.0,
+        # Paging: Kafka writes flow through the page cache, so pgpgout tracks
+        # produce/disk activity; faults stay modest outside incidents.
+        "pgpgin_kbs_avg": round(50 + disk_util * 8 * random.uniform(0.7, 1.3), 1),
+        "pgpgout_kbs_avg": round(200 + disk_util * 30 * random.uniform(0.8, 1.2), 1),
+        "fault_per_s_avg": round(120 + cpu_busy * 4 + random.uniform(-20, 20), 1),
+        "majflt_per_s_avg": round(max(0.0, random.uniform(0.0, 0.6)), 2),
+        "pswpin_per_s_avg": 0.0,
+        "pswpout_per_s_avg": 0.0,
         "disk_util_pct_max": round(disk_util, 2),
         "disk_await_ms_max": round(disk_await, 2),
         "disk_tps_avg": round(20 + disk_util * 2.2, 1),
@@ -136,9 +153,14 @@ def apply_host_incident(row: dict, kind: str, intensity: float) -> dict:
         r["mem_used_pct_avg"] = round(min(97, row["mem_used_pct_avg"] + 15 * intensity), 2)
         r["mem_used_pct_max"] = round(min(98, row["mem_used_pct_max"] + 18 * intensity), 2)
         r["swap_used_pct_max"] = round(max(row["swap_used_pct_max"], 2.5 * intensity), 2)
+        # Memory pressure shows up as swap-out activity + major faults too.
+        r["pswpout_per_s_avg"] = round(3.0 * intensity, 2)
+        r["majflt_per_s_avg"] = round(row["majflt_per_s_avg"] + 30 * intensity, 2)
+        r["pgpgin_kbs_avg"] = round(row["pgpgin_kbs_avg"] * (1 + 2.0 * intensity), 1)
     elif kind == "heap_pressure":
         r["mem_used_pct_avg"] = round(min(95, row["mem_used_pct_avg"] + 10 * intensity), 2)
         r["mem_used_pct_max"] = round(min(97, row["mem_used_pct_max"] + 14 * intensity), 2)
+        r["majflt_per_s_avg"] = round(row["majflt_per_s_avg"] + 8 * intensity, 2)
     elif kind == "long_pause":
         r["disk_util_pct_max"] = round(min(97, row["disk_util_pct_max"] + 40 * intensity), 2)
         r["disk_await_ms_max"] = round(row["disk_await_ms_max"] + 35 * intensity, 2)

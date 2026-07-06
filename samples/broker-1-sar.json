@@ -53,6 +53,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -127,6 +142,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -203,6 +233,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -277,6 +322,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -353,6 +413,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -427,6 +502,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -503,6 +593,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -577,6 +682,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -653,6 +773,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -727,6 +862,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -803,6 +953,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -877,6 +1042,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -953,6 +1133,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1027,6 +1222,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -1103,6 +1313,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1177,6 +1402,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -1253,6 +1493,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1327,6 +1582,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -1403,6 +1673,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1477,6 +1762,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -1553,6 +1853,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1627,6 +1942,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -1703,6 +2033,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1777,6 +2122,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -1853,6 +2213,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -1927,6 +2302,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2003,6 +2393,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2077,6 +2482,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2153,6 +2573,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2227,6 +2662,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2303,6 +2753,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2377,6 +2842,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2453,6 +2933,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2527,6 +3022,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2603,6 +3113,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2677,6 +3202,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2753,6 +3293,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2827,6 +3382,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -2903,6 +3473,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -2977,6 +3562,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3053,6 +3653,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -3127,6 +3742,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3203,6 +3833,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -3277,6 +3922,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3353,6 +4013,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -3427,6 +4102,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3503,6 +4193,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -3577,6 +4282,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3653,6 +4373,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -3727,6 +4462,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3803,6 +4553,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -3877,6 +4642,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -3953,6 +4733,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4027,6 +4822,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -4103,6 +4913,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4177,6 +5002,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -4253,6 +5093,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4327,6 +5182,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -4403,6 +5273,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4477,6 +5362,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -4553,6 +5453,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4627,6 +5542,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -4703,6 +5633,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4777,6 +5722,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -4853,6 +5813,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -4927,6 +5902,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5003,6 +5993,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5077,6 +6082,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5153,6 +6173,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5227,6 +6262,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5303,6 +6353,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5377,6 +6442,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5453,6 +6533,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5527,6 +6622,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5603,6 +6713,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5677,6 +6802,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5753,6 +6893,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5827,6 +6982,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -5903,6 +7073,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -5977,6 +7162,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -6053,6 +7253,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 266.67,
+       "pgpgout": 1944.44,
+       "fault": 250.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -6127,6 +7342,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 600.0,
+       "pgpgout": 2833.33,
+       "fault": 350.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -6203,6 +7433,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 933.33,
+       "pgpgout": 3722.22,
+       "fault": 450.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -6277,6 +7522,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 1266.67,
+       "pgpgout": 4611.11,
+       "fault": 550.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -6353,6 +7613,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 1600.0,
+       "pgpgout": 5500.0,
+       "fault": 650.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -6427,6 +7702,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 1933.33,
+       "pgpgout": 6388.89,
+       "fault": 750.0,
+       "majflt": 2.98,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -6503,6 +7793,21 @@
        "swpused": 640,
        "swpused-percent": 0.04
       },
+      "paging": {
+       "pgpgin": 2266.67,
+       "pgpgout": 7277.78,
+       "fault": 850.0,
+       "majflt": 5.76,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.09
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -6577,6 +7882,21 @@
       "swap": {
        "swpused": 4320,
        "swpused-percent": 0.27
+      },
+      "paging": {
+       "pgpgin": 2600.0,
+       "pgpgout": 8166.67,
+       "fault": 950.0,
+       "majflt": 8.53,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.53
       },
       "disk": [
        {
@@ -6653,6 +7973,21 @@
        "swpused": 7840,
        "swpused-percent": 0.49
       },
+      "paging": {
+       "pgpgin": 2933.33,
+       "pgpgout": 9055.56,
+       "fault": 1050.0,
+       "majflt": 11.31,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.98
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -6727,6 +8062,21 @@
       "swap": {
        "swpused": 7840,
        "swpused-percent": 0.49
+      },
+      "paging": {
+       "pgpgin": 2933.33,
+       "pgpgout": 9055.56,
+       "fault": 1050.0,
+       "majflt": 11.31,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.98
       },
       "disk": [
        {
@@ -6803,6 +8153,21 @@
        "swpused": 4320,
        "swpused-percent": 0.27
       },
+      "paging": {
+       "pgpgin": 2600.0,
+       "pgpgout": 8166.67,
+       "fault": 950.0,
+       "majflt": 8.53,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.53
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -6877,6 +8242,21 @@
       "swap": {
        "swpused": 640,
        "swpused-percent": 0.04
+      },
+      "paging": {
+       "pgpgin": 2266.67,
+       "pgpgout": 7277.78,
+       "fault": 850.0,
+       "majflt": 5.76,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.09
       },
       "disk": [
        {
@@ -6953,6 +8333,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 1933.33,
+       "pgpgout": 6388.89,
+       "fault": 750.0,
+       "majflt": 2.98,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7027,6 +8422,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 1600.0,
+       "pgpgout": 5500.0,
+       "fault": 650.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -7103,6 +8513,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 1266.67,
+       "pgpgout": 4611.11,
+       "fault": 550.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7177,6 +8602,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 933.33,
+       "pgpgout": 3722.22,
+       "fault": 450.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -7253,6 +8693,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 600.0,
+       "pgpgout": 2833.33,
+       "fault": 350.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7327,6 +8782,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 266.67,
+       "pgpgout": 1944.44,
+       "fault": 250.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -7403,6 +8873,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7477,6 +8962,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -7553,6 +9053,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7627,6 +9142,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -7703,6 +9233,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7777,6 +9322,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -7853,6 +9413,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -7927,6 +9502,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8003,6 +9593,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8077,6 +9682,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8153,6 +9773,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8227,6 +9862,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8303,6 +9953,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8377,6 +10042,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8453,6 +10133,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8527,6 +10222,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8603,6 +10313,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8677,6 +10402,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8753,6 +10493,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8827,6 +10582,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -8903,6 +10673,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -8977,6 +10762,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9053,6 +10853,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -9127,6 +10942,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9203,6 +11033,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -9277,6 +11122,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9353,6 +11213,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -9427,6 +11302,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9503,6 +11393,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -9577,6 +11482,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9653,6 +11573,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -9727,6 +11662,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9803,6 +11753,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -9877,6 +11842,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -9953,6 +11933,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -10027,6 +12022,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -10103,6 +12113,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -10177,6 +12202,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -10253,6 +12293,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -10327,6 +12382,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -10403,6 +12473,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -10477,6 +12562,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -10553,6 +12653,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -10627,6 +12742,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {
@@ -10703,6 +12833,21 @@
        "swpused": 0,
        "swpused-percent": 0.0
       },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
+      },
       "disk": [
        {
         "disk_device": "sda",
@@ -10777,6 +12922,21 @@
       "swap": {
        "swpused": 0,
        "swpused-percent": 0.0
+      },
+      "paging": {
+       "pgpgin": 100.0,
+       "pgpgout": 1500.0,
+       "fault": 200.0,
+       "majflt": 0.2,
+       "pgfree": 0.0,
+       "pgscank": 0.0,
+       "pgscand": 0.0,
+       "pgsteal": 0.0,
+       "vmeff-percent": 0.0
+      },
+      "swap-pages": {
+       "pswpin": 0.0,
+       "pswpout": 0.0
       },
       "disk": [
        {

@@ -188,11 +188,28 @@ def build_fleet(c, now: int = None) -> dict:
     }
 
 
+def _host_status(host_health: dict | None) -> str:
+    """Host-side analog of _instance_status — driven purely by the SAR
+    resource-pressure grade (hosts have no last-hour alert stream)."""
+    if not host_health or host_health.get("grade") is None:
+        return "unknown"
+    grade = host_health["grade"]
+    if grade in ("D", "F"):
+        return "critical"
+    if grade == "C":
+        return "watch"
+    return "ok"
+
+
 def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     """One-picture overview for a single cluster (region-env).
 
     Counts healthy vs unhealthy, aggregate memory, GC engine + config telemetry,
-    every node's current GC health, and a focused "needs attention" list.
+    every node's current GC health, and a focused "needs attention" list —
+    plus the same picture again at the *host* level (SAR): per-node host
+    health cards, cluster-wide host metric rollups, and a host-side
+    "needs attention" list, so the OS layer gets its own overview section
+    parallel to the GC one.
     """
     from . import analyzer
 
@@ -202,14 +219,21 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
         return None
 
     nodes = []
+    host_nodes = []
     healthy = unhealthy = 0
+    host_healthy = host_unhealthy = 0
     total_heap = total_used = 0.0
     util_vals, thru_vals = [], []
+    cpu_vals, mem_vals, iowait_vals = [], [], []
+    disk_util_worst = disk_await_worst = net_util_worst = 0.0
+    rx_total = tx_total = 0.0
+    swap_touched = majflt_hot = 0
     full_1h_total = full_24h_total = 0
     worst_pause = 0.0
     collectors = set()
     heap_by_role: dict[str, set] = {}
     status_counts = {"ok": 0, "watch": 0, "critical": 0, "unknown": 0}
+    host_status_counts = {"ok": 0, "watch": 0, "critical": 0, "unknown": 0}
 
     for inst in insts:
         last = store.latest_row(c, inst["id"], now)
@@ -257,8 +281,50 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
                        (alerts[0]["msg"] if alerts else "")),
         })
 
+        # --- host (SAR) side of the same node --------------------------------
+        host_snap = store.current_host_snapshot(c, inst["id"], now) or {}
+        hm = host_snap.get("metrics") or {}
+        hh = host_snap.get("health")
+        h_status = _host_status(hh) if hm.get("sample_count") else "unknown"
+        host_status_counts[h_status] += 1
+        if h_status in ("critical", "watch"):
+            host_unhealthy += 1
+        elif h_status == "ok":
+            host_healthy += 1
+        if hm.get("sample_count"):
+            cpu_vals.append(hm.get("cpu_busy_pct_avg") or 0.0)
+            mem_vals.append(hm.get("mem_used_pct_avg") or 0.0)
+            iowait_vals.append(hm.get("cpu_iowait_pct_avg") or 0.0)
+            disk_util_worst = max(disk_util_worst, hm.get("disk_util_pct_max") or 0.0)
+            disk_await_worst = max(disk_await_worst, hm.get("disk_await_ms_max") or 0.0)
+            net_util_worst = max(net_util_worst, hm.get("net_util_pct_max") or 0.0)
+            rx_total += hm.get("net_rx_kbs_avg") or 0.0
+            tx_total += hm.get("net_tx_kbs_avg") or 0.0
+            if (hm.get("swap_used_pct_max") or 0.0) > 0:
+                swap_touched += 1
+            if (hm.get("majflt_per_s_max") or 0.0) > 20:
+                majflt_hot += 1
+        host_nodes.append({
+            "id": inst["id"],
+            "node_id": inst.get("node_id") or "",
+            "role": inst["role"],
+            "status": h_status,
+            "grade": hh["grade"] if hh else None,
+            "score": hh["score"] if hh else None,
+            "cpu_busy_pct_avg": hm.get("cpu_busy_pct_avg"),
+            "cpu_iowait_pct_avg": hm.get("cpu_iowait_pct_avg"),
+            "mem_used_pct_avg": hm.get("mem_used_pct_avg"),
+            "swap_used_pct_max": hm.get("swap_used_pct_max"),
+            "disk_util_pct_max": hm.get("disk_util_pct_max"),
+            "net_util_pct_max": hm.get("net_util_pct_max"),
+            "reason": (hh["reasons"][0] if hh and hh.get("reasons") else ""),
+            "has_data": bool(hm.get("sample_count")),
+        })
+
     nodes.sort(key=lambda n: (-STATUS_RANK[n["status"]], n["score"] if n["score"] is not None else 999))
     attention = [n for n in nodes if n["status"] in ("critical", "watch")]
+    host_nodes.sort(key=lambda n: (-STATUS_RANK[n["status"]], n["score"] if n["score"] is not None else 999))
+    host_attention = [n for n in host_nodes if n["status"] in ("critical", "watch")]
 
     # Region/env come from the stored instance rows (onboarding writes them).
     # Do NOT parse the cluster name — names like "demo" have no "-" and would crash.
@@ -288,6 +354,25 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
         "heap_by_role": {r: sorted(v) for r, v in sorted(heap_by_role.items())},
     }
 
+    host_summary = {
+        "n_with_data": len(cpu_vals),
+        "cpu_busy_avg": round(statistics.fmean(cpu_vals), 1) if cpu_vals else 0.0,
+        "cpu_busy_peak": round(max(cpu_vals), 1) if cpu_vals else 0.0,
+        "iowait_avg": round(statistics.fmean(iowait_vals), 1) if iowait_vals else 0.0,
+        "mem_used_avg": round(statistics.fmean(mem_vals), 1) if mem_vals else 0.0,
+        "mem_used_peak": round(max(mem_vals), 1) if mem_vals else 0.0,
+        "disk_util_worst": round(disk_util_worst, 1),
+        "disk_await_worst": round(disk_await_worst, 1),
+        "net_util_worst": round(net_util_worst, 1),
+        "net_rx_total_kbs": round(rx_total, 1),
+        "net_tx_total_kbs": round(tx_total, 1),
+        "swap_touched_nodes": swap_touched,
+        "majflt_hot_nodes": majflt_hot,
+    }
+    host_cluster_status = "unknown"
+    for n in host_nodes:
+        host_cluster_status = _worse(host_cluster_status, n["status"])
+
     return {
         "cluster": cluster,
         "region": region,
@@ -300,4 +385,10 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
         "config": config,
         "nodes": nodes,
         "attention": attention,
+        "host_status": host_cluster_status,
+        "host_counts": {"healthy": host_healthy, "unhealthy": host_unhealthy,
+                        "total": len(insts), **host_status_counts},
+        "host_summary": host_summary,
+        "host_nodes": host_nodes,
+        "host_attention": host_attention,
     }

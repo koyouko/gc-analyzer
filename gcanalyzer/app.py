@@ -23,6 +23,9 @@ Endpoints:
     GET  /api/instance/{id}/correlation?days=30 -> GC<->host correlation + findings
     GET  /api/instance/{id}/anomalies?days=30&recent_hours=24 -> ML Tech Preview anomaly scoring
     GET  /api/cluster/{cluster}/scaling?role=broker -> vertical/horizontal/rebalance recommendation
+    GET  /api/instance/{id}/forecast?days=90&horizon=90 -> capacity forecast: per-signal trend + days-to-breach
+    GET  /api/cluster/{cluster}/forecast?role=broker -> proactive scaling plan (when to scale, which direction)
+    POST /api/instance/{id}/sar/upload   -> (admin) ingest a pasted `sadf -j`/`sar -A` export, no SSH needed
     GET  /api/health                     -> liveness probe
 """
 
@@ -45,14 +48,14 @@ from pydantic import BaseModel
 
 from . import (
     store, fleet, ingest as ingest_mod, config as config_mod, auth, scheduler,
-    sar_ingest, correlate, scaling_advisor, ml_insights,
+    sar_ingest, correlate, scaling_advisor, ml_insights, forecast as forecast_mod,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(os.path.dirname(HERE), "frontend")
 CLUSTERS_DIR = os.path.join(os.path.dirname(HERE), "clusters")
 
-app = FastAPI(title="BSP Kafka GC Analyzer", version="2.2.0")
+app = FastAPI(title="BSP Kafka GC Analyzer", version="2.3.0")
 
 # Endpoints reachable without a session. Everything else under /api requires one;
 # /api/clusters mutations (POST/DELETE) additionally require the 'admin' role.
@@ -72,6 +75,8 @@ async def _auth_guard(request: Request, call_next):
             path.startswith("/api/clusters") and request.method in ("POST", "DELETE", "PUT")
         ) or (
             path.startswith("/api/jobs/") and request.method == "POST" and path.endswith("/cancel")
+        ) or (
+            request.method == "POST" and path.endswith("/sar/upload")
         )
         if admin_write and sess["role"] != "admin":
             return JSONResponse({"detail": "admin role required"}, status_code=403)
@@ -288,6 +293,50 @@ def get_cluster_scaling(cluster: str, role: str = "broker") -> dict:
         if not any(i["cluster"] == cluster for i in store.list_instances(c)):
             raise HTTPException(404, f"Unknown cluster: {cluster}")
         return scaling_advisor.analyze_cluster_scaling(c, cluster, role=role)
+
+
+# --------------------------------------------------------------------------- #
+# Capacity forecasting (proactive scaling) + dashboard SAR upload (no-SSH path).
+# --------------------------------------------------------------------------- #
+@app.get("/api/instance/{instance_id}/forecast")
+def get_instance_forecast(instance_id: str, days: int = 90, horizon: int = 90) -> dict:
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        return forecast_mod.forecast_instance(c, instance_id, days=days, horizon_days=horizon)
+
+
+@app.get("/api/cluster/{cluster}/forecast")
+def get_cluster_forecast(cluster: str, role: str = "broker", days: int = 90, horizon: int = 90) -> dict:
+    with store.connect() as c:
+        if not any(i["cluster"] == cluster for i in store.list_instances(c)):
+            raise HTTPException(404, f"Unknown cluster: {cluster}")
+        return forecast_mod.forecast_cluster(c, cluster, role=role, days=days, horizon_days=horizon)
+
+
+class SarUploadRequest(BaseModel):
+    content: str                      # `sadf -j -- -A` JSON or classic `sar -A` text
+    format: str = "auto"              # "auto" | "sadf-json" | "sar-text"
+    report_date: str | None = None    # YYYY-MM-DD anchor for `sar -A` text dumps
+
+
+@app.post("/api/instance/{instance_id}/sar/upload")
+def upload_sar(instance_id: str, req: SarUploadRequest) -> dict:
+    """Admin-only (enforced by middleware): ingest a SAR export captured
+    manually on the host (`TZ=UTC LC_ALL=C sadf -j -- -A` preferred, or
+    `TZ=UTC LC_ALL=C sar -A`) — same parse/dedup/record path as SSH
+    collection, so no SSH credentials are ever required."""
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+    fmt_hint = {"sadf-json": "json", "sar-text": "text"}.get(req.format)
+    result = sar_ingest.ingest_sar_text(
+        req.content, instance_id, store.DB_PATH,
+        fmt_hint=fmt_hint, report_date=req.report_date,
+    )
+    if not result["recorded"]:
+        raise HTTPException(400, result["detail"])
+    return result
 
 
 # --------------------------------------------------------------------------- #

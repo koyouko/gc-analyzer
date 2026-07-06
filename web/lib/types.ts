@@ -91,6 +91,42 @@ export interface ClusterView {
   };
   nodes: ClusterNode[];
   attention: ClusterNode[];
+  host_status?: Status;
+  host_counts?: { healthy: number; unhealthy: number; total: number } & Record<string, number>;
+  host_summary?: ClusterHostSummary;
+  host_nodes?: ClusterHostNode[];
+  host_attention?: ClusterHostNode[];
+}
+export interface ClusterHostNode {
+  id: string;
+  node_id: string;
+  role: string;
+  status: Status;
+  grade: Grade | null;
+  score: number | null;
+  cpu_busy_pct_avg: number | null;
+  cpu_iowait_pct_avg: number | null;
+  mem_used_pct_avg: number | null;
+  swap_used_pct_max: number | null;
+  disk_util_pct_max: number | null;
+  net_util_pct_max: number | null;
+  reason: string;
+  has_data: boolean;
+}
+export interface ClusterHostSummary {
+  n_with_data: number;
+  cpu_busy_avg: number;
+  cpu_busy_peak: number;
+  iowait_avg: number;
+  mem_used_avg: number;
+  mem_used_peak: number;
+  disk_util_worst: number;
+  disk_await_worst: number;
+  net_util_worst: number;
+  net_rx_total_kbs: number;
+  net_tx_total_kbs: number;
+  swap_touched_nodes: number;
+  majflt_hot_nodes: number;
 }
 
 export interface Health {
@@ -152,18 +188,39 @@ export interface SarMetrics {
   cpu_iowait_pct_max: number;
   cpu_busy_pct_avg: number;
   cpu_busy_pct_max: number;
+  cpu_steal_pct_avg?: number;
+  cpu_steal_pct_max?: number;
   load1_avg: number;
   load1_max?: number;
+  load5_avg?: number;
+  load15_avg?: number;
+  runq_sz_avg?: number;
+  plist_sz_avg?: number;
+  blocked_avg?: number;
+  proc_per_s_avg?: number;
+  cswch_per_s_avg?: number;
   mem_used_pct_avg: number;
   mem_used_pct_max: number;
+  mem_avail_mb_avg?: number;
+  mem_cached_mb_avg?: number;
+  mem_commit_pct_avg?: number;
   swap_used_pct_avg?: number;
   swap_used_pct_max: number;
+  pgpgin_kbs_avg?: number;
+  pgpgout_kbs_avg?: number;
+  fault_per_s_avg?: number;
+  majflt_per_s_avg?: number;
+  majflt_per_s_max?: number;
+  pswpin_per_s_avg?: number;
+  pswpout_per_s_avg?: number;
+  pswpout_per_s_max?: number;
   disk_util_pct_max: number;
   disk_await_ms_max: number;
   disk_tps_avg?: number;
   net_util_pct_max: number;
   net_rx_kbs_avg?: number;
   net_tx_kbs_avg: number;
+  net_tx_kbs_max?: number;
   top_disks: SarDevice[];
   top_nics: SarDevice[];
 }
@@ -178,16 +235,35 @@ export interface SarTrendPoint {
   t: number;
   cpu_busy_avg: number;
   cpu_busy_max: number;
+  cpu_user_avg?: number;
+  cpu_system_avg?: number;
+  cpu_steal_avg?: number;
   iowait_avg: number;
   iowait_max?: number;
   mem_avg: number;
   mem_max: number;
+  mem_cached_avg?: number;
+  mem_commit_avg?: number;
   swap_max: number;
+  pgpgin_avg?: number;
+  pgpgout_avg?: number;
+  fault_avg?: number;
+  majflt_max?: number;
+  pswpin_avg?: number;
+  pswpout_max?: number;
   disk_util_max: number;
   disk_await_max: number;
+  disk_tps_avg?: number;
   net_util_max: number;
   net_tx_avg: number;
+  net_rx_avg?: number;
   load1_avg: number;
+  load5_avg?: number;
+  load15_avg?: number;
+  runq_avg?: number;
+  blocked_avg?: number;
+  cswch_avg?: number;
+  proc_avg?: number;
 }
 export interface SarSeries {
   instance_id: string;
@@ -284,4 +360,93 @@ export interface ScalingResult {
   bottleneck_counts?: Record<string, number>;
   nodes: ScalingNode[];
   skew: ScalingSkew | null;
+}
+
+/* -------------------- Capacity forecast (proactive scaling) -------------------- */
+export type ForecastSignalStatus =
+  | "already_critical" | "breach_imminent" | "already_warning" | "breach_projected"
+  | "watch" | "improving" | "stable" | "insufficient_data";
+export type ForecastRisk = "critical" | "warning" | "watch" | "ok" | "no_data";
+export interface ForecastSignal {
+  signal: string;
+  label: string;
+  unit: string;
+  kind: "gc" | "host";
+  group: "compute" | "memory" | "heap" | "gc";
+  warn_threshold: number;
+  crit_threshold: number;
+  n_days: number;
+  current: number | null;
+  slope_per_day: number | null;
+  consistency: number;
+  confidence: "low" | "medium" | "high";
+  days_to_warn: number | null;
+  days_to_crit: number | null;
+  warn_date: string | null;
+  crit_date: string | null;
+  status: ForecastSignalStatus;
+  risk: ForecastRisk;
+}
+export interface InstanceForecast {
+  instance_id: string;
+  now: number;
+  days: number;
+  horizon_days: number;
+  risk: ForecastRisk;
+  headline: string;
+  signals: ForecastSignal[];
+}
+export type ClusterForecastVerdict =
+  | "plan_horizontal" | "plan_vertical_memory" | "plan_vertical_heap" | "plan_tune_gc"
+  | "watch_hot_node" | "none" | "insufficient_data";
+export interface ClusterForecastAtRiskSignal {
+  signal: string;
+  label: string;
+  group: string;
+  status: ForecastSignalStatus;
+  current: number | null;
+  unit: string;
+  days_to_crit: number | null;
+  crit_date: string | null;
+  confidence: "low" | "medium" | "high";
+}
+export interface ClusterForecastNode {
+  instance_id: string;
+  risk: ForecastRisk;
+  headline: string;
+  top_signal: string | null;
+  top_label: string | null;
+  top_status: ForecastSignalStatus | null;
+  top_current: number | null;
+  top_unit: string | null;
+  top_days_to_crit: number | null;
+  top_crit_date: string | null;
+  top_confidence: string | null;
+  at_risk_groups: string[];
+  at_risk_signals: ClusterForecastAtRiskSignal[];
+}
+export interface ClusterForecast {
+  cluster: string;
+  role: string;
+  now: number;
+  n_nodes: number;
+  horizon_days: number;
+  verdict: ClusterForecastVerdict;
+  confidence: "low" | "medium" | "high";
+  summary: string;
+  evidence: string[];
+  nodes: ClusterForecastNode[];
+  warnings: string[];
+}
+
+/* -------------------- SAR upload (no-SSH ingest) -------------------- */
+export interface SarUploadResult {
+  instance_id: string;
+  recorded: boolean;
+  samples_parsed: number;
+  samples_new: number;
+  rows_written: number;
+  source_format: string | null;
+  warnings: string[];
+  detail: string;
 }

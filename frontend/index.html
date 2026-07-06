@@ -130,6 +130,18 @@
   .verdictpill.rebalance{background:#a371f7}.verdictpill.no_action{background:var(--ok)}
   .verdictpill.mixed,.verdictpill.gc_bound,.verdictpill.host_bound{background:var(--watch)}
   .verdictpill.insufficient_data{background:var(--unknown)}
+  .verdictpill.plan_horizontal{background:#00aeef}.verdictpill.plan_vertical_memory{background:#f5a623}
+  .verdictpill.plan_vertical_heap{background:#a371f7}.verdictpill.plan_tune_gc{background:var(--watch)}
+  .verdictpill.watch_hot_node{background:#db6d28}.verdictpill.none{background:var(--ok)}
+  .fcrisk{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;color:var(--ink);text-transform:uppercase;letter-spacing:.03em}
+  .fcrisk.critical{background:var(--crit)}.fcrisk.warning{background:var(--watch)}
+  .fcrisk.watch{background:#db6d28}.fcrisk.ok{background:var(--ok)}.fcrisk.no_data{background:var(--unknown)}
+  .fcstatus{font-size:10px;font-weight:700;padding:1px 7px;border-radius:9px;color:var(--ink);text-transform:uppercase;letter-spacing:.02em}
+  .fcstatus.already_critical,.fcstatus.breach_imminent{background:var(--crit)}
+  .fcstatus.already_warning,.fcstatus.breach_projected{background:var(--watch)}
+  .fcstatus.watch{background:#db6d28}.fcstatus.improving,.fcstatus.stable{background:var(--ok)}
+  .fcstatus.insufficient_data{background:var(--unknown)}
+  .sar-upload-text{width:100%;background:var(--panel2,#0b0f16);color:var(--txt);border:1px solid var(--border);border-radius:7px;padding:8px 10px;font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
   .bnpill{font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;color:var(--ink);text-transform:uppercase;letter-spacing:.03em}
   .bnpill.healthy{background:var(--ok)}.bnpill.watch{background:var(--watch)}
   .bnpill.cpu,.bnpill.iowait,.bnpill.disk,.bnpill.network{background:#db6d28}
@@ -1101,11 +1113,12 @@ async function selectCluster(cluster){
   SELECTED='cluster:'+cluster; renderTree();
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(cluster)+'…</div>';
   try{
-    const [v,scaling]=await Promise.all([
+    const [v,scaling,fc]=await Promise.all([
       api('/api/cluster/'+encodeURIComponent(cluster)),
       fetchOptional('/api/cluster/'+encodeURIComponent(cluster)+'/scaling?role=broker'),
+      fetchOptional('/api/cluster/'+encodeURIComponent(cluster)+'/forecast?role=broker'),
     ]);
-    renderCluster(v,scaling);
+    renderCluster(v,scaling,fc);
   }catch(e){ main.innerHTML=`<div class="empty">Failed: ${esc(e.message)}</div>`; }
 }
 
@@ -1136,6 +1149,307 @@ function renderScalingAdvisor(sc){
   </div>`;
 }
 
+const FC_VERDICT_LABEL={plan_horizontal:'Plan horizontal scale (add brokers)',plan_vertical_memory:'Plan vertical scale (host RAM)',
+  plan_vertical_heap:'Plan vertical scale (JVM heap)',plan_tune_gc:'Tune GC before scaling',
+  watch_hot_node:'Watch hot node / rebalance first',none:'No scaling needed in horizon',insufficient_data:'Insufficient history'};
+const FC_STATUS_LABEL={already_critical:'already critical',breach_imminent:'critical soon',already_warning:'already warning',
+  breach_projected:'breach projected',watch:'watch',improving:'improving',stable:'stable',insufficient_data:'no history'};
+
+function renderForecastPanel(fc){
+  if(!fc || fc.verdict==='insufficient_data'){
+    return `<div class="panel full"><h3>Capacity forecast</h3><div class="muted">${esc((fc&&fc.summary)||'Not enough daily GC + host history yet to project capacity trends (need >= 7 days per node).')}</div></div>`;
+  }
+  const rows=(fc.nodes||[]).map(n=>`<tr>
+      <td>${esc(instanceLabel(n.instance_id))}</td>
+      <td><span class="fcrisk ${esc(n.risk)}">${esc(n.risk.replace('_',' '))}</span></td>
+      <td>${esc(n.top_label||'—')}${n.top_status?` <span class="fcstatus ${esc(n.top_status)}">${esc(FC_STATUS_LABEL[n.top_status]||n.top_status)}</span>`:''}</td>
+      <td>${n.top_current!=null?esc(n.top_current)+esc(n.top_unit||''):'—'}</td>
+      <td>${n.top_days_to_crit!=null?`~${Math.round(n.top_days_to_crit)}d (${esc(n.top_crit_date)})`:'—'}</td>
+      <td>${esc(n.top_confidence||'—')}</td>
+    </tr>`).join('');
+  const warnHtml=(fc.warnings||[]).length?`<div class="alerts" style="margin:8px 0">${fc.warnings.map(w=>`
+    <div class="alert warning"><span class="sev warning">forecast</span><span class="msg">${esc(w)}</span></div>`).join('')}</div>`:'';
+  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">Capacity forecast (${esc(fc.role)}s · next ${esc(fc.horizon_days)} days)
+      <span class="verdictpill ${esc(fc.verdict)}">${esc(FC_VERDICT_LABEL[fc.verdict]||fc.verdict)}</span>
+      <span class="muted" style="font-size:11px;font-weight:400">confidence: ${esc(fc.confidence)}</span>
+    </h3>
+    <div style="margin-bottom:8px">${esc(fc.summary)}</div>
+    <ul class="list recs">${(fc.evidence||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+    ${warnHtml}
+    <table class="sar-table" style="margin-top:10px"><tr><th>Node</th><th>Risk</th><th>Leading signal</th><th>Today</th><th>Critical in</th><th>Confidence</th></tr>${rows}</table>
+    <div class="muted" style="margin-top:8px;font-size:11px">Theil-Sen trend over daily aggregates — robust to single-day incidents. Advisory only: validate against expected workload changes before acting.</div>
+  </div>`;
+}
+
+function renderCapacityOutlook(fc){
+  if(!fc){
+    return `<div class="panel full"><h3>Capacity outlook</h3><div class="muted">Capacity forecast unavailable.</div></div>`;
+  }
+  const fitted=(fc.signals||[]).filter(s=>s.status!=='insufficient_data');
+  const rows=(fc.signals||[]).map(s=>`<tr>
+      <td>${esc(s.label)}</td>
+      <td>${s.current!=null?esc(s.current)+esc(s.unit):'—'}</td>
+      <td>${s.slope_per_day!=null?`${s.slope_per_day>0?'+':''}${esc(s.slope_per_day)}${esc(s.unit)}`:'—'}</td>
+      <td>${esc(s.warn_threshold)}${esc(s.unit)}</td>
+      <td>${esc(s.crit_threshold)}${esc(s.unit)}</td>
+      <td>${s.days_to_warn!=null?`~${Math.round(s.days_to_warn)}d`:'—'}</td>
+      <td>${s.days_to_crit!=null?`~${Math.round(s.days_to_crit)}d (${esc(s.crit_date)})`:'—'}</td>
+      <td><span class="fcstatus ${esc(s.status)}">${esc(FC_STATUS_LABEL[s.status]||s.status)}</span></td>
+      <td>${esc(s.confidence)}</td>
+    </tr>`).join('');
+  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">Capacity outlook (next ${esc(fc.horizon_days)} days)
+      <span class="fcrisk ${esc(fc.risk)}">${esc(fc.risk.replace('_',' '))}</span>
+    </h3>
+    <div style="margin-bottom:8px">${esc(fc.headline)}</div>
+    ${fitted.length?`<table class="sar-table"><tr><th>Signal</th><th>Today</th><th>Trend / day</th><th>Warn at</th><th>Crit at</th><th>Warn in</th><th>Critical in</th><th>Status</th><th>Confidence</th></tr>${rows}</table>`
+      :'<div class="muted">Not enough daily history yet — capacity trends need at least 7 days of GC/host metrics.</div>'}
+    <div class="muted" style="margin-top:8px;font-size:11px">Trend = Theil-Sen (median pairwise slope) over daily aggregates from the last ${esc(fc.days)} days; "today" = median of the last 7 daily points. Advisory only.</div>
+  </div>`;
+}
+
+function renderSarUpload(id){
+  const isAdmin=(typeof CURRENT_ROLE!=='undefined')&&CURRENT_ROLE==='admin';
+  const body=isAdmin?`
+    <div class="muted" style="font-size:12px;margin-bottom:8px">On the RedHat host run <code>TZ=UTC LC_ALL=C sadf -j -- -A</code> (preferred) or <code>TZ=UTC LC_ALL=C sar -A</code> (set the report date), then paste the output here. Re-uploads are deduped by sample timestamp.</div>
+    <textarea id="sarUploadText" class="sar-upload-text" rows="6" placeholder="Paste sadf -j JSON or sar -A text here…"></textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <select id="sarUploadFmt" class="inp" style="width:auto;margin:0">
+        <option value="auto">auto-detect</option><option value="sadf-json">sadf -j (JSON)</option><option value="sar-text">sar -A (text)</option>
+      </select>
+      <input id="sarUploadDate" class="inp" type="date" style="width:auto;margin:0" title="Report date anchor for classic sar -A text dumps">
+      <button class="btn" onclick="submitSarUpload(${jsArg(id)})">Ingest report</button>
+      <span id="sarUploadMsg" class="muted" style="font-size:11px"></span>
+    </div>`
+    :`<div class="muted">No SSH configured for this host? An <b>admin</b> can paste <code>sadf -j -- -A</code> / <code>sar -A</code> output here to ingest host metrics without SSH.</div>`;
+  return `<div class="panel full"><h3>Upload SAR report (no-SSH ingest)</h3>${body}</div>`;
+}
+
+async function submitSarUpload(id){
+  const txt=document.getElementById('sarUploadText'),msg=document.getElementById('sarUploadMsg');
+  if(!txt||!txt.value.trim()){ if(msg) msg.textContent='Nothing to ingest — paste a SAR export first.'; return; }
+  const fmt=document.getElementById('sarUploadFmt').value, date=document.getElementById('sarUploadDate').value;
+  msg.textContent='Ingesting…';
+  try{
+    const r=await fetch('/api/instance/'+encodeURIComponent(id)+'/sar/upload',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content:txt.value,format:fmt,report_date:date||null}),
+    });
+    const body=await r.json().catch(()=>null);
+    if(!r.ok) throw new Error((body&&body.detail)||('HTTP '+r.status));
+    msg.textContent=body.detail+(body.warnings&&body.warnings.length?' · warnings: '+body.warnings.join('; '):'');
+    txt.value='';
+    selectInstance(id); // re-render with the newly ingested host metrics
+  }catch(e){ msg.textContent='Failed: '+e.message; }
+}
+
+/* ---------------- standalone Host health view (all SAR metrics) ---------------- */
+let HOST_RANGE='24h';
+
+async function selectHost(id,ev){
+  if(ev) ev.stopPropagation();
+  SELECTED=id; CURRENT_INSTANCE=id; renderTree();
+  const encodedId=encodeURIComponent(id);
+  const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading host view for '+esc(id)+'…</div>';
+  const [sar,ser,fc]=await Promise.all([
+    fetchOptional('/api/instance/'+encodedId+'/sar'),
+    fetchOptional('/api/instance/'+encodedId+'/sar/series?range='+encodeURIComponent(HOST_RANGE)),
+    fetchOptional('/api/instance/'+encodedId+'/forecast'),
+  ]);
+  renderHostView(id,sar,ser,fc);
+}
+
+async function changeHostRange(r){
+  HOST_RANGE=r;
+  if(!CURRENT_INSTANCE) return;
+  const ser=await fetchOptional('/api/instance/'+encodeURIComponent(CURRENT_INSTANCE)+'/sar/series?range='+encodeURIComponent(r));
+  if(ser && ser.series && ser.series.length){ destroyTrendCharts(); drawHostFullCharts(ser); }
+}
+
+const HOST_METRIC_HELP={
+  'CPU busy':'Total non-idle CPU (user+system+iowait+steal). Sustained >75% leaves little headroom for GC threads and replica fetchers.',
+  'CPU user / system':'Time in application code vs kernel. A high system share often means heavy network/disk syscall load.',
+  'iowait':'CPU idle while waiting on disk I/O — the classic sign storage, not CPU, is the bottleneck.',
+  'CPU steal':'Time the hypervisor gave this vCPU to someone else. Sustained steal on a VM means a noisy neighbor.',
+  'Load avg (1/5/15m)':'Runnable + uninterruptible tasks vs CPU count; a rising 15m load is sustained saturation.',
+  'Run queue / blocked':'Tasks waiting for CPU vs blocked on I/O — the raw ingredients of load average.',
+  'Context switches':'cswch/s. Very high rates can indicate thread thrash in Kafka network/request pools.',
+  'New processes':'proc/s — usually near zero on a dedicated broker; spikes mean cron/automation activity.',
+  'Memory used':'Physical memory in use; RHEL sysstat reports %memused against total RAM.',
+  'Memory available':"Kernel's estimate of memory available without swapping — the truest headroom number.",
+  'Page cache':'kbcached — Kafka serves consumers from here; a shrinking cache directly hurts fetch latency.',
+  'Commit %':'Committed virtual memory vs RAM+swap; >100% means overcommit.',
+  'Swap used':'Swap occupancy — any nonzero value on a Kafka broker deserves a vm.swappiness check.',
+  'Paging in / out':'pgpgin/s / pgpgout/s — kB moved between disk and memory through the page cache.',
+  'Faults / major':'Page faults per second. Major faults re-read from disk — sustained majflt/s means the working set does not fit.',
+  'Swap in / out':'pswpin/s / pswpout/s — active swapping right now; swap-out under load is emergency-grade.',
+  'Disk util (max)':"Busiest device's %util — >70% sustained approaches saturation.",
+  'Disk await (max)':'I/O service time incl. queueing on the busiest device; spikes become produce latency.',
+  'Disk tps':'I/O requests per second across devices.',
+  'NIC util (max)':"Busiest interface's %ifutil — replication + consumer fan-out saturate NICs before CPU.",
+  'Net ingress / egress':'rxkB/s / txkB/s across NICs; egress is usually the binding side for Kafka.',
+};
+
+function hostMetricCell(l,v){
+  const hlp=HOST_METRIC_HELP[l]||'';
+  return `<div class="metric"${hlp?` title="${esc(hlp)}"`:''}><div class="l">${esc(l)}${hlp?'<span class="info">ⓘ</span>':''}</div><div class="v">${v}</div>${hlp?`<span class="tip">${esc(hlp)}</span>`:''}</div>`;
+}
+
+function renderHostView(id,sar,ser,fc){
+  destroy();
+  const main=document.getElementById('main');
+  const backLink=`<a href="#" onclick="selectInstance(${jsArg(id)});return false" style="color:var(--accent)">← back to JVM view</a>`;
+  if(!sar || !sar.health || !sar.metrics || !sar.metrics.sample_count){
+    main.innerHTML=`<div class="breadcrumb">${backLink}</div>
+      <div class="empty">No host (SAR) metrics collected for ${esc(id)} yet — enable <code>sar:</code> in its cluster.yaml, wait for a scheduler tick, or upload a <code>sadf -j -- -A</code> export from the instance page.</div>`;
+    return;
+  }
+  const m=sar.metrics,h=sar.health,inst=sar.instance||{};
+  const grade=['A','B','C','D','F'].includes(h.grade)?h.grade:'F';
+  const mbps=k=>((k||0)/1024).toFixed(1)+' MB/s';
+  const gb=mb=>((mb||0)/1024).toFixed(1)+' GB';
+
+  const hostSignals=fc&&fc.signals?fc.signals.filter(s=>s.kind==='host'&&s.risk!=='ok'):[];
+  const trendAlerts=hostSignals.length?`<div class="alerts" style="margin:6px 0 4px">${hostSignals.map(s=>`
+    <div class="alert ${s.risk==='critical'?'critical':'warning'}"><span class="sev ${s.risk==='critical'?'critical':'warning'}">trend</span>
+      <span class="msg">${esc(s.label)} at ${esc(s.current)}${esc(s.unit)}${s.days_to_crit!=null?` — projected to hit ${esc(s.crit_threshold)}${esc(s.unit)} in ~${Math.round(s.days_to_crit)}d (${esc(s.crit_date)})`:` — past threshold (${esc(s.status.replace(/_/g,' '))})`}</span>
+    </div>`).join('')}</div>`:'';
+
+  const cpuGrid=[
+    ['CPU busy',`${m.cpu_busy_pct_avg}% / ${m.cpu_busy_pct_max}%`],
+    ['CPU user / system',`${m.cpu_user_pct_avg||0}% / ${m.cpu_system_pct_avg||0}%`],
+    ['iowait',`${m.cpu_iowait_pct_avg}% / ${m.cpu_iowait_pct_max}%`],
+    ['CPU steal',`${m.cpu_steal_pct_avg||0}% / ${m.cpu_steal_pct_max||0}%`],
+    ['Load avg (1/5/15m)',`${m.load1_avg} / ${m.load5_avg||0} / ${m.load15_avg||0}`],
+    ['Run queue / blocked',`${m.runq_sz_avg||0} / ${m.blocked_avg||0}`],
+    ['Context switches',`${(m.cswch_per_s_avg||0).toLocaleString()}/s`],
+    ['New processes',`${m.proc_per_s_avg||0}/s`],
+  ];
+  const memGrid=[
+    ['Memory used',`${m.mem_used_pct_avg}% / ${m.mem_used_pct_max}%`],
+    ['Memory available',gb(m.mem_avail_mb_avg)],
+    ['Page cache',gb(m.mem_cached_mb_avg)],
+    ['Commit %',`${m.mem_commit_pct_avg||0}%`],
+    ['Swap used',`${m.swap_used_pct_max}% peak`],
+    ['Paging in / out',`${(m.pgpgin_kbs_avg||0).toFixed(0)} / ${(m.pgpgout_kbs_avg||0).toFixed(0)} kB/s`],
+    ['Faults / major',`${(m.fault_per_s_avg||0).toFixed(0)} / ${(m.majflt_per_s_avg||0).toFixed(1)}/s`],
+    ['Swap in / out',`${m.pswpin_per_s_avg||0} / ${m.pswpout_per_s_avg||0} pg/s`],
+  ];
+  const dnGrid=[
+    ['Disk util (max)',`${m.disk_util_pct_max}%`],
+    ['Disk await (max)',`${m.disk_await_ms_max} ms`],
+    ['Disk tps',`${m.disk_tps_avg||0}/s`],
+    ['NIC util (max)',`${m.net_util_pct_max}%`],
+    ['Net ingress / egress',`${mbps(m.net_rx_kbs_avg)} / ${mbps(m.net_tx_kbs_avg)}`],
+  ];
+  const devRows=(rows,key)=>(rows||[]).map(r=>`<tr><td>${esc(r[key])}</td><td>${r.util_pct_avg}%</td><td>${r.util_pct_max}%</td></tr>`).join('');
+  const f=sar.findings||{pros:[],cons:[],recommendations:[]};
+
+  main.innerHTML=`
+    <div class="breadcrumb">${esc(inst.region||'')} › ${esc(inst.env||'')} › ${esc(inst.cluster||'')} › <a href="#" onclick="selectInstance(${jsArg(id)});return false" style="color:var(--accent)">${esc(inst.role||'jvm')} ${esc(id)}</a> › host</div>
+    <div class="ihdr">
+      <div class="grade ${grade}">${grade}</div>
+      <div><div style="font-size:18px;font-weight:700">Host health analysis — ${esc(id)}</div>
+        <div class="muted">${esc(h.score)} / 100 · ${esc(h.status)} · OS-level view only (no GC data on this page) · ${esc(m.sample_count)} sample rows in 24h window</div></div>
+      <span class="engine">${backLink}</span>
+    </div>
+    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||'No host resource pressure detected.'}</div>
+    ${trendAlerts}
+    <h2>CPU &amp; scheduler (24h)</h2>
+    <div class="metric-grid">${cpuGrid.map(([l,v])=>hostMetricCell(l,v)).join('')}</div>
+    <h2>Memory, paging &amp; swap (24h)</h2>
+    <div class="metric-grid">${memGrid.map(([l,v])=>hostMetricCell(l,v)).join('')}</div>
+    <h2>Disk &amp; network (24h)</h2>
+    <div class="metric-grid">${dnGrid.map(([l,v])=>hostMetricCell(l,v)).join('')}</div>
+    <h2 style="display:flex;align-items:center;gap:12px">All SAR trends
+      <select class="inp" style="width:auto;margin:0;text-transform:none;letter-spacing:0" onchange="changeHostRange(this.value)">
+        ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===HOST_RANGE?' selected':''}>${r}</option>`).join('')}
+      </select>
+    </h2>
+    ${ser&&ser.series&&ser.series.length?`<div class="panels">
+      <div class="panel"><h3>CPU breakdown (%)</h3><div class="chartbox"><canvas id="cHostCpu"></canvas></div></div>
+      <div class="panel"><h3>Load average &amp; queue</h3><div class="chartbox"><canvas id="cHostLoad"></canvas></div></div>
+      <div class="panel"><h3>Context switches &amp; process creation</h3><div class="chartbox"><canvas id="cHostSched"></canvas></div></div>
+      <div class="panel"><h3>Memory (%) &amp; page cache (GB)</h3><div class="chartbox"><canvas id="cHostMem"></canvas></div></div>
+      <div class="panel"><h3>Paging (kB/s) &amp; major faults</h3><div class="chartbox"><canvas id="cHostPaging"></canvas></div></div>
+      <div class="panel"><h3>Swap occupancy &amp; activity</h3><div class="chartbox"><canvas id="cHostSwap"></canvas></div></div>
+      <div class="panel"><h3>Disk util (%), await &amp; tps</h3><div class="chartbox"><canvas id="cHostDisk"></canvas></div></div>
+      <div class="panel"><h3>NIC util (%) &amp; throughput (MB/s)</h3><div class="chartbox"><canvas id="cHostNet"></canvas></div></div>
+    </div>`:'<div class="muted" style="padding:12px">No samples in this range.</div>'}
+    ${(m.top_disks&&m.top_disks.length)||(m.top_nics&&m.top_nics.length)?`<div class="panels" style="margin-top:12px">
+      ${m.top_disks&&m.top_disks.length?`<div class="panel"><h3>Busiest disks</h3><table class="sar-table"><tr><th>Device</th><th>avg util</th><th>max util</th></tr>${devRows(m.top_disks,'dev')}</table></div>`:''}
+      ${m.top_nics&&m.top_nics.length?`<div class="panel"><h3>Busiest NICs</h3><table class="sar-table"><tr><th>Interface</th><th>avg util</th><th>max util</th></tr>${devRows(m.top_nics,'iface')}</table></div>`:''}
+    </div>`:''}
+    <div class="panels" style="margin-top:12px">
+      <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(f.pros||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
+      <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(f.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
+      <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(f.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
+    </div>`;
+  if(ser&&ser.series&&ser.series.length) drawHostFullCharts(ser);
+}
+
+function drawHostFullCharts(ser){
+  var __dark=document.body.classList.contains('theme-dark');
+  Chart.defaults.color=__dark?'#93acc4':'#5b7287';Chart.defaults.borderColor=__dark?'#1f405e':'#dde5ee';Chart.defaults.font.family="Inter, sans-serif";
+  const s=ser.series;
+  const span=s.length>1?s[s.length-1].t-s[0].t:0;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const labels=s.map(p=>lab(p.t));
+  const pr=s.length===1?3:0;
+  const ln=(label,data,color,extra)=>Object.assign({label,data:data.map(v=>v||0),borderColor:color,pointRadius:pr,borderWidth:1.3,tension:.25},extra||{});
+  const dual=(left,right,leftMax)=>({...baseOpts(),scales:{
+    x:{ticks:{maxTicksLimit:8,font:{size:9}}},
+    y:Object.assign({position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:left,font:{size:9}}},leftMax?{suggestedMax:leftMax}:{}),
+    y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}},title:{display:true,text:right,font:{size:9}}}
+  }});
+  const pctOpts={...baseOpts(),scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{beginAtZero:true,suggestedMax:100,ticks:{font:{size:9}}}}};
+
+  charts.hostCpu=new Chart(cHostCpu,{type:'line',data:{labels,datasets:[
+    ln('busy avg',s.map(p=>p.cpu_busy_avg),'#db6d28',{backgroundColor:'rgba(219,109,40,.12)',fill:true,borderWidth:1.5}),
+    ln('busy max',s.map(p=>p.cpu_busy_max),'#e5484d'),
+    ln('user',s.map(p=>p.cpu_user_avg),'#00aeef'),
+    ln('system',s.map(p=>p.cpu_system_avg),'#a371f7'),
+    ln('iowait',s.map(p=>p.iowait_avg),'#f5a623'),
+    ln('steal',s.map(p=>p.cpu_steal_avg),'#8b949e'),
+  ]},options:pctOpts});
+  charts.hostLoad=new Chart(cHostLoad,{type:'line',data:{labels,datasets:[
+    ln('load 1m',s.map(p=>p.load1_avg),'#00aeef',{yAxisID:'y'}),
+    ln('load 5m',s.map(p=>p.load5_avg),'#2eb872',{yAxisID:'y'}),
+    ln('load 15m',s.map(p=>p.load15_avg),'#a371f7',{yAxisID:'y'}),
+    ln('run queue',s.map(p=>p.runq_avg),'#f5a623',{yAxisID:'y1'}),
+    ln('blocked',s.map(p=>p.blocked_avg),'#e5484d',{yAxisID:'y1'}),
+  ]},options:dual('load avg','tasks')});
+  charts.hostSched=new Chart(cHostSched,{type:'line',data:{labels,datasets:[
+    ln('cswch/s',s.map(p=>p.cswch_avg),'#00aeef',{yAxisID:'y'}),
+    ln('proc/s',s.map(p=>p.proc_avg),'#2eb872',{yAxisID:'y1'}),
+  ]},options:dual('cswch/s','proc/s')});
+  charts.hostMem=new Chart(cHostMem,{type:'line',data:{labels,datasets:[
+    ln('mem used avg %',s.map(p=>p.mem_avg),'#00aeef',{backgroundColor:'rgba(0,174,239,.12)',fill:true,yAxisID:'y',borderWidth:1.5}),
+    ln('mem used max %',s.map(p=>p.mem_max),'#2eb872',{yAxisID:'y'}),
+    ln('commit %',s.map(p=>p.mem_commit_avg),'#a371f7',{yAxisID:'y'}),
+    ln('page cache GB',s.map(p=>(p.mem_cached_avg||0)/1024),'#f5a623',{yAxisID:'y1'}),
+  ]},options:dual('%','GB',100)});
+  charts.hostPaging=new Chart(cHostPaging,{type:'line',data:{labels,datasets:[
+    ln('pgpgin kB/s',s.map(p=>p.pgpgin_avg),'#00aeef',{yAxisID:'y'}),
+    ln('pgpgout kB/s',s.map(p=>p.pgpgout_avg),'#2eb872',{yAxisID:'y'}),
+    ln('majflt/s (max)',s.map(p=>p.majflt_max),'#e5484d',{yAxisID:'y1',borderWidth:1.6}),
+  ]},options:dual('kB/s','majflt/s')});
+  charts.hostSwap=new Chart(cHostSwap,{type:'line',data:{labels,datasets:[
+    ln('swap used % (max)',s.map(p=>p.swap_max),'#e5484d',{yAxisID:'y',borderWidth:1.6}),
+    ln('pswpin/s',s.map(p=>p.pswpin_avg),'#00aeef',{yAxisID:'y1'}),
+    ln('pswpout/s (max)',s.map(p=>p.pswpout_max),'#f5a623',{yAxisID:'y1'}),
+  ]},options:dual('% used','pages/s')});
+  charts.hostDisk=new Chart(cHostDisk,{data:{labels,datasets:[
+    {type:'bar',label:'disk util % (max)',data:s.map(p=>p.disk_util_max),backgroundColor:'#f5a623',yAxisID:'y'},
+    ln('await ms (max)',s.map(p=>p.disk_await_max),'#e5484d',{type:'line',yAxisID:'y1'}),
+    ln('tps',s.map(p=>p.disk_tps_avg),'#00aeef',{type:'line',yAxisID:'y1'}),
+  ]},options:dual('% util','ms · tps',100)});
+  charts.hostNet=new Chart(cHostNet,{data:{labels,datasets:[
+    {type:'bar',label:'NIC util % (max)',data:s.map(p=>p.net_util_max),backgroundColor:'#00aeef',yAxisID:'y'},
+    ln('egress MB/s',s.map(p=>p.net_tx_avg/1024),'#2eb872',{type:'line',yAxisID:'y1',borderWidth:1.5}),
+    ln('ingress MB/s',s.map(p=>(p.net_rx_avg||0)/1024),'#f5a623',{type:'line',yAxisID:'y1',borderWidth:1.5}),
+  ]},options:dual('% util','MB/s',100)});
+}
+
 function instanceLabel(id, nodeId){
   if(nodeId) return nodeId;
   const sep=id.indexOf('--');
@@ -1153,7 +1467,51 @@ function ncard(n){
   </div>`;
 }
 
-function renderCluster(v,scaling){
+function hostNcard(n){
+  return `<div class="ncard ${SC[n.status]}" onclick="selectHost(${jsArg(n.id)})">
+    <div class="nid"><span>${esc(instanceLabel(n.id, n.node_id))}</span>
+      ${n.grade?`<span class="minigrade ${n.grade}">${n.grade}</span>`:''}</div>
+    <div class="nmeta"><span>cpu ${n.cpu_busy_pct_avg!=null?n.cpu_busy_pct_avg+'%':'—'}</span><span>mem ${n.mem_used_pct_avg!=null?n.mem_used_pct_avg+'%':'—'}</span></div>
+    <div class="nmeta"><span>disk ${n.disk_util_pct_max!=null?n.disk_util_pct_max+'%':'—'}</span><span>nic ${n.net_util_pct_max!=null?n.net_util_pct_max+'%':'—'}</span></div>
+    ${(n.swap_used_pct_max||0)>0?'<div class="nmeta" style="color:var(--crit)">swap touched</div>':''}
+  </div>`;
+}
+
+function renderHostOverviewSection(v){
+  if(!v.host_nodes || !v.host_summary) return '';
+  const hs=v.host_summary, hc=v.host_counts||{};
+  const attention=(v.host_attention&&v.host_attention.length)?v.host_attention.map(n=>`
+    <div class="alert ${n.status==='critical'?'critical':'warning'}" onclick="selectHost(${jsArg(n.id)})">
+      <span class="sev ${n.status==='critical'?'critical':'warning'}">${n.status}</span>
+      <span class="where">${esc(n.id)}</span>
+      <span class="msg">${esc(n.reason||('grade '+n.grade))}</span>
+      ${n.grade?`<span class="minigrade ${n.grade}" style="margin-left:auto">${n.grade}</span>`:''}
+    </div>`).join(''):'<div class="muted">All hosts healthy — no OS-level resource pressure. 🟢</div>';
+  const cell=(l,val,crit)=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v"${crit?' style="color:var(--crit)"':''}>${val}</div></div>`;
+  return `
+    <h2 style="margin-top:24px;display:flex;align-items:center;gap:10px">Hosts — server health (SAR)
+      ${v.host_status?`<span class="statuspill" style="background:${PILL[v.host_status]};color:var(--ink);font-size:11px">${v.host_status}</span>`:''}
+      <span class="muted" style="font-size:12px;font-weight:400">${hc.healthy||0} healthy · ${hc.unhealthy||0} under pressure · ${hs.n_with_data}/${hc.total||0} reporting</span>
+    </h2>
+    <div class="panels"><div class="panel full"><h3>Cluster host metrics (24h)</h3>
+      <div class="metric-grid">
+        ${cell('CPU busy (avg / peak node)',`${hs.cpu_busy_avg}% / ${hs.cpu_busy_peak}%`)}
+        ${cell('iowait (avg)',`${hs.iowait_avg}%`)}
+        ${cell('Memory used (avg / peak node)',`${hs.mem_used_avg}% / ${hs.mem_used_peak}%`)}
+        ${cell('Worst disk util / await',`${hs.disk_util_worst}% / ${hs.disk_await_worst} ms`)}
+        ${cell('Worst NIC util',`${hs.net_util_worst}%`)}
+        ${cell('Cluster ingress / egress',`${(hs.net_rx_total_kbs/1024).toFixed(1)} / ${(hs.net_tx_total_kbs/1024).toFixed(1)} MB/s`)}
+        ${cell('Nodes with swap touched',hs.swap_touched_nodes,hs.swap_touched_nodes>0)}
+        ${cell('Nodes with majflt storms',hs.majflt_hot_nodes,hs.majflt_hot_nodes>0)}
+      </div>
+    </div></div>
+    <div class="legend" style="margin-top:10px"><span>${dot('ok')} healthy</span><span>${dot('watch')} watch</span><span>${dot('critical')} critical</span><span class="muted">click a host card for the full SAR analysis; GC cards above open the JVM view</span></div>
+    <div class="nodegrid">${v.host_nodes.map(hostNcard).join('')}</div>
+    <h2 style="margin-top:24px">Host needs attention${v.host_attention&&v.host_attention.length?` (${v.host_attention.length})`:''} — click to investigate</h2>
+    <div class="alerts">${attention}</div>`;
+}
+
+function renderCluster(v,scaling,fc){
   destroy();
   const m=v.memory, t=v.telemetry, cfg=v.config, c=v.counts;
   const heapRoles=Object.entries(cfg.heap_by_role).map(([r,s])=>`${r} ${s.join('/')} MB`).join(' · ');
@@ -1211,8 +1569,10 @@ function renderCluster(v,scaling){
     <h2 style="margin-top:24px">Needs attention${v.attention.length?` (${v.attention.length})`:''} — click to investigate</h2>
     <div class="alerts">${attention}</div>
 
+    ${renderHostOverviewSection(v)}
+
     <h2 style="margin-top:24px">Capacity &amp; scaling</h2>
-    <div class="panels">${renderScalingAdvisor(scaling)}</div>`;
+    <div class="panels">${renderScalingAdvisor(scaling)}${renderForecastPanel(fc)}</div>`;
 }
 
 /* ---------------- instance detail ---------------- */
@@ -1227,15 +1587,16 @@ async function selectInstance(id,ev){
   SELECTED=id; CURRENT_INSTANCE=id; renderTree();
   const encodedId = encodeURIComponent(id);
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(id)+'…</div>';
-  const [snap,ser,sar,sarSer,corr,anom]=await Promise.all([
+  const [snap,ser,sar,sarSer,corr,anom,fc]=await Promise.all([
     api('/api/instance/'+encodedId),
     api('/api/instance/'+encodedId+'/series?range='+encodeURIComponent(CURRENT_RANGE)),
     fetchOptional('/api/instance/'+encodedId+'/sar'),
     fetchOptional('/api/instance/'+encodedId+'/sar/series?range='+encodeURIComponent(CURRENT_RANGE)),
     fetchOptional('/api/instance/'+encodedId+'/correlation'),
     fetchOptional('/api/instance/'+encodedId+'/anomalies'),
+    fetchOptional('/api/instance/'+encodedId+'/forecast'),
   ]);
-  renderInstance(snap,ser,sar,sarSer,corr,anom);
+  renderInstance(snap,ser,sar,sarSer,corr,anom,fc);
 }
 
 function renderSarSection(sar,sarSer){
@@ -1269,7 +1630,7 @@ function renderSarSection(sar,sarSer){
       <div class="panel"><h3>CPU busy &amp; iowait (%)</h3><div class="chartbox"><canvas id="cSarCpu"></canvas></div></div>
       <div class="panel"><h3>Memory &amp; swap (%)</h3><div class="chartbox"><canvas id="cSarMem"></canvas></div></div>
       <div class="panel"><h3>Disk util (%) &amp; await (ms)</h3><div class="chartbox"><canvas id="cSarDisk"></canvas></div></div>
-      <div class="panel"><h3>NIC util (%) &amp; egress (MB/s)</h3><div class="chartbox"><canvas id="cSarNet"></canvas></div></div>
+      <div class="panel"><h3>NIC util (%) &amp; egress / ingress (MB/s)</h3><div class="chartbox"><canvas id="cSarNet"></canvas></div></div>
     </div>`:''}
     ${(m.top_disks&&m.top_disks.length)||(m.top_nics&&m.top_nics.length)?`<div class="panels" style="margin-top:12px">
       ${m.top_disks&&m.top_disks.length?`<div class="panel"><h3>Busiest disks</h3><table class="sar-table"><tr><th>Device</th><th>avg util</th><th>max util</th></tr>${devRows(m.top_disks,'dev','dev')}</table></div>`:''}
@@ -1309,7 +1670,7 @@ function renderCorrelationSection(corr,anom){
     </div>`;
 }
 
-function renderInstance(s,tr,sar,sarSer,corr,anom){
+function renderInstance(s,tr,sar,sarSer,corr,anom,fc){
   const m=s.metrics,h=s.health,inst=s.instance;
   const status = s.alerts.some(a=>a.severity==='critical')?'critical':(s.alerts.length||['C','D','F'].includes(h.grade))?'watch':'ok';
   const grade = ['A','B','C','D','F'].includes(h.grade) ? h.grade : 'F';
@@ -1352,9 +1713,11 @@ function renderInstance(s,tr,sar,sarSer,corr,anom){
       <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
       <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
     </div>
-    <h2 style="margin-top:24px">Server &amp; correlation analysis</h2>
+    <h2 style="margin-top:24px;display:flex;align-items:center;gap:12px">Server &amp; correlation analysis
+      <a href="#" onclick="selectHost(${jsArg(inst.id)});return false" style="color:var(--accent);font-size:12px;font-weight:500">Full host health analysis (all SAR metrics) →</a>
+    </h2>
     ${renderSarSection(sar,sarSer)}
-    <div class="panels" style="margin-top:12px">${renderCorrelationSection(corr,anom)}</div>`;
+    <div class="panels" style="margin-top:12px">${renderCorrelationSection(corr,anom)}${renderCapacityOutlook(fc)}${renderSarUpload(inst.id)}</div>`;
   _lastMetrics=m; _lastSeries=tr; _lastSar=sar; _lastSarSer=sarSer;
   EXPLORER_TAB='heap';
   drawTrends(tr);
@@ -1438,7 +1801,8 @@ function drawSarTrends(sarSer){
 
   charts.sarNet=new Chart(cSarNet,{data:{labels,datasets:[
     {type:'bar',label:'NIC util % (max)',data:s.map(p=>p.net_util_max),backgroundColor:'#00aeef',yAxisID:'y'},
-    {type:'line',label:'egress MB/s (avg)',data:s.map(p=>p.net_tx_avg/1024),borderColor:'#2eb872',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+    {type:'line',label:'egress MB/s (avg)',data:s.map(p=>p.net_tx_avg/1024),borderColor:'#2eb872',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'},
+    {type:'line',label:'ingress MB/s (avg)',data:s.map(p=>(p.net_rx_avg||0)/1024),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
   ]},options:{...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:{position:'left',beginAtZero:true,suggestedMax:100,ticks:{font:{size:9}},title:{display:true,text:'% util',font:{size:9}}},

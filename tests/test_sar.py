@@ -123,6 +123,99 @@ def test_store_host_metrics_roundtrip():
         assert rng["series"]
 
 
+def test_sar_parses_rhel_paging_and_swap_activity():
+    """RHEL 8/9 `sar -B` (paging) and `sar -W` (swapping) sections must parse
+    identically from both text and JSON, and survive the store roundtrip."""
+    pt = sar_parser.parse_file(os.path.join(SAMPLES, "broker-1-sar.txt"), node_id="broker-1")
+    pj = sar_parser.parse_file(os.path.join(SAMPLES, "broker-1-sar.json"), node_id="broker-1")
+
+    # The generator injects paging pressure mid-afternoon; both formats agree.
+    assert max(s.pgpgout_kbs for s in pt.samples) > 1000, "expected pgpgout activity"
+    assert max(s.majflt_per_s for s in pt.samples) > 5, "expected a majflt spike"
+    assert max(s.pswpout_per_s for s in pt.samples) > 0, "expected some swap-out activity"
+    for a, b in zip(pt.samples[:20], pj.samples[:20]):
+        assert abs(a.pgpgin_kbs - b.pgpgin_kbs) < 0.01
+        assert abs(a.majflt_per_s - b.majflt_per_s) < 0.01
+        assert abs(a.pswpout_per_s - b.pswpout_per_s) < 0.01
+
+    # Rollup exposes the new aggregates…
+    m = sar_analyzer.analyze(pt)["metrics"]
+    for key in ("pgpgin_kbs_avg", "pgpgout_kbs_avg", "fault_per_s_avg", "majflt_per_s_max",
+                "pswpout_per_s_max", "cpu_steal_pct_avg", "load15_avg", "mem_commit_pct_avg"):
+        assert key in m, f"missing rollup key {key}"
+    assert m["majflt_per_s_max"] > 5
+
+    # …and they survive record -> read-back through the store.
+    db = _tmp_db("sar_paging_roundtrip")
+    if os.path.exists(db):
+        os.remove(db)
+    store.init_db(db)
+    buckets = sar_analyzer.bucket_metrics(pt, bucket_s=3600)
+    inst_id = "TEST--broker-1"
+    with store.connect(db) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO instances(id,region,env,cluster,grp,role,idx,heap_max_mb,collector,node_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (inst_id, "TEST", "DEV", "TEST", "brokers", "broker", 1, 4096, "G1", "broker-1"),
+        )
+        for bts, mm in buckets:
+            store.record_host_metric(c, inst_id, bts, mm)
+    with store.connect(db) as c:
+        now = buckets[-1][0]
+        snap = store.current_host_snapshot(c, inst_id, now)
+        assert snap["metrics"]["pgpgout_kbs_avg"] > 0
+        assert snap["metrics"]["majflt_per_s_max"] > 5
+        rng = store.host_range_series(c, inst_id, buckets[0][0], now, 3600)
+        pt0 = rng["series"][0]
+        for key in ("pgpgin_avg", "pgpgout_avg", "fault_avg", "majflt_max", "pswpout_max",
+                    "net_rx_avg", "cpu_user_avg", "load15_avg", "cswch_avg"):
+            assert key in pt0, f"missing series key {key}"
+        assert any(p["net_rx_avg"] > 0 for p in rng["series"]), "ingress series should be populated"
+
+
+def test_store_migrates_legacy_host_metrics_schema():
+    """A DB created before the RHEL full-metric columns must be migrated in
+    place by init_db, and old rows must read back as zeros, not None."""
+    db = _tmp_db("sar_migration_test")
+    if os.path.exists(db):
+        os.remove(db)
+    import sqlite3
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE instances (id TEXT PRIMARY KEY, region TEXT, env TEXT, cluster TEXT,
+            grp TEXT, role TEXT, idx INTEGER, heap_max_mb INTEGER, collector TEXT, node_id TEXT);
+        CREATE TABLE host_metrics (
+            ts INTEGER, instance_id TEXT, cpu_user_pct REAL, cpu_system_pct REAL,
+            cpu_iowait_pct REAL, cpu_busy_pct REAL, load1 REAL, load5 REAL, runq_sz REAL,
+            cswch_per_s REAL, mem_used_pct REAL, mem_cached_mb REAL, swap_used_pct REAL,
+            disk_util_pct_max REAL, disk_await_ms_max REAL, disk_tps REAL, net_util_pct_max REAL,
+            net_rx_kbs REAL, net_tx_kbs REAL, top_disks_json TEXT, top_nics_json TEXT,
+            PRIMARY KEY (instance_id, ts));
+    """)
+    conn.execute("INSERT INTO instances VALUES ('T--b1','R','E','T','brokers','broker',1,4096,'G1','b1')")
+    conn.execute(
+        "INSERT INTO host_metrics(ts,instance_id,cpu_user_pct,cpu_system_pct,cpu_iowait_pct,"
+        "cpu_busy_pct,load1,load5,runq_sz,cswch_per_s,mem_used_pct,mem_cached_mb,swap_used_pct,"
+        "disk_util_pct_max,disk_await_ms_max,disk_tps,net_util_pct_max,net_rx_kbs,net_tx_kbs,"
+        "top_disks_json,top_nics_json) VALUES (1000,'T--b1',10,3,1,15,1,1,0,400,40,1000,0,10,3,50,10,2000,3000,'[]','[]')"
+    )
+    conn.commit()
+    conn.close()
+
+    store.init_db(db)  # migration point
+    with store.connect(db) as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(host_metrics)")}
+        for col in store._HOST_METRIC_EXTRA_COLS:
+            assert col in cols, f"migration missed column {col}"
+        snap = store.current_host_snapshot(c, "T--b1", 1000)
+        assert snap["metrics"]["pgpgin_kbs_avg"] == 0.0   # legacy row -> zero, not None
+        assert snap["metrics"]["cpu_busy_pct_avg"] == 15.0
+        # legacy rows must not break the extended series either
+        rng = store.host_range_series(c, "T--b1", 0, 2000, 3600)
+        assert rng["series"][0]["pgpgout_avg"] == 0.0
+        assert rng["series"][0]["net_rx_avg"] > 0
+
+
 def test_sar_collector_state_dedup_point():
     db = _tmp_db("sar_state_test")
     if os.path.exists(db):

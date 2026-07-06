@@ -93,13 +93,26 @@ CREATE TABLE IF NOT EXISTS host_metrics (
     cpu_system_pct    REAL,
     cpu_iowait_pct    REAL,
     cpu_busy_pct      REAL,
+    cpu_steal_pct     REAL DEFAULT 0,
     load1             REAL,
     load5             REAL,
+    load15            REAL DEFAULT 0,
     runq_sz           REAL,
+    plist_sz          REAL DEFAULT 0,
+    blocked           REAL DEFAULT 0,
+    proc_per_s        REAL DEFAULT 0,
     cswch_per_s       REAL,
     mem_used_pct      REAL,
+    mem_avail_mb      REAL DEFAULT 0,
     mem_cached_mb     REAL,
+    mem_commit_pct    REAL DEFAULT 0,
     swap_used_pct     REAL,
+    pgpgin_kbs        REAL DEFAULT 0,
+    pgpgout_kbs       REAL DEFAULT 0,
+    fault_per_s       REAL DEFAULT 0,
+    majflt_per_s      REAL DEFAULT 0,
+    pswpin_per_s      REAL DEFAULT 0,
+    pswpout_per_s     REAL DEFAULT 0,
     disk_util_pct_max REAL,
     disk_await_ms_max REAL,
     disk_tps          REAL,
@@ -131,10 +144,24 @@ def connect(db_path: str = None):
         conn.close()
 
 
+# Columns added to host_metrics after the original release (RHEL 8/9 full
+# SAR metric set) — migrated in on init for DBs created before the change.
+_HOST_METRIC_EXTRA_COLS = [
+    "cpu_steal_pct", "load15", "plist_sz", "blocked", "proc_per_s",
+    "mem_avail_mb", "mem_commit_pct",
+    "pgpgin_kbs", "pgpgout_kbs", "fault_per_s", "majflt_per_s",
+    "pswpin_per_s", "pswpout_per_s",
+]
+
+
 def _ensure_columns(c) -> None:
     cols = {r[1] for r in c.execute('PRAGMA table_info(instances)')}
     if 'node_id' not in cols:
         c.execute('ALTER TABLE instances ADD COLUMN node_id TEXT')
+    host_cols = {r[1] for r in c.execute('PRAGMA table_info(host_metrics)')}
+    for col in _HOST_METRIC_EXTRA_COLS:
+        if col not in host_cols:
+            c.execute(f'ALTER TABLE host_metrics ADD COLUMN {col} REAL DEFAULT 0')
 
 
 def init_db(db_path: str = None) -> None:
@@ -170,18 +197,27 @@ def record_metric(c, instance_id: str, ts: int, m: dict) -> None:
 def record_host_metric(c, instance_id: str, ts: int, m: dict) -> None:
     c.execute(
         "INSERT OR REPLACE INTO host_metrics(ts,instance_id,cpu_user_pct,cpu_system_pct,"
-        "cpu_iowait_pct,cpu_busy_pct,load1,load5,runq_sz,cswch_per_s,mem_used_pct,mem_cached_mb,"
-        "swap_used_pct,disk_util_pct_max,disk_await_ms_max,disk_tps,net_util_pct_max,"
-        "net_rx_kbs,net_tx_kbs,top_disks_json,top_nics_json) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "cpu_iowait_pct,cpu_busy_pct,cpu_steal_pct,load1,load5,load15,runq_sz,plist_sz,"
+        "blocked,proc_per_s,cswch_per_s,mem_used_pct,mem_avail_mb,mem_cached_mb,"
+        "mem_commit_pct,swap_used_pct,pgpgin_kbs,pgpgout_kbs,fault_per_s,majflt_per_s,"
+        "pswpin_per_s,pswpout_per_s,disk_util_pct_max,disk_await_ms_max,disk_tps,"
+        "net_util_pct_max,net_rx_kbs,net_tx_kbs,top_disks_json,top_nics_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             ts, instance_id,
             m.get("cpu_user_pct_avg", 0.0), m.get("cpu_system_pct_avg", 0.0),
             m.get("cpu_iowait_pct_avg", 0.0), m.get("cpu_busy_pct_avg", 0.0),
-            m.get("load1_avg", 0.0), m.get("load5_avg", 0.0),
-            m.get("runq_sz_avg", 0.0), m.get("cswch_per_s_avg", 0.0),
-            m.get("mem_used_pct_avg", 0.0), m.get("mem_cached_mb_avg", 0.0),
+            m.get("cpu_steal_pct_avg", 0.0),
+            m.get("load1_avg", 0.0), m.get("load5_avg", 0.0), m.get("load15_avg", 0.0),
+            m.get("runq_sz_avg", 0.0), m.get("plist_sz_avg", 0.0),
+            m.get("blocked_avg", 0.0), m.get("proc_per_s_avg", 0.0),
+            m.get("cswch_per_s_avg", 0.0),
+            m.get("mem_used_pct_avg", 0.0), m.get("mem_avail_mb_avg", 0.0),
+            m.get("mem_cached_mb_avg", 0.0), m.get("mem_commit_pct_avg", 0.0),
             m.get("swap_used_pct_max", 0.0),
+            m.get("pgpgin_kbs_avg", 0.0), m.get("pgpgout_kbs_avg", 0.0),
+            m.get("fault_per_s_avg", 0.0), m.get("majflt_per_s_avg", 0.0),
+            m.get("pswpin_per_s_avg", 0.0), m.get("pswpout_per_s_avg", 0.0),
             m.get("disk_util_pct_max", 0.0), m.get("disk_await_ms_max", 0.0), m.get("disk_tps_avg", 0.0),
             m.get("net_util_pct_max", 0.0), m.get("net_rx_kbs_avg", 0.0), m.get("net_tx_kbs_avg", 0.0),
             json.dumps(m.get("top_disks", [])), json.dumps(m.get("top_nics", [])),
@@ -223,32 +259,54 @@ def _host_metrics_dict_from_window(rows: list[dict]) -> dict:
         top_nics = json.loads(rows[-1].get("top_nics_json") or "[]")
     except (TypeError, ValueError):
         top_nics = []
+    def _favg(col: str) -> float:
+        return round(statistics.fmean((r[col] or 0.0) for r in rows), 2)
+
+    def _fmax(col: str) -> float:
+        return round(max((r[col] or 0.0) for r in rows), 2)
+
     return {
         "sample_count": len(rows),
         "span_seconds": (rows[-1]["ts"] - rows[0]["ts"]) if len(rows) > 1 else 0,
-        "cpu_user_pct_avg": round(statistics.fmean(r["cpu_user_pct"] for r in rows), 2),
-        "cpu_system_pct_avg": round(statistics.fmean(r["cpu_system_pct"] for r in rows), 2),
-        "cpu_iowait_pct_avg": round(statistics.fmean(r["cpu_iowait_pct"] for r in rows), 2),
-        "cpu_iowait_pct_max": round(max(r["cpu_iowait_pct"] for r in rows), 2),
-        "cpu_busy_pct_avg": round(statistics.fmean(r["cpu_busy_pct"] for r in rows), 2),
-        "cpu_busy_pct_max": round(max(r["cpu_busy_pct"] for r in rows), 2),
-        "load1_avg": round(statistics.fmean(r["load1"] for r in rows), 2),
-        "load1_max": round(max(r["load1"] for r in rows), 2),
-        "load5_avg": round(statistics.fmean(r["load5"] for r in rows), 2),
-        "runq_sz_avg": round(statistics.fmean(r["runq_sz"] for r in rows), 2),
-        "cswch_per_s_avg": round(statistics.fmean(r["cswch_per_s"] for r in rows), 2),
-        "mem_used_pct_avg": round(statistics.fmean(r["mem_used_pct"] for r in rows), 2),
-        "mem_used_pct_max": round(max(r["mem_used_pct"] for r in rows), 2),
-        "mem_cached_mb_avg": round(statistics.fmean(r["mem_cached_mb"] for r in rows), 2),
-        "swap_used_pct_avg": round(statistics.fmean(r["swap_used_pct"] for r in rows), 2),
-        "swap_used_pct_max": round(max(r["swap_used_pct"] for r in rows), 2),
-        "disk_util_pct_max": round(max(r["disk_util_pct_max"] for r in rows), 2),
-        "disk_await_ms_max": round(max(r["disk_await_ms_max"] for r in rows), 2),
-        "disk_tps_avg": round(statistics.fmean(r["disk_tps"] for r in rows), 2),
-        "net_util_pct_max": round(max(r["net_util_pct_max"] for r in rows), 2),
-        "net_rx_kbs_avg": round(statistics.fmean(r["net_rx_kbs"] for r in rows), 2),
-        "net_tx_kbs_avg": round(statistics.fmean(r["net_tx_kbs"] for r in rows), 2),
-        "net_tx_kbs_max": round(max(r["net_tx_kbs"] for r in rows), 2),
+        "cpu_user_pct_avg": _favg("cpu_user_pct"),
+        "cpu_system_pct_avg": _favg("cpu_system_pct"),
+        "cpu_iowait_pct_avg": _favg("cpu_iowait_pct"),
+        "cpu_iowait_pct_max": _fmax("cpu_iowait_pct"),
+        "cpu_busy_pct_avg": _favg("cpu_busy_pct"),
+        "cpu_busy_pct_max": _fmax("cpu_busy_pct"),
+        "cpu_steal_pct_avg": _favg("cpu_steal_pct"),
+        "cpu_steal_pct_max": _fmax("cpu_steal_pct"),
+        "load1_avg": _favg("load1"),
+        "load1_max": _fmax("load1"),
+        "load5_avg": _favg("load5"),
+        "load15_avg": _favg("load15"),
+        "runq_sz_avg": _favg("runq_sz"),
+        "plist_sz_avg": _favg("plist_sz"),
+        "blocked_avg": _favg("blocked"),
+        "proc_per_s_avg": _favg("proc_per_s"),
+        "cswch_per_s_avg": _favg("cswch_per_s"),
+        "mem_used_pct_avg": _favg("mem_used_pct"),
+        "mem_used_pct_max": _fmax("mem_used_pct"),
+        "mem_avail_mb_avg": _favg("mem_avail_mb"),
+        "mem_cached_mb_avg": _favg("mem_cached_mb"),
+        "mem_commit_pct_avg": _favg("mem_commit_pct"),
+        "swap_used_pct_avg": _favg("swap_used_pct"),
+        "swap_used_pct_max": _fmax("swap_used_pct"),
+        "pgpgin_kbs_avg": _favg("pgpgin_kbs"),
+        "pgpgout_kbs_avg": _favg("pgpgout_kbs"),
+        "fault_per_s_avg": _favg("fault_per_s"),
+        "majflt_per_s_avg": _favg("majflt_per_s"),
+        "majflt_per_s_max": _fmax("majflt_per_s"),
+        "pswpin_per_s_avg": _favg("pswpin_per_s"),
+        "pswpout_per_s_avg": _favg("pswpout_per_s"),
+        "pswpout_per_s_max": _fmax("pswpout_per_s"),
+        "disk_util_pct_max": _fmax("disk_util_pct_max"),
+        "disk_await_ms_max": _fmax("disk_await_ms_max"),
+        "disk_tps_avg": _favg("disk_tps"),
+        "net_util_pct_max": _fmax("net_util_pct_max"),
+        "net_rx_kbs_avg": _favg("net_rx_kbs"),
+        "net_tx_kbs_avg": _favg("net_tx_kbs"),
+        "net_tx_kbs_max": _fmax("net_tx_kbs"),
         "top_disks": top_disks,
         "top_nics": top_nics,
     }
@@ -278,34 +336,55 @@ def host_trends(c, instance_id: str, days: int = 30, now: int = None) -> dict:
         SELECT
             (ts / 86400) * 86400 AS day,
             AVG(cpu_busy_pct) AS cpu_busy_avg, MAX(cpu_busy_pct) AS cpu_busy_max,
+            AVG(cpu_user_pct) AS cpu_user_avg, AVG(cpu_system_pct) AS cpu_system_avg,
+            AVG(cpu_steal_pct) AS cpu_steal_avg,
             AVG(cpu_iowait_pct) AS iowait_avg, MAX(cpu_iowait_pct) AS iowait_max,
             AVG(mem_used_pct) AS mem_avg, MAX(mem_used_pct) AS mem_max,
+            AVG(mem_cached_mb) AS mem_cached_avg, AVG(mem_commit_pct) AS mem_commit_avg,
             MAX(swap_used_pct) AS swap_max,
+            AVG(pgpgin_kbs) AS pgpgin_avg, AVG(pgpgout_kbs) AS pgpgout_avg,
+            AVG(fault_per_s) AS fault_avg, MAX(majflt_per_s) AS majflt_max,
+            AVG(pswpin_per_s) AS pswpin_avg, MAX(pswpout_per_s) AS pswpout_max,
             MAX(disk_util_pct_max) AS disk_util_max, MAX(disk_await_ms_max) AS disk_await_max,
+            AVG(disk_tps) AS disk_tps_avg,
             MAX(net_util_pct_max) AS net_util_max,
-            AVG(net_tx_kbs) AS net_tx_avg, AVG(load1) AS load1_avg
+            AVG(net_tx_kbs) AS net_tx_avg, AVG(net_rx_kbs) AS net_rx_avg,
+            AVG(load1) AS load1_avg, AVG(load5) AS load5_avg, AVG(load15) AS load15_avg,
+            AVG(runq_sz) AS runq_avg, AVG(blocked) AS blocked_avg,
+            AVG(cswch_per_s) AS cswch_avg, AVG(proc_per_s) AS proc_avg
         FROM host_metrics
         WHERE instance_id = ? AND ts >= ? AND ts <= ?
         GROUP BY day
         ORDER BY day ASC
     """
     rows = c.execute(query, (instance_id, since, now)).fetchall()
+
+    def _r(row, key, digits=1):
+        v = row[key]
+        return round(v, digits) if v is not None else 0.0
+
     series = []
     for r in rows:
         series.append({
             "t": r["day"],
-            "cpu_busy_avg": round(r["cpu_busy_avg"], 1) if r["cpu_busy_avg"] is not None else 0.0,
-            "cpu_busy_max": round(r["cpu_busy_max"], 1) if r["cpu_busy_max"] is not None else 0.0,
-            "iowait_avg": round(r["iowait_avg"], 1) if r["iowait_avg"] is not None else 0.0,
-            "iowait_max": round(r["iowait_max"], 1) if r["iowait_max"] is not None else 0.0,
-            "mem_avg": round(r["mem_avg"], 1) if r["mem_avg"] is not None else 0.0,
-            "mem_max": round(r["mem_max"], 1) if r["mem_max"] is not None else 0.0,
-            "swap_max": round(r["swap_max"], 2) if r["swap_max"] is not None else 0.0,
-            "disk_util_max": round(r["disk_util_max"], 1) if r["disk_util_max"] is not None else 0.0,
-            "disk_await_max": round(r["disk_await_max"], 1) if r["disk_await_max"] is not None else 0.0,
-            "net_util_max": round(r["net_util_max"], 1) if r["net_util_max"] is not None else 0.0,
-            "net_tx_avg": round(r["net_tx_avg"], 1) if r["net_tx_avg"] is not None else 0.0,
-            "load1_avg": round(r["load1_avg"], 2) if r["load1_avg"] is not None else 0.0,
+            "cpu_busy_avg": _r(r, "cpu_busy_avg"), "cpu_busy_max": _r(r, "cpu_busy_max"),
+            "cpu_user_avg": _r(r, "cpu_user_avg"), "cpu_system_avg": _r(r, "cpu_system_avg"),
+            "cpu_steal_avg": _r(r, "cpu_steal_avg", 2),
+            "iowait_avg": _r(r, "iowait_avg"), "iowait_max": _r(r, "iowait_max"),
+            "mem_avg": _r(r, "mem_avg"), "mem_max": _r(r, "mem_max"),
+            "mem_cached_avg": _r(r, "mem_cached_avg"), "mem_commit_avg": _r(r, "mem_commit_avg"),
+            "swap_max": _r(r, "swap_max", 2),
+            "pgpgin_avg": _r(r, "pgpgin_avg"), "pgpgout_avg": _r(r, "pgpgout_avg"),
+            "fault_avg": _r(r, "fault_avg"), "majflt_max": _r(r, "majflt_max", 2),
+            "pswpin_avg": _r(r, "pswpin_avg", 2), "pswpout_max": _r(r, "pswpout_max", 2),
+            "disk_util_max": _r(r, "disk_util_max"), "disk_await_max": _r(r, "disk_await_max"),
+            "disk_tps_avg": _r(r, "disk_tps_avg"),
+            "net_util_max": _r(r, "net_util_max"),
+            "net_tx_avg": _r(r, "net_tx_avg"), "net_rx_avg": _r(r, "net_rx_avg"),
+            "load1_avg": _r(r, "load1_avg", 2), "load5_avg": _r(r, "load5_avg", 2),
+            "load15_avg": _r(r, "load15_avg", 2),
+            "runq_avg": _r(r, "runq_avg", 2), "blocked_avg": _r(r, "blocked_avg", 2),
+            "cswch_avg": _r(r, "cswch_avg"), "proc_avg": _r(r, "proc_avg", 2),
         })
     return {"instance_id": instance_id, "days": days, "series": series}
 
@@ -316,22 +395,36 @@ def host_range_series(c, instance_id: str, since: int, until: int, bucket_s: int
     for r in rows:
         b = (r["ts"] // bucket_s) * bucket_s
         buckets.setdefault(b, []).append(r)
+    def _bavg(rs, col, digits=1):
+        return round(statistics.fmean((r[col] or 0.0) for r in rs), digits)
+
+    def _bmax(rs, col, digits=1):
+        return round(max((r[col] or 0.0) for r in rs), digits)
+
     series = []
     for b in sorted(buckets):
         rs = buckets[b]
         series.append({
             "t": b,
-            "cpu_busy_avg": round(statistics.fmean(r["cpu_busy_pct"] for r in rs), 1),
-            "cpu_busy_max": round(max(r["cpu_busy_pct"] for r in rs), 1),
-            "iowait_avg": round(statistics.fmean(r["cpu_iowait_pct"] for r in rs), 1),
-            "mem_avg": round(statistics.fmean(r["mem_used_pct"] for r in rs), 1),
-            "mem_max": round(max(r["mem_used_pct"] for r in rs), 1),
-            "swap_max": round(max(r["swap_used_pct"] for r in rs), 2),
-            "disk_util_max": round(max(r["disk_util_pct_max"] for r in rs), 1),
-            "disk_await_max": round(max(r["disk_await_ms_max"] for r in rs), 1),
-            "net_util_max": round(max(r["net_util_pct_max"] for r in rs), 1),
-            "net_tx_avg": round(statistics.fmean(r["net_tx_kbs"] for r in rs), 1),
-            "load1_avg": round(statistics.fmean(r["load1"] for r in rs), 2),
+            "cpu_busy_avg": _bavg(rs, "cpu_busy_pct"), "cpu_busy_max": _bmax(rs, "cpu_busy_pct"),
+            "cpu_user_avg": _bavg(rs, "cpu_user_pct"), "cpu_system_avg": _bavg(rs, "cpu_system_pct"),
+            "cpu_steal_avg": _bavg(rs, "cpu_steal_pct", 2),
+            "iowait_avg": _bavg(rs, "cpu_iowait_pct"),
+            "mem_avg": _bavg(rs, "mem_used_pct"), "mem_max": _bmax(rs, "mem_used_pct"),
+            "mem_cached_avg": _bavg(rs, "mem_cached_mb"), "mem_commit_avg": _bavg(rs, "mem_commit_pct"),
+            "swap_max": _bmax(rs, "swap_used_pct", 2),
+            "pgpgin_avg": _bavg(rs, "pgpgin_kbs"), "pgpgout_avg": _bavg(rs, "pgpgout_kbs"),
+            "fault_avg": _bavg(rs, "fault_per_s"), "majflt_max": _bmax(rs, "majflt_per_s", 2),
+            "pswpin_avg": _bavg(rs, "pswpin_per_s", 2), "pswpout_max": _bmax(rs, "pswpout_per_s", 2),
+            "disk_util_max": _bmax(rs, "disk_util_pct_max"),
+            "disk_await_max": _bmax(rs, "disk_await_ms_max"),
+            "disk_tps_avg": _bavg(rs, "disk_tps"),
+            "net_util_max": _bmax(rs, "net_util_pct_max"),
+            "net_tx_avg": _bavg(rs, "net_tx_kbs"), "net_rx_avg": _bavg(rs, "net_rx_kbs"),
+            "load1_avg": _bavg(rs, "load1", 2), "load5_avg": _bavg(rs, "load5", 2),
+            "load15_avg": _bavg(rs, "load15", 2),
+            "runq_avg": _bavg(rs, "runq_sz", 2), "blocked_avg": _bavg(rs, "blocked", 2),
+            "cswch_avg": _bavg(rs, "cswch_per_s"), "proc_avg": _bavg(rs, "proc_per_s", 2),
         })
     return {"instance_id": instance_id, "bucket_s": bucket_s, "series": series}
 

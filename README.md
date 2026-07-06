@@ -212,6 +212,9 @@ And `sysstat` for host metrics — see
 | GET | `/api/instance/{id}/correlation?days=30` | GC&lt;-&gt;host correlation: verdict, r-values, findings |
 | GET | `/api/instance/{id}/anomalies?days=30&recent_hours=24` | ML Tech Preview anomaly score (advisory) |
 | GET | `/api/cluster/{cluster}/scaling?role=broker` | Vertical / horizontal / rebalance recommendation |
+| GET | `/api/instance/{id}/forecast?days=90&horizon=90` | Capacity forecast: per-signal trend, days-to-breach, risk |
+| GET | `/api/cluster/{cluster}/forecast?role=broker` | Proactive scaling plan: which direction, on what planning clock |
+| POST | `/api/instance/{id}/sar/upload` | (admin) Ingest a pasted `sadf -j` / `sar -A` export — no SSH needed |
 | GET | `/api/health` | Liveness probe |
 
 ---
@@ -258,8 +261,12 @@ analyzer side beyond the optional `paramiko` dependency it already needs.
    makes every host's samples line up with GC metrics (also UTC epoch
    seconds) without needing to know each host's local timezone.
 2. **Parse** (`gcanalyzer/sar_parser.py`) — both formats normalize into the
-   same `SarSample` shape (CPU, load, memory, swap, per-disk, per-NIC), so the
-   rest of the pipeline never needs to know which format the data came from.
+   same `SarSample` shape (CPU incl. steal, load 1/5/15, run queue, context
+   switches, memory incl. available/page-cache/commit%, swap occupancy,
+   paging activity from `sar -B` (pgpgin/pgpgout, faults, major faults),
+   swapping activity from `sar -W` (pswpin/pswpout), per-disk, per-NIC —
+   the full RHEL 8/9 sysstat section set), so the rest of the pipeline
+   never needs to know which format the data came from.
 3. **Analyze** (`gcanalyzer/sar_analyzer.py`) — rolls samples into the same
    "metrics / health / findings" shape `analyzer.py` produces for GC, so a
    node is judged the same way (A–F grade, pros/cons/recommendations)
@@ -328,14 +335,75 @@ does for GC logs.
 ### What you get in the dashboard
 
 - **Per-instance "Server health (SAR)"** panel: 24h CPU/iowait/memory/swap/
-  disk/network summary, A–F resource-pressure grade, trend charts, busiest
-  disk/NIC tables, and pros/cons/recommendations.
+  disk/network summary, A–F resource-pressure grade, trend charts (network
+  chart shows NIC util + egress **and ingress**), busiest disk/NIC tables,
+  and pros/cons/recommendations.
+- **Standalone "Host health analysis" view** (linked from every instance
+  page; `/host/[id]` in the Next.js app): the *box* judged on its own with
+  no GC data — every SAR metric the analyzer collects from RHEL 8/9 hosts,
+  grouped as CPU & scheduler (user/system/iowait/steal, load 1/5/15, run
+  queue, blocked, cswch/s, proc/s), memory/paging/swap (used, available,
+  page cache, commit%, pgpgin/pgpgout, faults & major faults, pswpin/
+  pswpout), and disk & network (util, await, tps, NIC util, ingress/
+  egress) — each family charted over a selectable 1h–2y range, plus
+  host-only findings and trend warnings from the capacity forecaster.
 - **Per-instance "GC ↔ host correlation"** panel: verdict pill
   (gc-bound/host-bound/mixed), the strongest correlated signal pairs, the
   storm co-occurrence read, and the ML Tech Preview anomaly badge.
 - **Per-cluster "Capacity & scaling"** panel: the vertical/horizontal/
   rebalance verdict with confidence, the evidence behind it, cross-node skew,
   and a per-broker bottleneck table.
+- **Per-instance "Capacity outlook"** panel: Theil-Sen trend per GC/host
+  signal with projected days-until-warning/critical breach and a
+  low/medium/high confidence per signal.
+- **Per-cluster "Capacity forecast"** panel: the proactive companion to the
+  scaling advisor — a plan-horizontal / plan-vertical (RAM or heap) /
+  tune-GC / watch-hot-node verdict, the earliest projected critical breach
+  ("the planning clock"), and per-broker forecast warnings.
+- **Per-instance "Upload SAR report"** panel (admin): paste or drop a
+  `sadf -j -- -A` / `sar -A` export captured manually on the host — the
+  no-SSH ingestion path (see below).
+
+### Capacity forecasting (proactive scaling)
+
+`gcanalyzer/forecast.py` turns the same daily GC + host history into "when
+do we run out of headroom":
+
+1. Each signal (CPU busy, iowait, memory, swap, disk util, NIC util, heap
+   live set, time-in-GC) is aggregated to one point per day over a 90-day
+   lookback.
+2. A **Theil-Sen** trend (median pairwise slope) is fitted — one incident
+   day cannot drag the slope, so the projection reflects sustained growth,
+   not the worst day.
+3. Days-until-breach is projected against the same warning/critical
+   thresholds sar_analyzer/alerting already use, with an explicit
+   confidence derived from history length and trend consistency.
+4. At the cluster level, the breaching resource maps onto a proactive
+   direction consistent with the scaling advisor: uniform CPU/disk/network
+   growth -> *plan horizontal*; memory/swap growth -> *plan vertical (RAM)*;
+   heap growth -> *plan vertical (heap)*; time-in-GC growth -> *tune GC
+   first*; one node trending up while peers are flat -> *watch/rebalance
+   the hot node* before buying hardware.
+
+Like everything else here it is deterministic, explainable, and advisory —
+every verdict ships with the evidence and dates behind it.
+
+### SAR upload — the no-SSH path
+
+Hosts you can't (or don't want to) reach over SSH from the analyzer can
+still get full host-health/correlation/forecast coverage. On the RedHat
+host run:
+
+```bash
+TZ=UTC LC_ALL=C sadf -j -- -A > broker1-sar.json    # preferred (JSON)
+TZ=UTC LC_ALL=C sar -A > broker1-sar.txt            # classic text fallback
+```
+
+then paste/drop the output into the instance's **Upload SAR report** panel
+(or `POST /api/instance/{id}/sar/upload`, admin role required). Uploads go
+through the exact same parse -> analyze -> dedup-by-timestamp -> record
+pipeline as SSH collection, so re-uploading the same report is always safe
+and a daily copy/paste (or scripted `curl`) keeps trends accumulating.
 
 ---
 
@@ -351,6 +419,8 @@ gcanalyzer/
   sar_analyzer.py     Host metrics, resource-pressure health score, findings
   correlate.py        GC <-> host correlation (Pearson r, storm co-occurrence, verdict)
   scaling_advisor.py  Cluster-level vertical/horizontal/rebalance recommendation
+  forecast.py         Capacity forecasting: Theil-Sen trend per signal, days-to-breach,
+                      proactive plan-horizontal/vertical/tune-GC cluster verdict
   ml_insights.py      ML Tech Preview: robust z-score + optional IsolationForest anomaly scoring
   store.py            SQLite time-series store; GC + host metrics; trends, alerts
   fleet.py            Rollup of inventory + history into the navigable status tree
@@ -366,6 +436,8 @@ web/            Next.js app (App Router, TypeScript) — primary UI over the API
 seed/
   seed_history.py       30 days of synthetic GC demo history + injected incidents
   seed_sar_history.py   30 days of correlated synthetic host metrics (reads the same incidents)
+  seed_forecast_demo.py rebuilds host history + overlays growth trends so the capacity
+                        forecast demos plan_horizontal (DEMO-ZK) and watch_hot_node (DEMO-KRAFT)
 samples/        Synthetic raw GC logs + generator; synthetic SAR text/JSON dumps + generator
 tests/          test_pipeline.py · test_fleet.py · test_sar.py · test_correlation_scaling.py
 export_static.py  Render a standalone, serverless dashboard snapshot
@@ -465,6 +537,7 @@ python -m tests.test_pipeline             # parsing + analysis (GC)
 python -m tests.test_fleet                # inventory, trends, alerting, rollup
 python -m tests.test_sar                  # SAR text/JSON parsing, host analyzer, store roundtrip
 python -m tests.test_correlation_scaling  # correlate.py + scaling_advisor.py + ml_insights.py
+python -m tests.test_forecast             # forecast.py + SAR upload ingest (no-SSH path)
 ```
 
 The fleet tests seed a temp DB and confirm, among other things, that DEMO-KRAFT

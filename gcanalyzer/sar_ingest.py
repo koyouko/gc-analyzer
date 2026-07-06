@@ -49,6 +49,38 @@ def _bucketed_rows(parsed: sar_parser.ParsedSar) -> list[tuple[int, dict]]:
     return sar_analyzer.bucket_metrics(parsed)
 
 
+def record_parsed_sar(
+    parsed: sar_parser.ParsedSar, instance_id: str, db_path: str, now: int | None = None,
+) -> tuple[int, int]:
+    """Dedup-by-timestamp + bucket + persist a ParsedSar into host_metrics.
+
+    Shared by the live SSH/local collection path (ingest_sar_node) and the
+    dashboard upload path (ingest_sar_text): both end in exactly the same
+    store writes, so an uploaded `sadf -j` / `sar -A` export behaves
+    identically to one collected over SSH.
+
+    Returns (new_samples, bucket_rows_written).
+    """
+    ts = now if now is not None else (int(time.time()) // 60) * 60
+    store.init_db(db_path)
+    with store.connect(db_path) as conn:
+        last_ts = store.get_sar_state(conn, instance_id)
+        new_samples = [s for s in parsed.samples if last_ts is None or s.ts > last_ts]
+        if not new_samples:
+            return 0, 0
+
+        subset = sar_parser.ParsedSar(
+            node_id=parsed.node_id, source_format=parsed.source_format, samples=new_samples,
+            hostname=parsed.hostname,
+        )
+        written = 0
+        for bts, m in _bucketed_rows(subset):
+            store.record_host_metric(conn, instance_id, bts, m)
+            written += 1
+        store.set_sar_state(conn, instance_id, max(s.ts for s in new_samples), ts)
+    return len(new_samples), written
+
+
 def ingest_sar_node(
     node: NodeConfig, instance_id: str, db_path: str, now: int | None = None, log_callback=None,
 ) -> SarNodeResult:
@@ -70,25 +102,56 @@ def ingest_sar_node(
         warn = f" ({'; '.join(parsed.warnings)})" if parsed.warnings else ""
         return SarNodeResult(node.id, instance_id, False, 0, f"no SAR samples parsed{warn}")
 
-    store.init_db(db_path)
-    with store.connect(db_path) as conn:
-        last_ts = store.get_sar_state(conn, instance_id)
-        new_samples = [s for s in parsed.samples if last_ts is None or s.ts > last_ts]
-        if not new_samples:
-            return SarNodeResult(node.id, instance_id, True, 0, "no new SAR samples since last collection")
+    new_count, written = record_parsed_sar(parsed, instance_id, db_path, now=ts)
+    if new_count == 0:
+        return SarNodeResult(node.id, instance_id, True, 0, "no new SAR samples since last collection")
 
-        subset = sar_parser.ParsedSar(
-            node_id=parsed.node_id, source_format=parsed.source_format, samples=new_samples,
-            hostname=parsed.hostname,
-        )
-        written = 0
-        for bts, m in _bucketed_rows(subset):
-            store.record_host_metric(conn, instance_id, bts, m)
-            written += 1
-        store.set_sar_state(conn, instance_id, max(s.ts for s in new_samples), ts)
-
-    detail = f"{parsed.source_format} | {len(new_samples)} new sample(s) -> {written} bucket row(s)"
+    detail = f"{parsed.source_format} | {new_count} new sample(s) -> {written} bucket row(s)"
     return SarNodeResult(node.id, instance_id, True, written, detail)
+
+
+def ingest_sar_text(
+    text: str,
+    instance_id: str,
+    db_path: str,
+    node_id: str | None = None,
+    fmt_hint: str | None = None,
+    report_date: str | None = None,
+    now: int | None = None,
+) -> dict:
+    """Ingest a pasted/uploaded SAR export (`sadf -j -- -A` JSON or `sar -A`
+    text) for an already-onboarded instance — the no-SSH path: run the
+    command on the RedHat host, copy the output, drop it into the dashboard.
+
+    `report_date` (YYYY-MM-DD) anchors classic `sar -A` text dumps whose
+    header date is missing/ambiguous; sadf JSON carries its own dates.
+
+    Returns a dict (not SarNodeResult) so the API layer can hand it straight
+    back to the dashboard: parsed/new/written counts + parser warnings.
+    """
+    if not (text or "").strip():
+        return {"instance_id": instance_id, "recorded": False, "samples_parsed": 0,
+                "samples_new": 0, "rows_written": 0, "source_format": None,
+                "warnings": [], "detail": "empty SAR content"}
+
+    parsed = sar_parser.parse(
+        text, node_id=node_id or instance_id, fmt_hint=fmt_hint, report_date=report_date,
+    )
+    if not parsed.samples:
+        return {"instance_id": instance_id, "recorded": False, "samples_parsed": 0,
+                "samples_new": 0, "rows_written": 0, "source_format": parsed.source_format,
+                "warnings": parsed.warnings,
+                "detail": "no SAR samples parsed — expected `sadf -j -- -A` JSON or `sar -A` text"}
+
+    new_count, written = record_parsed_sar(parsed, instance_id, db_path, now=now)
+    detail = (f"{parsed.source_format} | {len(parsed.samples)} sample(s) parsed, "
+              f"{new_count} new -> {written} bucket row(s)")
+    if new_count == 0:
+        detail = (f"{parsed.source_format} | {len(parsed.samples)} sample(s) parsed, but all were "
+                  f"already ingested (dedup by sample timestamp)")
+    return {"instance_id": instance_id, "recorded": True, "samples_parsed": len(parsed.samples),
+            "samples_new": new_count, "rows_written": written,
+            "source_format": parsed.source_format, "warnings": parsed.warnings, "detail": detail}
 
 
 def ingest_sar_nodes(

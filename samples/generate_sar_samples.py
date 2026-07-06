@@ -65,6 +65,9 @@ def sample(t: datetime) -> dict:
         "kbbuffers": 120_000, "kbcached": int(2_500_000 * (1 - 0.3 * p)),
         "kbcommit": 5_500_000, "commit_pct": round(60 + 5 * p, 2),
         "kbswpused": int(80_000 * swap_used_pct / 5.0) if swap_used_pct else 0, "swpused_pct": swap_used_pct,
+        "pgpgin": round(100 + 3000 * p, 2), "pgpgout": round(1500 + 8000 * p, 2),
+        "fault": round(200 + 900 * p, 2), "majflt": round(0.2 + 25 * max(0.0, p - 0.5), 2),
+        "pswpin": 0.0, "pswpout": round(4.0 * max(0.0, p - 0.7), 2),
         "disk_tps": round(40 + 250 * p, 2), "disk_rkbs": round(800 + 4000 * p, 2),
         "disk_wkbs": round(2000 + 9000 * p, 2), "disk_await": disk_await, "disk_util": disk_util,
         "net_rxpck": round(net_rx / 1.2, 1), "net_txpck": round(net_tx / 1.3, 1),
@@ -118,6 +121,19 @@ def write_sar_text(samples: list[dict], path: str) -> None:
         lines.append(f"{hdr_time(s['t']):>15} {0:9d} {s['kbswpused']:9d} {s['swpused_pct']:9.2f} {0:9d} {0.0:9.2f}")
     lines.append("")
 
+    # RHEL 8/9 `sar -B` paging activity
+    lines.append(f"{h0:>15} {'pgpgin/s':>9} {'pgpgout/s':>9} {'fault/s':>9} {'majflt/s':>9} {'pgfree/s':>9} {'pgscank/s':>9} {'pgscand/s':>9} {'pgsteal/s':>9} {'%vmeff':>9}")
+    for s in samples:
+        lines.append(f"{hdr_time(s['t']):>15} {s['pgpgin']:9.2f} {s['pgpgout']:9.2f} {s['fault']:9.2f} "
+                      f"{s['majflt']:9.2f} {0.0:9.2f} {0.0:9.2f} {0.0:9.2f} {0.0:9.2f} {0.0:9.2f}")
+    lines.append("")
+
+    # RHEL 8/9 `sar -W` swapping activity
+    lines.append(f"{h0:>15} {'pswpin/s':>9} {'pswpout/s':>9}")
+    for s in samples:
+        lines.append(f"{hdr_time(s['t']):>15} {s['pswpin']:9.2f} {s['pswpout']:9.2f}")
+    lines.append("")
+
     lines.append(f"{h0:>15} {'DEV':>9} {'tps':>9} {'rkB/s':>9} {'wkB/s':>9} {'await':>9} {'%util':>9}")
     for s in samples:
         for dev, frac in (("sda", 1.0), ("sdb", 0.4)):
@@ -151,6 +167,10 @@ def write_sadf_json(samples: list[dict], path: str) -> None:
                        "memused-percent": s["memused_pct"], "buffers": s["kbbuffers"], "cached": s["kbcached"],
                        "commit": s["kbcommit"], "commit-percent": s["commit_pct"]},
             "swap": {"swpused": s["kbswpused"], "swpused-percent": s["swpused_pct"]},
+            "paging": {"pgpgin": s["pgpgin"], "pgpgout": s["pgpgout"], "fault": s["fault"],
+                       "majflt": s["majflt"], "pgfree": 0.0, "pgscank": 0.0, "pgscand": 0.0,
+                       "pgsteal": 0.0, "vmeff-percent": 0.0},
+            "swap-pages": {"pswpin": s["pswpin"], "pswpout": s["pswpout"]},
             "disk": [
                 {"disk_device": "sda", "tps": s["disk_tps"], "rkB/s": s["disk_rkbs"], "wkB/s": s["disk_wkbs"],
                  "await": s["disk_await"], "util-percent": min(99.9, s["disk_util"])},

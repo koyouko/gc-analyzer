@@ -83,6 +83,7 @@ export default function SarTrendCharts({ sar }: { sar: SarSeries }) {
     datasets: [
       { type: "bar", label: "NIC util % (max)", data: s.map((p) => p.net_util_max), backgroundColor: "#58a6ff", yAxisID: "y" },
       { type: "line", label: "egress MB/s (avg)", data: s.map((p) => p.net_tx_avg / 1024), borderColor: "#3fb950", pointRadius: 0, borderWidth: 1.4, tension: 0.25, yAxisID: "y1" },
+      { type: "line", label: "ingress MB/s (avg)", data: s.map((p) => (p.net_rx_avg ?? 0) / 1024), borderColor: "#d29922", pointRadius: 0, borderWidth: 1.4, tension: 0.25, yAxisID: "y1" },
     ],
   };
   const netOpts: ChartOptions<any> = {
@@ -99,7 +100,7 @@ export default function SarTrendCharts({ sar }: { sar: SarSeries }) {
       <div className="panel"><h3>CPU busy &amp; iowait (%)</h3><div className="chartbox"><Line data={cpu} options={cpuOpts} /></div></div>
       <div className="panel"><h3>Memory &amp; swap (%)</h3><div className="chartbox"><Line data={mem} options={memOpts} /></div></div>
       <div className="panel"><h3>Disk util (%) &amp; await (ms)</h3><div className="chartbox"><Chart type="bar" data={disk} options={diskOpts} /></div></div>
-      <div className="panel"><h3>NIC util (%) &amp; egress (MB/s)</h3><div className="chartbox"><Chart type="bar" data={net} options={netOpts} /></div></div>
+      <div className="panel"><h3>NIC util (%) &amp; egress / ingress (MB/s)</h3><div className="chartbox"><Chart type="bar" data={net} options={netOpts} /></div></div>
     </div>
   );
 }

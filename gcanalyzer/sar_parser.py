@@ -70,6 +70,22 @@ class SarSample:
     swap_used_mb: float = 0.0
     swap_used_pct: float = 0.0
 
+    # Paging activity (`sar -B`) — kB paged in/out from disk per second and
+    # fault rates. On a Kafka broker, sustained majflt/pgpgin is the page
+    # cache being cold or memory being reclaimed — an early-warning signal
+    # the plain memory-used% number hides. Present on RHEL 8/9 sysstat
+    # (11.7.x / 12.5.x) in both `sar -A` text and `sadf -j` JSON.
+    pgpgin_kbs: float = 0.0
+    pgpgout_kbs: float = 0.0
+    fault_per_s: float = 0.0
+    majflt_per_s: float = 0.0
+
+    # Swapping activity (`sar -W`) — pages swapped in/out per second. Distinct
+    # from swap *occupancy* (%swpused above): occupancy says swap was ever
+    # touched, activity says the box is actively thrashing right now.
+    pswpin_per_s: float = 0.0
+    pswpout_per_s: float = 0.0
+
     # Per-device breakdown for the busiest devices in this sample (kept small
     # — the analyzer rolls these into "max busiest device" aggregates, and the
     # dashboard only needs the top few for drill-down, not every block device).
@@ -162,6 +178,17 @@ def _sample_from_json_stat(stat: dict, file_date: str | None) -> SarSample | Non
     s.swap_used_mb = _f(swap, "swpused") / 1024.0
     s.swap_used_pct = _f(swap, "swpused-percent", "swpused_percent")
 
+    paging = stat.get("paging") or {}
+    s.pgpgin_kbs = _f(paging, "pgpgin", "pgpgin/s")
+    s.pgpgout_kbs = _f(paging, "pgpgout", "pgpgout/s")
+    s.fault_per_s = _f(paging, "fault", "fault/s")
+    s.majflt_per_s = _f(paging, "majflt", "majflt/s")
+
+    # sysstat has used both "swap-pages" and "swap-activity" for `sar -W`.
+    swp_act = stat.get("swap-pages") or stat.get("swap_pages") or stat.get("swap-activity") or {}
+    s.pswpin_per_s = _f(swp_act, "pswpin", "pswpin/s")
+    s.pswpout_per_s = _f(swp_act, "pswpout", "pswpout/s")
+
     for disk in stat.get("disk") or []:
         dev = disk.get("disk_device") or disk.get("dev") or "?"
         s.disks.append({
@@ -232,6 +259,8 @@ _SECTION_MARKERS = {
     "pcsw": {"proc/s", "cswch/s"},
     "mem": {"kbmemfree", "kbmemused", "%memused"},
     "swap": {"kbswpfree", "kbswpused", "%swpused"},
+    "paging": {"pgpgin/s", "pgpgout/s", "fault/s", "majflt/s", "pgfree/s"},
+    "pswap": {"pswpin/s", "pswpout/s"},
     "disk": {"DEV", "tps"},
     "net": {"IFACE", "rxpck/s", "%ifutil"},
 }
@@ -320,6 +349,7 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
     def bucket(time_s: str) -> dict:
         return by_time.setdefault(time_s, {
             "cpu": None, "queue": None, "pcsw": None, "mem": None, "swap": None,
+            "paging": None, "pswap": None,
             "disks": [], "nics": [],
         })
 
@@ -343,6 +373,10 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
                 b["mem"] = row
             elif kind == "swap":
                 b["swap"] = row
+            elif kind == "paging":
+                b["paging"] = row
+            elif kind == "pswap":
+                b["pswap"] = row
             elif kind == "disk":
                 b["disks"].append(row)
             elif kind == "net":
@@ -390,6 +424,16 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
         swap = b["swap"] or {}
         s.swap_used_mb = _f(swap, "kbswpused") / 1024.0
         s.swap_used_pct = _f(swap, "%swpused")
+
+        paging = b["paging"] or {}
+        s.pgpgin_kbs = _f(paging, "pgpgin/s")
+        s.pgpgout_kbs = _f(paging, "pgpgout/s")
+        s.fault_per_s = _f(paging, "fault/s")
+        s.majflt_per_s = _f(paging, "majflt/s")
+
+        pswap = b["pswap"] or {}
+        s.pswpin_per_s = _f(pswap, "pswpin/s")
+        s.pswpout_per_s = _f(pswap, "pswpout/s")
 
         for d in b["disks"]:
             s.disks.append({

@@ -1,11 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useApi, STATUS_DOT } from "@/lib/api";
 import { useFleet } from "@/lib/fleetContext";
-import { InstanceSnapshot, Trends, Status, SarSnapshot, SarSeries, CorrelationResult, AnomalyResult } from "@/lib/types";
+import { InstanceSnapshot, Trends, Status, SarSnapshot, SarSeries, CorrelationResult, AnomalyResult, InstanceForecast } from "@/lib/types";
 import HostMetricsPanel from "./HostMetricsPanel";
 import CorrelationPanel from "./CorrelationPanel";
+import CapacityOutlookPanel from "./CapacityOutlookPanel";
+import SarUploadPanel from "./SarUploadPanel";
 
 // Charts use the canvas/DOM, so load them client-only.
 const TrendCharts = dynamic(() => import("./TrendCharts"), {
@@ -50,6 +53,7 @@ export default function InstanceView({ id }: { id: string }) {
   const { data: sarSeries } = useApi<SarSeries>(`/api/instance/${id}/sar/trends?days=30`, tick);
   const { data: corr } = useApi<CorrelationResult>(`/api/instance/${id}/correlation?days=30`, tick);
   const { data: anomaly } = useApi<AnomalyResult>(`/api/instance/${id}/anomalies`, tick);
+  const { data: fc } = useApi<InstanceForecast>(`/api/instance/${id}/forecast`, tick);
 
   if (error) return <div className="empty">Failed to load {id}: {error}</div>;
   if (!s) return <div className="empty">Loading {id}…</div>;
@@ -129,10 +133,17 @@ export default function InstanceView({ id }: { id: string }) {
         </div>
       </div>
 
-      <h2 className="sec" style={{ marginTop: 24 }}>Server &amp; correlation analysis</h2>
+      <h2 className="sec" style={{ marginTop: 24, display: "flex", alignItems: "center", gap: 12 }}>
+        Server &amp; correlation analysis
+        <Link className="hostlink" href={`/host/${encodeURIComponent(id)}`}>
+          Full host health analysis (all SAR metrics) →
+        </Link>
+      </h2>
       <HostMetricsPanel sar={sar ?? null} sarSeries={sarSeries ?? null} />
       <div className="panels" style={{ marginTop: 12 }}>
         <CorrelationPanel corr={corr ?? null} anomaly={anomaly ?? null} />
+        <CapacityOutlookPanel forecast={fc ?? null} />
+        <SarUploadPanel instanceId={id} />
       </div>
     </>
   );

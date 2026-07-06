@@ -138,6 +138,24 @@ ul.list { margin: 0; padding-left: 17px; } ul.list li { margin: 5px 0; line-heig
 .anomaly-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 14px; font-size: 11px; font-weight: 700; background: var(--watch); color: #0b1020; }
 .anomaly-badge.calm { background: var(--ok); }
 
+/* Capacity forecast (proactive scaling) + SAR upload */
+.verdictpill.plan_horizontal { background: #00aeef; } .verdictpill.plan_vertical_memory { background: #f5a623; }
+.verdictpill.plan_vertical_heap { background: #a371f7; } .verdictpill.plan_tune_gc { background: var(--watch); }
+.verdictpill.watch_hot_node { background: #db6d28; } .verdictpill.none { background: var(--ok); }
+.fcrisk { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; color: #0b1020; text-transform: uppercase; letter-spacing: .03em; }
+.fcrisk.critical { background: var(--crit); } .fcrisk.warning { background: var(--watch); }
+.fcrisk.watch { background: #db6d28; } .fcrisk.ok { background: var(--ok); } .fcrisk.no_data { background: var(--unknown); }
+.fcstatus { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 9px; color: #0b1020; text-transform: uppercase; letter-spacing: .02em; }
+.fcstatus.already_critical, .fcstatus.breach_imminent { background: var(--crit); }
+.fcstatus.already_warning, .fcstatus.breach_projected { background: var(--watch); }
+.fcstatus.watch { background: #db6d28; }
+.fcstatus.improving, .fcstatus.stable { background: var(--ok); }
+.fcstatus.insufficient_data { background: var(--unknown); }
+.sar-upload-text { width: 100%; background: #0b0f16; color: var(--txt); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; resize: vertical; }
+.linklike { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0; text-decoration: underline; }
+.hostlink { font-size: 12px; font-weight: 500; color: var(--accent); text-decoration: none; }
+.hostlink:hover { text-decoration: underline; }
+
 /* Reusable hover hint (used by cfg keys; the metric cards have their own). */
 .help { position: relative; cursor: help; }
 .help .info { color: var(--muted); font-size: 10px; margin-left: 4px; opacity: .6; }

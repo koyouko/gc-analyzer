@@ -226,6 +226,50 @@ nodes:
         assert store.get_instance(c, "Kafka Cluster--broker-1") is not None
 
 
+def test_cluster_overview_includes_host_section():
+    """build_cluster must carry a parallel host (SAR) layer: one host card
+    per node, a cluster-wide host summary, and a host attention list."""
+    with store.connect(_TMP) as c:
+        v = fleet.build_cluster(c, "DEMO-KRAFT")
+        assert v is not None
+        # Host layer always present, one entry per node.
+        assert len(v["host_nodes"]) == len(v["nodes"])
+        assert "host_summary" in v and "host_attention" in v and "host_status" in v
+        assert v["host_counts"]["total"] == v["counts"]["total"]
+
+        # This module seeds GC history only — hosts report unknown/no data.
+        assert all(n["status"] == "unknown" and not n["has_data"] for n in v["host_nodes"])
+        assert v["host_summary"]["n_with_data"] == 0
+
+        # Give one node a multi-resource-pressured host (CPU + iowait + swap +
+        # disk all past critical) -> it must grade poorly, roll up, and land
+        # in the host attention list without touching the GC section.
+        now = store.now_ts(c)
+        iid = v["nodes"][0]["id"]
+        for h in range(24):
+            store.record_host_metric(c, iid, now - h * 3600, {
+                "cpu_user_pct_avg": 60.0, "cpu_system_pct_avg": 12.0,
+                "cpu_iowait_pct_avg": 24.0, "cpu_busy_pct_avg": 95.0,
+                "load1_avg": 9.0, "load5_avg": 8.5, "runq_sz_avg": 4.0,
+                "cswch_per_s_avg": 1500.0, "mem_used_pct_avg": 90.0,
+                "mem_cached_mb_avg": 8000.0, "swap_used_pct_max": 6.0,
+                "disk_util_pct_max": 96.0, "disk_await_ms_max": 60.0, "disk_tps_avg": 400.0,
+                "net_util_pct_max": 40.0, "net_rx_kbs_avg": 5000.0, "net_tx_kbs_avg": 8000.0,
+                "top_disks": [], "top_nics": [],
+            })
+        v2 = fleet.build_cluster(c, "DEMO-KRAFT", now=now)
+        hn = next(n for n in v2["host_nodes"] if n["id"] == iid)
+        assert hn["has_data"] and hn["grade"] in ("A", "B", "C", "D", "F")
+        assert hn["status"] in ("watch", "critical"), hn  # CPU-saturated host
+        assert any(n["id"] == iid for n in v2["host_attention"])
+        assert v2["host_summary"]["n_with_data"] == 1
+        assert v2["host_summary"]["cpu_busy_peak"] >= 90.0
+        # GC layer unchanged by host writes.
+        assert len(v2["nodes"]) == len(v["nodes"])
+        # cleanup so other tests are unaffected
+        c.execute("DELETE FROM host_metrics WHERE instance_id=?", (iid,))
+
+
 def run_all():
     setup_module()
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
