@@ -72,4 +72,7 @@ def test_user_guide_documents_health_grades_and_ml_preview():
         assert "C = watch" in text
         assert "D = at risk" in text
         assert "ML Tech Preview" in text
-        assert "No trained model is running yet" in text
+        # ML Tech Preview now runs a real (advisory) anomaly model — see
+        # gcanalyzer/ml_insights.py — so the docs assert deterministic rules
+        # stay authoritative rather than claiming no model runs at all.
+        assert "remain the source of truth" in text

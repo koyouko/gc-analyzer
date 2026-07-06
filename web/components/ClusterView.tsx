@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useApi, PILL_COLOR, fmtTime, shortId } from "@/lib/api";
 import { useFleet } from "@/lib/fleetContext";
-import { ClusterView as CV, ClusterNode } from "@/lib/types";
+import { ClusterView as CV, ClusterNode, ScalingResult } from "@/lib/types";
+import ScalingAdvisorPanel from "./ScalingAdvisorPanel";
 
 // Plain-language explanations shown on hover.
 const MEM_HELP: Record<string, string> = {
@@ -72,6 +73,7 @@ export default function ClusterView({ cluster }: { cluster: string }) {
   const router = useRouter();
   const { tick } = useFleet();
   const { data: v, error } = useApi<CV>(`/api/cluster/${cluster}`, tick);
+  const { data: scaling } = useApi<ScalingResult>(`/api/cluster/${cluster}/scaling?role=broker`, tick);
 
   if (error) return <div className="empty">Failed to load {cluster}: {error}</div>;
   if (!v) return <div className="empty">Loading {cluster}…</div>;
@@ -175,6 +177,11 @@ export default function ClusterView({ cluster }: { cluster: string }) {
         ) : (
           <div className="muted">All nodes healthy — nothing needs attention. 🟢</div>
         )}
+      </div>
+
+      <h2 className="sec" style={{ marginTop: 24 }}>Capacity &amp; scaling</h2>
+      <div className="panels">
+        <ScalingAdvisorPanel scaling={scaling ?? null} />
       </div>
     </>
   );

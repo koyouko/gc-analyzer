@@ -2,6 +2,8 @@
 #
 # Unlike cluster.example.yaml (which pulls logs over SSH), this reads the GC
 # logs that docker-compose.live.yml bind-mounts onto the host, so source: local.
+# The containers don't run sysstat, so SAR is disabled here; see cluster.yaml
+# for the SSH-collected SAR example against real boxes.
 #
 # Ingest into the live history store with:
 #     python -m gcanalyzer.ingest --config cluster.live.yaml --db gc_live.db
@@ -9,6 +11,8 @@ cluster: LOCAL-DEV
 
 defaults:
   source: local
+  sar:
+    enabled: false
 
 nodes:
   - id: controller-1

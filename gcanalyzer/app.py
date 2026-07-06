@@ -16,6 +16,13 @@ Endpoints:
     GET  /api/instance/{id}              -> current snapshot, health, alerts, findings
     GET  /api/instance/{id}/trends?days=30 -> daily-aggregated trend series
     GET  /api/instance/{id}/recent?hours=48 -> fine-grained recent series
+    GET  /api/instance/{id}/series?range=24h -> selectable-range trend series (GC)
+    GET  /api/instance/{id}/sar           -> current host (CPU/mem/disk/net) snapshot
+    GET  /api/instance/{id}/sar/trends?days=30 -> daily-aggregated host trend series
+    GET  /api/instance/{id}/sar/series?range=24h -> selectable-range host series
+    GET  /api/instance/{id}/correlation?days=30 -> GC<->host correlation + findings
+    GET  /api/instance/{id}/anomalies?days=30&recent_hours=24 -> ML Tech Preview anomaly scoring
+    GET  /api/cluster/{cluster}/scaling?role=broker -> vertical/horizontal/rebalance recommendation
     GET  /api/health                     -> liveness probe
 """
 
@@ -36,13 +43,16 @@ from fastapi import FastAPI, HTTPException, Request, Response, Cookie
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import store, fleet, ingest as ingest_mod, config as config_mod, auth, scheduler
+from . import (
+    store, fleet, ingest as ingest_mod, config as config_mod, auth, scheduler,
+    sar_ingest, correlate, scaling_advisor, ml_insights,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(os.path.dirname(HERE), "frontend")
 CLUSTERS_DIR = os.path.join(os.path.dirname(HERE), "clusters")
 
-app = FastAPI(title="BSP Kafka GC Analyzer", version="2.1.0")
+app = FastAPI(title="BSP Kafka GC Analyzer", version="2.2.0")
 
 # Endpoints reachable without a session. Everything else under /api requires one;
 # /api/clusters mutations (POST/DELETE) additionally require the 'admin' role.
@@ -221,6 +231,63 @@ def get_recent(instance_id: str, hours: int = 48) -> dict:
         if not store.get_instance(c, instance_id):
             raise HTTPException(404, f"Unknown instance: {instance_id}")
         return {"instance_id": instance_id, "series": store.hourly_series(c, instance_id, hours=hours)}
+
+
+# --------------------------------------------------------------------------- #
+# Server health (SAR), GC<->host correlation, scaling advisor, ML anomalies.
+# --------------------------------------------------------------------------- #
+@app.get("/api/instance/{instance_id}/sar")
+def get_instance_sar(instance_id: str) -> dict:
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        return store.current_host_snapshot(c, instance_id)
+
+
+@app.get("/api/instance/{instance_id}/sar/trends")
+def get_instance_sar_trends(instance_id: str, days: int = 30) -> dict:
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        return store.host_trends(c, instance_id, days=days)
+
+
+@app.get("/api/instance/{instance_id}/sar/series")
+def get_instance_sar_series(instance_id: str, range: str = "24h") -> dict:
+    window = _RANGES.get(range)
+    if window is None:
+        raise HTTPException(400, f"Unknown range '{range}'. Options: {', '.join(_RANGES)}")
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        now = store.now_ts(c)
+        data = store.host_range_series(c, instance_id, now - window, now, _bucket_for(window))
+    data["range"] = range
+    return data
+
+
+@app.get("/api/instance/{instance_id}/correlation")
+def get_instance_correlation(instance_id: str, days: int = 30) -> dict:
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        return correlate.correlate_instance(c, instance_id, days=days)
+
+
+@app.get("/api/instance/{instance_id}/anomalies")
+def get_instance_anomalies(instance_id: str, days: int = 30, recent_hours: int = 24) -> dict:
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        return ml_insights.analyze_anomalies(c, instance_id, days=days, recent_hours=recent_hours)
+
+
+@app.get("/api/cluster/{cluster}/scaling")
+def get_cluster_scaling(cluster: str, role: str = "broker") -> dict:
+    with store.connect() as c:
+        if not any(i["cluster"] == cluster for i in store.list_instances(c)):
+            raise HTTPException(404, f"Unknown cluster: {cluster}")
+        return scaling_advisor.analyze_cluster_scaling(c, cluster, role=role)
 
 
 # --------------------------------------------------------------------------- #
@@ -424,7 +491,19 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
         if _job_cancelled(job_id):
             _finish_cancelled_job(job_id, cluster, log_cb)
             return
-        
+
+        # SAR/host metrics: independent best-effort pass, never fails the GC job.
+        log_cb(f"Collecting SAR/host metrics for {len(nodes)} node(s)...")
+        try:
+            sar_results = await asyncio.to_thread(
+                sar_ingest.ingest_sar_nodes, nodes, db_path, cluster, None, log_cb,
+                lambda: _job_cancelled(job_id),
+            )
+            sar_ok = sum(1 for r in sar_results if r.recorded)
+            log_cb(f"SAR collection: {sar_ok}/{len(sar_results)} node(s) recorded host metrics.")
+        except Exception as exc:
+            log_cb(f"SAR collection failed (GC results unaffected): {exc}")
+
         nodes_recorded = sum(1 for r in results if r.recorded)
         if nodes_recorded == 0:
             JOBS[job_id]["status"] = "failed"

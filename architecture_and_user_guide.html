@@ -405,6 +405,7 @@
         <li><a href="#pipeline" class="nav-link">Ingestion Pipeline</a></li>
         <li><a href="#storage" class="nav-link">Storage Layer</a></li>
         <li><a href="#codebase" class="nav-link">Codebase Breakdown</a></li>
+        <li><a href="#sar" class="nav-link">Server Health &amp; Scaling</a></li>
       </ul>
 
       <div class="nav-title">User Guide</div>
@@ -576,6 +577,18 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
             <td><code>inode</code>, <code>offset</code>, <code>updated_ts</code></td>
             <td>Remembers the byte offset and inode of local or remote GC logs. Prevents duplicate scraping.</td>
           </tr>
+          <tr>
+            <td><strong><code>host_metrics</code></strong></td>
+            <td><code>(instance_id, ts)</code></td>
+            <td><code>cpu_busy_pct</code>, <code>cpu_iowait_pct</code>, <code>load1</code>, <code>mem_used_pct</code>, <code>swap_used_pct</code>, <code>disk_util_pct_max</code>, <code>disk_await_ms_max</code>, <code>net_util_pct_max</code>, <code>net_tx_kbs</code>, <code>top_disks_json</code>, <code>top_nics_json</code>, &hellip;</td>
+            <td>OS-level (SAR) metrics for the host each instance runs on. Same <code>(instance_id, ts)</code> shape as <code>metrics</code> so the two join directly for correlation.</td>
+          </tr>
+          <tr>
+            <td><strong><code>sar_collector_state</code></strong></td>
+            <td><code>instance_id</code></td>
+            <td><code>last_ts</code>, <code>updated_ts</code></td>
+            <td>Newest SAR sample timestamp already recorded per instance. <code>sar</code>/<code>sadf</code> reports are re-queryable (not append-only files), so incremental collection dedups by timestamp instead of a byte offset.</td>
+          </tr>
         </tbody>
       </table>
 
@@ -621,6 +634,77 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
       <p>
         The grade is a deterministic report-card summary of the node's GC risk: A = healthy, B = good, C = watch, D = at risk, and F = critical. The score starts at 100 and subtracts risk points for low throughput, long stop-the-world pauses, Full GCs, and high post-GC heap pressure.
       </p>
+
+      <h3>6. SAR Collector &amp; Parser (<code>gcanalyzer/collector.py</code>, <code>sar_parser.py</code>)</h3>
+      <p>
+        Over the same SSH session used for GC logs, runs <code>TZ=UTC LC_ALL=C sadf -j -- -A</code> (structured JSON, sysstat &ge;11.x) and falls back to <code>TZ=UTC LC_ALL=C sar -A</code> (the classic columnar text report, the same format tools like <a href="https://github.com/vlsi/ksar" target="_blank" rel="noopener">kSar</a> parse) when JSON isn't available. <code>TZ=UTC</code> matters because sar stores samples as UTC internally and renders them in the reporting command's TZ &mdash; forcing UTC makes host samples directly comparable to GC metrics without knowing each host's local timezone. Both formats normalize into the same <code>SarSample</code> shape.
+      </p>
+
+      <h3>7. Host Health Analyzer (<code>gcanalyzer/sar_analyzer.py</code>)</h3>
+      <p>
+        Rolls <code>SarSample</code> series into the same metrics/health/findings shape <code>analyzer.py</code> produces for GC &mdash; CPU busy/iowait, memory/swap, disk util/await, NIC util &mdash; with its own A&ndash;F grade and Kafka-aware recommendations (disable swap, spread log dirs across disks, add NICs, etc).
+      </p>
+
+      <h3>8. Correlation Engine (<code>gcanalyzer/correlate.py</code>)</h3>
+      <p>
+        Joins GC and host metrics per instance on an hourly grid and computes Pearson correlation between GC pressure signals (time-in-GC, pause tail, Full GC count) and host signals (CPU, iowait, memory, swap, disk, network). Also computes a "storm co-occurrence" read &mdash; of the hours this node was in a GC storm, what fraction also showed host pressure &mdash; and produces a <code>gc_bound</code> / <code>host_bound</code> / <code>mixed</code> verdict.
+      </p>
+
+      <h3>9. Scaling Advisor (<code>gcanalyzer/scaling_advisor.py</code>)</h3>
+      <p>
+        Classifies each broker's dominant bottleneck and measures cross-node skew (coefficient of variation on CPU busy and network egress). Uniform saturation across nodes recommends <strong>horizontal</strong> scaling; one or two hot outliers among calm peers recommends a <strong>rebalance</strong> first; JVM heap-bound nodes with calm hosts underneath recommend <strong>vertical</strong> (heap/RAM) scaling. Every verdict ships with its evidence, deterministic and explainable like the GC findings engine.
+      </p>
+
+      <h3>10. ML Tech Preview (<code>gcanalyzer/ml_insights.py</code>)</h3>
+      <p>
+        Advisory-only anomaly scoring over the combined GC+host feature vector. A dependency-free robust z-score (median/MAD) baseline always runs; an <code>IsolationForest</code> (scikit-learn, optional) joins in automatically when installed, scoring the joined hourly feature vector for unusual <em>combinations</em> that no single threshold would catch. Deterministic rules remain the source of truth for grades and scaling verdicts.
+      </p>
+    </section>
+
+    <!-- SAR / Scaling -->
+    <section id="sar" class="doc-section">
+      <h2>Server Health (SAR), Correlation &amp; Scaling Advisor</h2>
+      <p>
+        Beyond GC logs, the analyzer SSHes into the same hosts and pulls OS-level activity via <strong>sysstat</strong> (<code>sar</code>/<code>sadf</code>), then lines it up against GC pressure to answer: is this node's GC problem a JVM tuning question, or is the host underneath it starved? And at the cluster level: scale vertically, horizontally, or just rebalance?
+      </p>
+
+      <h3>Prerequisite</h3>
+      <p>Each host needs <code>sysstat</code> installed and its collection cron enabled (usually on by default):</p>
+      <pre><code>sudo apt-get install -y sysstat   # Debian/Ubuntu
+sudo systemctl enable --now sysstat
+
+sudo yum install -y sysstat       # RHEL/CentOS/Amazon Linux
+sudo systemctl enable --now sysstat</code></pre>
+      <p>No agent to deploy &mdash; collection reuses the existing GC-log SSH session.</p>
+
+      <h3>Configuration</h3>
+      <p>Add a <code>sar:</code> block to a cluster's node defaults (opt-out, not opt-in):</p>
+      <pre><code>defaults:
+  sar:
+    enabled: true
+    # source: ssh        # defaults to the node's own `source`
+    # sar_bin: sar
+    # sadf_bin: sadf</code></pre>
+
+      <h3>New REST Endpoints</h3>
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Returns</th></tr></thead>
+        <tbody>
+          <tr><td>GET</td><td><code>/api/instance/{id}/sar</code></td><td>Current host snapshot: health, findings</td></tr>
+          <tr><td>GET</td><td><code>/api/instance/{id}/sar/trends?days=30</code></td><td>Daily-aggregated host trend series</td></tr>
+          <tr><td>GET</td><td><code>/api/instance/{id}/sar/series?range=24h</code></td><td>Selectable-range host trend series</td></tr>
+          <tr><td>GET</td><td><code>/api/instance/{id}/correlation?days=30</code></td><td>GC&lt;-&gt;host correlation: verdict, r-values, findings</td></tr>
+          <tr><td>GET</td><td><code>/api/instance/{id}/anomalies</code></td><td>ML Tech Preview anomaly score (advisory)</td></tr>
+          <tr><td>GET</td><td><code>/api/cluster/{cluster}/scaling?role=broker</code></td><td>Vertical / horizontal / rebalance recommendation</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <div class="callout-title">Independent Collection, Independent Failure</div>
+        <p class="callout-body">
+          SAR collection runs as its own pass in the scheduler tick, separate from GC log collection. A host with SAR unreachable (or disabled) never blocks GC log collection for that node, and vice versa &mdash; the dashboard simply shows "no host metrics yet" for that one section.
+        </p>
+      </div>
     </section>
 
     <!-- 5. User Guide - Onboarding -->

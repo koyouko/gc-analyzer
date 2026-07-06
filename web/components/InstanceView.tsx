@@ -3,7 +3,9 @@
 import dynamic from "next/dynamic";
 import { useApi, STATUS_DOT } from "@/lib/api";
 import { useFleet } from "@/lib/fleetContext";
-import { InstanceSnapshot, Trends, Status } from "@/lib/types";
+import { InstanceSnapshot, Trends, Status, SarSnapshot, SarSeries, CorrelationResult, AnomalyResult } from "@/lib/types";
+import HostMetricsPanel from "./HostMetricsPanel";
+import CorrelationPanel from "./CorrelationPanel";
 
 // Charts use the canvas/DOM, so load them client-only.
 const TrendCharts = dynamic(() => import("./TrendCharts"), {
@@ -41,6 +43,13 @@ export default function InstanceView({ id }: { id: string }) {
   const { tick } = useFleet();
   const { data: s, error } = useApi<InstanceSnapshot>(`/api/instance/${id}`, tick);
   const { data: tr } = useApi<Trends>(`/api/instance/${id}/trends?days=30`, tick);
+  // Server health / correlation / ML are best-effort: a node with GC history
+  // but no SAR collection configured yet should still render its GC view, so
+  // these three intentionally don't gate the page on `error`.
+  const { data: sar } = useApi<SarSnapshot>(`/api/instance/${id}/sar`, tick);
+  const { data: sarSeries } = useApi<SarSeries>(`/api/instance/${id}/sar/trends?days=30`, tick);
+  const { data: corr } = useApi<CorrelationResult>(`/api/instance/${id}/correlation?days=30`, tick);
+  const { data: anomaly } = useApi<AnomalyResult>(`/api/instance/${id}/anomalies`, tick);
 
   if (error) return <div className="empty">Failed to load {id}: {error}</div>;
   if (!s) return <div className="empty">Loading {id}…</div>;
@@ -118,6 +127,12 @@ export default function InstanceView({ id }: { id: string }) {
         <div className="panel full"><h3 style={{ color: "var(--accent)" }}>How to improve</h3>
           <ul className="list recs">{s.findings.recommendations.map((x, i) => <li key={i}>{x}</li>)}</ul>
         </div>
+      </div>
+
+      <h2 className="sec" style={{ marginTop: 24 }}>Server &amp; correlation analysis</h2>
+      <HostMetricsPanel sar={sar ?? null} sarSeries={sarSeries ?? null} />
+      <div className="panels" style={{ marginTop: 12 }}>
+        <CorrelationPanel corr={corr ?? null} anomaly={anomaly ?? null} />
       </div>
     </>
   );

@@ -8,8 +8,13 @@ tracked in the collector_state table), parses only the newly appended events,
 and records one metric point. Reading the delta — not the whole file — means each
 point reflects just that interval, so the trend charts get a true time series.
 
-After collecting, it prunes metrics older than the retention window (default 2
-years) so the store stays bounded.
+It then runs a second, independent pass collecting SAR/sysstat host metrics for
+the same nodes (sar_ingest.py) — independent because a node can have GC
+collection working with SAR disabled/unreachable, or vice versa, and one
+should never block the other.
+
+After collecting, it prunes metrics + host_metrics older than the retention
+window (default 2 years) so the store stays bounded.
 
     python -m gcanalyzer.scheduler --db gc_live.db --interval 300
 """
@@ -24,7 +29,7 @@ import time
 import concurrent.futures
 import json
 
-from . import analyzer, config, ingest, parser, store
+from . import analyzer, config, ingest, parser, store, sar_ingest
 from .collector import NodeConfig, collect_ssh, collect_ssh_incremental, read_increment_local
 
 CLUSTERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clusters")
@@ -204,8 +209,30 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                 on_tick_complete(ts, cluster, {"points": cluster_collected, "total": len(nodes)})
 
         pruned = store.prune_before(conn, ts - RETENTION_DAYS * 86400)
-    
-    summary = {"ts": ts, "clusters": clusters_count, "points": collected, "pruned": pruned}
+
+    # 4. SAR/host-metrics pass — independent of GC collection above so a host
+    # with unreachable sar (or sar disabled) never blocks GC log collection,
+    # and vice versa.
+    sar_points = 0
+    for cluster, region, env, nodes in configs:
+        try:
+            sar_results = sar_ingest.ingest_sar_nodes(
+                nodes, db_path, cluster=cluster, now=ts, max_workers=concurrency
+            )
+        except Exception as exc:
+            if on_node_result:
+                on_node_result(cluster, f"SAR collection failed for cluster '{cluster}': {exc}", False)
+            continue
+        cluster_sar_points = sum(r.samples_written for r in sar_results)
+        sar_points += cluster_sar_points
+        if on_node_result:
+            for r in sar_results:
+                if r.recorded and r.samples_written > 0:
+                    on_node_result(cluster, f"SAR: node '{r.node_id}' {r.detail}", True, r.node_id)
+                elif not r.recorded:
+                    on_node_result(cluster, f"SAR: node '{r.node_id}' {r.detail}", False, r.node_id)
+
+    summary = {"ts": ts, "clusters": clusters_count, "points": collected, "sar_points": sar_points, "pruned": pruned}
     return summary
 
 
@@ -229,7 +256,8 @@ async def scheduler_loop(
                 is_running_cb
             )
             print(f"[scheduler] {summary['clusters']} clusters, "
-                  f"{summary['points']} points, pruned {summary['pruned']}")
+                  f"{summary['points']} GC points, {summary.get('sar_points', 0)} SAR points, "
+                  f"pruned {summary['pruned']}")
         except Exception as exc:  # never let the loop die
             print(f"[scheduler] tick error: {exc}")
         await asyncio.sleep(interval)

@@ -1,28 +1,37 @@
 """
-SQLite time-series store for fleet GC metrics.
+SQLite time-series store for fleet GC + host (SAR) metrics.
 
-Two tables:
-  instances : the component inventory (one row per JVM).
-  metrics   : hourly rollups per instance — the history that powers 30-day
-              trends, "right now" health, and "last hour" alerting.
+Tables:
+  instances    : the component inventory (one row per JVM).
+  metrics      : hourly rollups per instance — the GC history that powers
+                 30-day trends, "right now" health, and "last hour" alerting.
+  host_metrics : hourly rollups of OS-level activity (CPU/mem/swap/disk/net)
+                 for the *host* each instance runs on — same instance_id, same
+                 time grid, so it joins trivially against `metrics` for
+                 GC<->host correlation (see correlate.py) and cluster-wide
+                 scaling analysis (see scaling_advisor.py).
 
 In production, a periodic collection job parses each node's GC log and calls
-`record_metric()` once per interval; the dashboard reads aggregates back out.
-For the demo, seed/seed_history.py populates 30 days of rows.
+`record_metric()` once per interval, and (independently) parses sar/sadf
+output and calls `record_host_metric()`; the dashboard reads aggregates back
+out. For the demo, seed/seed_history.py and seed/seed_sar_history.py populate
+30 days of correlated rows.
 
-Health and tuning advice reuse gcanalyzer.analyzer so a node is judged the same
-way whether the numbers come from a freshly parsed log or from the store.
+Health and tuning advice reuse gcanalyzer.analyzer / gcanalyzer.sar_analyzer so
+a node is judged the same way whether the numbers come from a freshly parsed
+log/report or from the store.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import statistics
 import time
 from contextlib import contextmanager
 
-from . import analyzer
+from . import analyzer, sar_analyzer
 
 DB_PATH = os.environ.get(
     "GC_DB", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gc_history.db")
@@ -77,6 +86,37 @@ CREATE TABLE IF NOT EXISTS collector_state (
     updated_ts  INTEGER,
     PRIMARY KEY (instance_id, file_path)
 );
+CREATE TABLE IF NOT EXISTS host_metrics (
+    ts                INTEGER,
+    instance_id       TEXT,
+    cpu_user_pct      REAL,
+    cpu_system_pct    REAL,
+    cpu_iowait_pct    REAL,
+    cpu_busy_pct      REAL,
+    load1             REAL,
+    load5             REAL,
+    runq_sz           REAL,
+    cswch_per_s       REAL,
+    mem_used_pct      REAL,
+    mem_cached_mb     REAL,
+    swap_used_pct     REAL,
+    disk_util_pct_max REAL,
+    disk_await_ms_max REAL,
+    disk_tps          REAL,
+    net_util_pct_max  REAL,
+    net_rx_kbs        REAL,
+    net_tx_kbs        REAL,
+    top_disks_json    TEXT,
+    top_nics_json     TEXT,
+    PRIMARY KEY (instance_id, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_host_metrics_inst_ts ON host_metrics(instance_id, ts);
+CREATE TABLE IF NOT EXISTS sar_collector_state (
+    instance_id TEXT,
+    last_ts     INTEGER,
+    updated_ts  INTEGER,
+    PRIMARY KEY (instance_id)
+);
 """
 
 
@@ -120,6 +160,194 @@ def record_metric(c, instance_id: str, ts: int, m: dict) -> None:
         (ts, instance_id, m["heap_used_mb"], m["heap_max_mb"], m["heap_after_pct"],
          m["pause_avg_ms"], m["pause_p99_ms"], m["pause_max_ms"], m["full_gc_count"],
          m["young_count"], m["gc_per_min"], m["time_in_gc_pct"], m["throughput_pct"]),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Host (SAR) metrics — same instance_id / ts grid as `metrics`, so the two
+# tables join directly for correlation and scaling analysis.
+# --------------------------------------------------------------------------- #
+def record_host_metric(c, instance_id: str, ts: int, m: dict) -> None:
+    c.execute(
+        "INSERT OR REPLACE INTO host_metrics(ts,instance_id,cpu_user_pct,cpu_system_pct,"
+        "cpu_iowait_pct,cpu_busy_pct,load1,load5,runq_sz,cswch_per_s,mem_used_pct,mem_cached_mb,"
+        "swap_used_pct,disk_util_pct_max,disk_await_ms_max,disk_tps,net_util_pct_max,"
+        "net_rx_kbs,net_tx_kbs,top_disks_json,top_nics_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            ts, instance_id,
+            m.get("cpu_user_pct_avg", 0.0), m.get("cpu_system_pct_avg", 0.0),
+            m.get("cpu_iowait_pct_avg", 0.0), m.get("cpu_busy_pct_avg", 0.0),
+            m.get("load1_avg", 0.0), m.get("load5_avg", 0.0),
+            m.get("runq_sz_avg", 0.0), m.get("cswch_per_s_avg", 0.0),
+            m.get("mem_used_pct_avg", 0.0), m.get("mem_cached_mb_avg", 0.0),
+            m.get("swap_used_pct_max", 0.0),
+            m.get("disk_util_pct_max", 0.0), m.get("disk_await_ms_max", 0.0), m.get("disk_tps_avg", 0.0),
+            m.get("net_util_pct_max", 0.0), m.get("net_rx_kbs_avg", 0.0), m.get("net_tx_kbs_avg", 0.0),
+            json.dumps(m.get("top_disks", [])), json.dumps(m.get("top_nics", [])),
+        ),
+    )
+
+
+def host_window_rows(c, instance_id: str, since_ts: int, until_ts: int = None) -> list[dict]:
+    q = "SELECT * FROM host_metrics WHERE instance_id=? AND ts>=?"
+    args = [instance_id, since_ts]
+    if until_ts is not None:
+        q += " AND ts<=?"
+        args.append(until_ts)
+    q += " ORDER BY ts ASC"
+    return [dict(r) for r in c.execute(q, args)]
+
+
+def host_latest_row(c, instance_id: str, now: int = None) -> dict | None:
+    q = "SELECT * FROM host_metrics WHERE instance_id=?"
+    args = [instance_id]
+    if now is not None:
+        q += " AND ts<=?"
+        args.append(now)
+    q += " ORDER BY ts DESC LIMIT 1"
+    r = c.execute(q, args).fetchone()
+    return dict(r) if r else None
+
+
+def _host_metrics_dict_from_window(rows: list[dict]) -> dict:
+    """Reconstruct a sar_analyzer-compatible metrics dict from stored rows
+    (averaging the per-interval averages, taking the max of the maxes)."""
+    if not rows:
+        return {"sample_count": 0}
+    try:
+        top_disks = json.loads(rows[-1].get("top_disks_json") or "[]")
+    except (TypeError, ValueError):
+        top_disks = []
+    try:
+        top_nics = json.loads(rows[-1].get("top_nics_json") or "[]")
+    except (TypeError, ValueError):
+        top_nics = []
+    return {
+        "sample_count": len(rows),
+        "span_seconds": (rows[-1]["ts"] - rows[0]["ts"]) if len(rows) > 1 else 0,
+        "cpu_user_pct_avg": round(statistics.fmean(r["cpu_user_pct"] for r in rows), 2),
+        "cpu_system_pct_avg": round(statistics.fmean(r["cpu_system_pct"] for r in rows), 2),
+        "cpu_iowait_pct_avg": round(statistics.fmean(r["cpu_iowait_pct"] for r in rows), 2),
+        "cpu_iowait_pct_max": round(max(r["cpu_iowait_pct"] for r in rows), 2),
+        "cpu_busy_pct_avg": round(statistics.fmean(r["cpu_busy_pct"] for r in rows), 2),
+        "cpu_busy_pct_max": round(max(r["cpu_busy_pct"] for r in rows), 2),
+        "load1_avg": round(statistics.fmean(r["load1"] for r in rows), 2),
+        "load1_max": round(max(r["load1"] for r in rows), 2),
+        "load5_avg": round(statistics.fmean(r["load5"] for r in rows), 2),
+        "runq_sz_avg": round(statistics.fmean(r["runq_sz"] for r in rows), 2),
+        "cswch_per_s_avg": round(statistics.fmean(r["cswch_per_s"] for r in rows), 2),
+        "mem_used_pct_avg": round(statistics.fmean(r["mem_used_pct"] for r in rows), 2),
+        "mem_used_pct_max": round(max(r["mem_used_pct"] for r in rows), 2),
+        "mem_cached_mb_avg": round(statistics.fmean(r["mem_cached_mb"] for r in rows), 2),
+        "swap_used_pct_avg": round(statistics.fmean(r["swap_used_pct"] for r in rows), 2),
+        "swap_used_pct_max": round(max(r["swap_used_pct"] for r in rows), 2),
+        "disk_util_pct_max": round(max(r["disk_util_pct_max"] for r in rows), 2),
+        "disk_await_ms_max": round(max(r["disk_await_ms_max"] for r in rows), 2),
+        "disk_tps_avg": round(statistics.fmean(r["disk_tps"] for r in rows), 2),
+        "net_util_pct_max": round(max(r["net_util_pct_max"] for r in rows), 2),
+        "net_rx_kbs_avg": round(statistics.fmean(r["net_rx_kbs"] for r in rows), 2),
+        "net_tx_kbs_avg": round(statistics.fmean(r["net_tx_kbs"] for r in rows), 2),
+        "net_tx_kbs_max": round(max(r["net_tx_kbs"] for r in rows), 2),
+        "top_disks": top_disks,
+        "top_nics": top_nics,
+    }
+
+
+def current_host_snapshot(c, instance_id: str, now: int = None) -> dict | None:
+    inst = get_instance(c, instance_id)
+    if not inst:
+        return None
+    now = now or now_ts(c)
+    last = host_latest_row(c, instance_id, now)
+    if not last:
+        return {"instance": inst, "metrics": {}, "health": None, "findings": None}
+    day = host_window_rows(c, instance_id, now - 86400, now)
+    if not day:
+        day = [last]
+    metrics = _host_metrics_dict_from_window(day)
+    health = sar_analyzer.score_health(metrics)
+    findings = sar_analyzer.derive_findings(metrics)
+    return {"instance": inst, "latest": last, "metrics": metrics, "health": health, "findings": findings}
+
+
+def host_trends(c, instance_id: str, days: int = 30, now: int = None) -> dict:
+    now = now or now_ts(c)
+    since = now - days * 86400
+    query = """
+        SELECT
+            (ts / 86400) * 86400 AS day,
+            AVG(cpu_busy_pct) AS cpu_busy_avg, MAX(cpu_busy_pct) AS cpu_busy_max,
+            AVG(cpu_iowait_pct) AS iowait_avg, MAX(cpu_iowait_pct) AS iowait_max,
+            AVG(mem_used_pct) AS mem_avg, MAX(mem_used_pct) AS mem_max,
+            MAX(swap_used_pct) AS swap_max,
+            MAX(disk_util_pct_max) AS disk_util_max, MAX(disk_await_ms_max) AS disk_await_max,
+            MAX(net_util_pct_max) AS net_util_max,
+            AVG(net_tx_kbs) AS net_tx_avg, AVG(load1) AS load1_avg
+        FROM host_metrics
+        WHERE instance_id = ? AND ts >= ? AND ts <= ?
+        GROUP BY day
+        ORDER BY day ASC
+    """
+    rows = c.execute(query, (instance_id, since, now)).fetchall()
+    series = []
+    for r in rows:
+        series.append({
+            "t": r["day"],
+            "cpu_busy_avg": round(r["cpu_busy_avg"], 1) if r["cpu_busy_avg"] is not None else 0.0,
+            "cpu_busy_max": round(r["cpu_busy_max"], 1) if r["cpu_busy_max"] is not None else 0.0,
+            "iowait_avg": round(r["iowait_avg"], 1) if r["iowait_avg"] is not None else 0.0,
+            "iowait_max": round(r["iowait_max"], 1) if r["iowait_max"] is not None else 0.0,
+            "mem_avg": round(r["mem_avg"], 1) if r["mem_avg"] is not None else 0.0,
+            "mem_max": round(r["mem_max"], 1) if r["mem_max"] is not None else 0.0,
+            "swap_max": round(r["swap_max"], 2) if r["swap_max"] is not None else 0.0,
+            "disk_util_max": round(r["disk_util_max"], 1) if r["disk_util_max"] is not None else 0.0,
+            "disk_await_max": round(r["disk_await_max"], 1) if r["disk_await_max"] is not None else 0.0,
+            "net_util_max": round(r["net_util_max"], 1) if r["net_util_max"] is not None else 0.0,
+            "net_tx_avg": round(r["net_tx_avg"], 1) if r["net_tx_avg"] is not None else 0.0,
+            "load1_avg": round(r["load1_avg"], 2) if r["load1_avg"] is not None else 0.0,
+        })
+    return {"instance_id": instance_id, "days": days, "series": series}
+
+
+def host_range_series(c, instance_id: str, since: int, until: int, bucket_s: int) -> dict:
+    rows = host_window_rows(c, instance_id, since, until)
+    buckets: dict[int, list[dict]] = {}
+    for r in rows:
+        b = (r["ts"] // bucket_s) * bucket_s
+        buckets.setdefault(b, []).append(r)
+    series = []
+    for b in sorted(buckets):
+        rs = buckets[b]
+        series.append({
+            "t": b,
+            "cpu_busy_avg": round(statistics.fmean(r["cpu_busy_pct"] for r in rs), 1),
+            "cpu_busy_max": round(max(r["cpu_busy_pct"] for r in rs), 1),
+            "iowait_avg": round(statistics.fmean(r["cpu_iowait_pct"] for r in rs), 1),
+            "mem_avg": round(statistics.fmean(r["mem_used_pct"] for r in rs), 1),
+            "mem_max": round(max(r["mem_used_pct"] for r in rs), 1),
+            "swap_max": round(max(r["swap_used_pct"] for r in rs), 2),
+            "disk_util_max": round(max(r["disk_util_pct_max"] for r in rs), 1),
+            "disk_await_max": round(max(r["disk_await_ms_max"] for r in rs), 1),
+            "net_util_max": round(max(r["net_util_pct_max"] for r in rs), 1),
+            "net_tx_avg": round(statistics.fmean(r["net_tx_kbs"] for r in rs), 1),
+            "load1_avg": round(statistics.fmean(r["load1"] for r in rs), 2),
+        })
+    return {"instance_id": instance_id, "bucket_s": bucket_s, "series": series}
+
+
+def get_sar_state(c, instance_id: str) -> int | None:
+    """Last-ingested sar sample timestamp (dedup point — sar/sadf reports are
+    re-queryable, not append-only files, so incremental collection just means
+    'skip samples we've already recorded')."""
+    r = c.execute("SELECT last_ts FROM sar_collector_state WHERE instance_id=?", (instance_id,)).fetchone()
+    return int(r["last_ts"]) if r and r["last_ts"] is not None else None
+
+
+def set_sar_state(c, instance_id: str, last_ts: int, updated_ts: int) -> None:
+    c.execute(
+        "INSERT OR REPLACE INTO sar_collector_state(instance_id,last_ts,updated_ts) VALUES(?,?,?)",
+        (instance_id, last_ts, updated_ts),
     )
 
 
@@ -375,6 +603,8 @@ def set_offset(c, instance_id: str, file_path: str, inode: int, offset: int, ts:
 def delete_instance(c, instance_id: str) -> None:
     c.execute("DELETE FROM metrics WHERE instance_id=?", (instance_id,))
     c.execute("DELETE FROM collector_state WHERE instance_id=?", (instance_id,))
+    c.execute("DELETE FROM host_metrics WHERE instance_id=?", (instance_id,))
+    c.execute("DELETE FROM sar_collector_state WHERE instance_id=?", (instance_id,))
     c.execute("DELETE FROM instances WHERE id=?", (instance_id,))
 
 
@@ -385,6 +615,10 @@ def migrate_instance(c, old_id: str, new_id: str) -> None:
     c.execute("DELETE FROM metrics WHERE instance_id=?", (old_id,))
     c.execute("UPDATE OR IGNORE collector_state SET instance_id=? WHERE instance_id=?", (new_id, old_id))
     c.execute("DELETE FROM collector_state WHERE instance_id=?", (old_id,))
+    c.execute("UPDATE OR IGNORE host_metrics SET instance_id=? WHERE instance_id=?", (new_id, old_id))
+    c.execute("DELETE FROM host_metrics WHERE instance_id=?", (old_id,))
+    c.execute("UPDATE OR IGNORE sar_collector_state SET instance_id=? WHERE instance_id=?", (new_id, old_id))
+    c.execute("DELETE FROM sar_collector_state WHERE instance_id=?", (old_id,))
     c.execute("DELETE FROM instances WHERE id=?", (old_id,))
 
 
@@ -416,6 +650,10 @@ def prune_orphan_clusters(c, onboarded: set[str]) -> int:
 
 
 def prune_before(c, before_ts: int) -> int:
-    """Delete metric rows older than before_ts (retention). Returns rows deleted."""
+    """Delete metric + host_metric rows older than before_ts (retention).
+    Returns total rows deleted across both tables."""
     cur = c.execute("DELETE FROM metrics WHERE ts < ?", (before_ts,))
-    return cur.rowcount
+    deleted = cur.rowcount
+    cur2 = c.execute("DELETE FROM host_metrics WHERE ts < ?", (before_ts,))
+    deleted += cur2.rowcount
+    return deleted

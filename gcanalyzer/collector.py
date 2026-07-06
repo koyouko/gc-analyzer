@@ -1,5 +1,5 @@
 """
-Log collection layer.
+Log + host-metrics collection layer.
 
 Two sources are supported:
 
@@ -16,6 +16,14 @@ supported so `kafkaServer-gc.log*` rotations are all collected.
 If paramiko is not installed, the SSH collector raises a clear error telling you
 to `pip install paramiko`; everything else (parsing, analysis, dashboard) works
 without it so you can demo against the bundled samples offline.
+
+SAR (sysstat) collection reuses the same `source`/SSH credentials as GC log
+collection (it's the same host), but it doesn't read a file — it runs a report
+command and captures its stdout. `TZ=UTC` forces sar/sadf to render its
+internally-UTC-stored samples in UTC regardless of the host's local timezone,
+so host metrics line up with GC metrics (also recorded as UTC epoch seconds)
+without needing to know each host's TZ. See sar_parser.py for the two output
+formats this feeds (sadf JSON, classic sar text).
 """
 
 from __future__ import annotations
@@ -50,6 +58,16 @@ class NodeConfig:
     kafka_home: str = DEFAULT_KAFKA_HOME
     log_paths: list = field(default_factory=list)   # explicit paths/globs override defaults
     local_paths: list = field(default_factory=list) # for source == local
+
+    # --- SAR / host-metrics collection (same host, optional separate creds) ---
+    sar_enabled: bool = True
+    sar_source: Optional[str] = None       # defaults to `source` when unset
+    sar_bin: str = "sar"
+    sadf_bin: str = "sadf"
+    sar_local_path: Optional[str] = None   # local/demo: a captured sar -A or sadf -j dump
+
+    def effective_sar_source(self) -> str:
+        return self.sar_source or self.source
 
     def effective_globs(self) -> list[str]:
         if self.log_paths:
@@ -304,3 +322,113 @@ def collect_ssh_incremental(
         client.close()
 
     return "\n".join(parts), new_offsets
+
+
+# --------------------------------------------------------------------------- #
+# SAR (sysstat) collection — runs a report command and captures stdout. There
+# is no byte-offset incrementality here (sar/sadf reports are re-queryable,
+# not append-only files); sar_ingest.py dedups by sample timestamp instead.
+# --------------------------------------------------------------------------- #
+@dataclass
+class CollectedSar:
+    node_id: str
+    source_detail: str
+    text: str
+    fmt_hint: Optional[str]   # "json" | "text" | None (unknown/empty)
+    report_date: Optional[str]  # MM/DD/YYYY, for the text-parser fallback
+    error: Optional[str] = None
+
+
+def collect_sar_local(node: NodeConfig, log_callback=None) -> CollectedSar:
+    if not node.sar_local_path:
+        return CollectedSar(node.id, "-", "", None, None, error="no sar_local_path configured")
+    path = node.sar_local_path
+    try:
+        with open(path, "r", errors="replace") as fh:
+            text = fh.read()
+        fmt_hint = "json" if path.endswith(".json") else "text"
+        if log_callback:
+            log_callback(f"SAR: read local file '{path}' ({len(text)} bytes)")
+        return CollectedSar(node.id, path, text, fmt_hint, None)
+    except OSError as exc:
+        if log_callback:
+            log_callback(f"SAR: error reading '{path}': {exc}")
+        return CollectedSar(node.id, path, "", None, None, error=str(exc))
+
+
+def collect_sar_ssh(node: NodeConfig, log_callback=None) -> CollectedSar:
+    try:
+        import paramiko  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "paramiko is required for SSH collection. Install it with "
+            "`pip install paramiko`, or set the node's sar_source to 'local'."
+        ) from exc
+
+    import paramiko
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    connect_kwargs = {
+        "hostname": node.host,
+        "port": node.port,
+        "username": node.user,
+        "timeout": 15,
+    }
+    if node.key_path:
+        connect_kwargs["key_filename"] = os.path.expanduser(node.key_path)
+    if node.password:
+        connect_kwargs["password"] = node.password
+
+    detail = f"{node.host}:sar"
+    try:
+        if log_callback:
+            log_callback(f"SAR: Connecting to {node.user or 'default'}@{node.host}:{node.port}...")
+        client.connect(**connect_kwargs)
+
+        # Remote UTC date, independent of sar's own date formatting, used as a
+        # reliable fallback for the text parser if the report banner is missing.
+        _in, _out, _err = client.exec_command("date -u +%m/%d/%Y")
+        report_date = _out.read().decode().strip() or None
+
+        # Prefer JSON (sysstat >= 11.x): structured, no column-alignment guessing.
+        json_cmd = f"TZ=UTC LC_ALL=C {node.sadf_bin} -j -- -A 2>/dev/null"
+        if log_callback:
+            log_callback(f"SAR: trying '{json_cmd}'...")
+        _in, _out, _err = client.exec_command(json_cmd)
+        text = _out.read().decode(errors="replace")
+        if text.strip().startswith("{"):
+            if log_callback:
+                log_callback(f"SAR: got sadf JSON ({len(text)} bytes)")
+            return CollectedSar(node.id, detail, text, "json", report_date)
+
+        # Fallback: classic `sar -A` text report (works on essentially every
+        # sysstat version, including ones too old to support `-j`).
+        text_cmd = f"TZ=UTC LC_ALL=C {node.sar_bin} -A 2>/dev/null"
+        if log_callback:
+            log_callback(f"SAR: sadf JSON unavailable, trying '{text_cmd}'...")
+        _in, _out, _err = client.exec_command(text_cmd)
+        text = _out.read().decode(errors="replace")
+        stderr_text = _err.read().decode().strip()
+        if not text.strip():
+            msg = stderr_text or "sar produced no output (is sysstat installed and collecting? see /etc/cron.d/sysstat)"
+            if log_callback:
+                log_callback(f"SAR: {msg}")
+            return CollectedSar(node.id, detail, "", None, report_date, error=msg)
+        if log_callback:
+            log_callback(f"SAR: got sar text report ({len(text)} bytes)")
+        return CollectedSar(node.id, detail, text, "text", report_date)
+    except Exception as e:
+        if log_callback:
+            log_callback(f"SAR: Error during collection: {e}")
+        return CollectedSar(node.id, detail, "", None, None, error=str(e))
+    finally:
+        client.close()
+
+
+def collect_sar(node: NodeConfig, log_callback=None) -> CollectedSar:
+    if not node.sar_enabled:
+        return CollectedSar(node.id, "-", "", None, None, error="sar disabled for this node")
+    if node.effective_sar_source() == "local":
+        return collect_sar_local(node, log_callback=log_callback)
+    return collect_sar_ssh(node, log_callback=log_callback)

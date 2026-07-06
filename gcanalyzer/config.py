@@ -36,6 +36,11 @@ def parse_cluster(raw: dict) -> tuple[str, list[NodeConfig], str | None, str | N
         merged = {**defaults, **entry}
         if "id" not in merged:
             raise ValueError("Every node needs an 'id'.")
+        # `sar:` may be a nested mapping (preferred, e.g. `sar: {enabled: true}`)
+        # merged with defaults' own `sar:` block, or omitted entirely (defaults apply).
+        sar_defaults = defaults.get("sar", {}) if isinstance(defaults.get("sar"), dict) else {}
+        sar_entry = entry.get("sar", {}) if isinstance(entry.get("sar"), dict) else {}
+        sar = {**sar_defaults, **sar_entry}
         nodes.append(
             NodeConfig(
                 id=merged["id"],
@@ -49,6 +54,11 @@ def parse_cluster(raw: dict) -> tuple[str, list[NodeConfig], str | None, str | N
                 kafka_home=merged.get("kafka_home", "/opt/kafka"),
                 log_paths=merged.get("log_paths", []),
                 local_paths=merged.get("local_paths", []),
+                sar_enabled=bool(sar.get("enabled", True)),
+                sar_source=sar.get("source"),
+                sar_bin=sar.get("sar_bin", "sar"),
+                sadf_bin=sar.get("sadf_bin", "sadf"),
+                sar_local_path=sar.get("local_path"),
             )
         )
     return cluster_name, nodes, region, env

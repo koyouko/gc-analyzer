@@ -125,6 +125,21 @@
   .minigrade.D{background:#db6d28}.minigrade.F{background:var(--crit)}
   .cfg{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px}
   .cfg .k{color:var(--muted)}
+  .verdictpill{padding:5px 13px;border-radius:20px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink)}
+  .verdictpill.horizontal{background:#00aeef}.verdictpill.vertical_memory{background:#f5a623}
+  .verdictpill.rebalance{background:#a371f7}.verdictpill.no_action{background:var(--ok)}
+  .verdictpill.mixed,.verdictpill.gc_bound,.verdictpill.host_bound{background:var(--watch)}
+  .verdictpill.insufficient_data{background:var(--unknown)}
+  .bnpill{font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;color:var(--ink);text-transform:uppercase;letter-spacing:.03em}
+  .bnpill.healthy{background:var(--ok)}.bnpill.watch{background:var(--watch)}
+  .bnpill.cpu,.bnpill.iowait,.bnpill.disk,.bnpill.network{background:#db6d28}
+  .bnpill.host_memory,.bnpill.swap{background:var(--crit)}.bnpill.heap{background:#a371f7}
+  .bnpill.no_data{background:var(--unknown)}
+  .sar-table{width:100%;border-collapse:collapse;font-size:11px}
+  .sar-table th{text-align:left;color:var(--muted);font-weight:600;padding:5px 8px;border-bottom:1px solid var(--border)}
+  .sar-table td{padding:5px 8px;border-bottom:1px solid var(--border)}
+  .anomaly-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:14px;font-size:11px;font-weight:700;background:var(--watch);color:var(--ink)}
+  .anomaly-badge.calm{background:var(--ok)}
   .help{position:relative;cursor:help}
   .help .info{color:var(--muted);font-size:10px;margin-left:4px;opacity:.6}
   .help:hover .info{opacity:1;color:var(--accent)}
@@ -733,7 +748,7 @@ let FLEET=null, SELECTED=null, charts={}, expanded={};
 
 async function api(p){const r=await fetch(p);if(!r.ok)throw new Error(await r.text());return r.json();}
 
-let nodeCharts={}, EXPLORER_TAB='heap', _lastSeries=null;
+let nodeCharts={}, EXPLORER_TAB='heap', _lastSeries=null, _lastSar=null, _lastSarSer=null;
 
 function destroyNodeCharts(){Object.values(nodeCharts).forEach(c=>c.destroy());nodeCharts={};}
 
@@ -1085,8 +1100,40 @@ function renderMlPreview(){
 async function selectCluster(cluster){
   SELECTED='cluster:'+cluster; renderTree();
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(cluster)+'…</div>';
-  try{ renderCluster(await api('/api/cluster/'+encodeURIComponent(cluster))); }
-  catch(e){ main.innerHTML=`<div class="empty">Failed: ${esc(e.message)}</div>`; }
+  try{
+    const [v,scaling]=await Promise.all([
+      api('/api/cluster/'+encodeURIComponent(cluster)),
+      fetchOptional('/api/cluster/'+encodeURIComponent(cluster)+'/scaling?role=broker'),
+    ]);
+    renderCluster(v,scaling);
+  }catch(e){ main.innerHTML=`<div class="empty">Failed: ${esc(e.message)}</div>`; }
+}
+
+function renderScalingAdvisor(sc){
+  if(!sc || sc.verdict==='insufficient_data'){
+    return `<div class="panel full"><h3>Scaling advisor</h3><div class="muted">${esc((sc&&sc.summary)||'Not enough broker GC + host history yet to recommend a scaling direction.')}</div></div>`;
+  }
+  const verdictLabel={horizontal:'Scale horizontally (add brokers)',vertical_memory:'Scale vertically (heap / RAM)',
+    rebalance:'Rebalance partitions/leaders',no_action:'No action needed',mixed:'Mixed — investigate per-node'}[sc.verdict]||sc.verdict;
+  const nodeRows=(sc.nodes||[]).map(n=>`<tr>
+      <td>${esc(instanceLabel(n.instance_id))}</td>
+      <td><span class="bnpill ${esc(n.dominant_bottleneck)}">${esc(n.dominant_bottleneck.replace('_',' '))}</span></td>
+      <td>${n.gc_grade?`<span class="minigrade ${n.gc_grade}">${n.gc_grade}</span>`:'—'}</td>
+      <td>${n.host_grade?`<span class="minigrade ${n.host_grade}">${n.host_grade}</span>`:'—'}</td>
+      <td>${n.cpu_busy_pct_avg!=null?n.cpu_busy_pct_avg+'%':'—'}</td>
+      <td>${n.net_util_pct_max!=null?n.net_util_pct_max+'%':'—'}</td>
+      <td>${n.full_gc_24h!=null?n.full_gc_24h:'—'}</td>
+    </tr>`).join('');
+  const skewHtml=sc.skew?`<div class="muted" style="margin-top:8px;font-size:11px">Cross-node skew: CPU CV=${sc.skew.cpu_busy_cv ?? '—'}, net-egress CV=${sc.skew.net_tx_cv ?? '—'}${sc.skew.hot_nodes&&sc.skew.hot_nodes.length?` · hot: ${sc.skew.hot_nodes.map(esc).join(', ')}`:''}</div>`:'';
+  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">Scaling advisor (${esc(sc.role)}s)
+      <span class="verdictpill ${esc(sc.verdict)}">${esc(verdictLabel)}</span>
+      <span class="muted" style="font-size:11px;font-weight:400">confidence: ${esc(sc.confidence)}</span>
+    </h3>
+    <div style="margin-bottom:8px">${esc(sc.summary)}</div>
+    <ul class="list recs">${(sc.evidence||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+    ${skewHtml}
+    <table class="sar-table" style="margin-top:10px"><tr><th>Node</th><th>Bottleneck</th><th>GC</th><th>Host</th><th>CPU avg</th><th>NIC max</th><th>Full GC 24h</th></tr>${nodeRows}</table>
+  </div>`;
 }
 
 function instanceLabel(id, nodeId){
@@ -1106,7 +1153,7 @@ function ncard(n){
   </div>`;
 }
 
-function renderCluster(v){
+function renderCluster(v,scaling){
   destroy();
   const m=v.memory, t=v.telemetry, cfg=v.config, c=v.counts;
   const heapRoles=Object.entries(cfg.heap_by_role).map(([r,s])=>`${r} ${s.join('/')} MB`).join(' · ');
@@ -1162,23 +1209,107 @@ function renderCluster(v){
     <div class="nodegrid">${v.nodes.map(ncard).join('')}</div>
 
     <h2 style="margin-top:24px">Needs attention${v.attention.length?` (${v.attention.length})`:''} — click to investigate</h2>
-    <div class="alerts">${attention}</div>`;
+    <div class="alerts">${attention}</div>
+
+    <h2 style="margin-top:24px">Capacity &amp; scaling</h2>
+    <div class="panels">${renderScalingAdvisor(scaling)}</div>`;
 }
 
 /* ---------------- instance detail ---------------- */
+async function fetchOptional(path){
+  // Server health / correlation / ML are best-effort: a node with GC history
+  // but no SAR collection configured yet should still render its GC view.
+  try{ return await api(path); }catch(e){ return null; }
+}
+
 async function selectInstance(id,ev){
   if(ev) ev.stopPropagation();
   SELECTED=id; CURRENT_INSTANCE=id; renderTree();
   const encodedId = encodeURIComponent(id);
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(id)+'…</div>';
-  const [snap,ser]=await Promise.all([
+  const [snap,ser,sar,sarSer,corr,anom]=await Promise.all([
     api('/api/instance/'+encodedId),
     api('/api/instance/'+encodedId+'/series?range='+encodeURIComponent(CURRENT_RANGE)),
+    fetchOptional('/api/instance/'+encodedId+'/sar'),
+    fetchOptional('/api/instance/'+encodedId+'/sar/series?range='+encodeURIComponent(CURRENT_RANGE)),
+    fetchOptional('/api/instance/'+encodedId+'/correlation'),
+    fetchOptional('/api/instance/'+encodedId+'/anomalies'),
   ]);
-  renderInstance(snap,ser);
+  renderInstance(snap,ser,sar,sarSer,corr,anom);
 }
 
-function renderInstance(s,tr){
+function renderSarSection(sar,sarSer){
+  if(!sar || !sar.health){
+    return `<div class="panel full"><h3>Server health (SAR)</h3>
+      <div class="muted">No host metrics collected for this instance yet. Enable <code>sar:</code> in its cluster.yaml node entry (requires <code>sysstat</code> installed + sa1/sa2 cron on the host), or wait for the next scheduler tick.</div></div>`;
+  }
+  const m=sar.metrics,h=sar.health;
+  const grade=['A','B','C','D','F'].includes(h.grade)?h.grade:'F';
+  const mc=[
+    ['CPU busy (avg/max)',`${m.cpu_busy_pct_avg}% / ${m.cpu_busy_pct_max}%`],
+    ['iowait (avg/max)',`${m.cpu_iowait_pct_avg}% / ${m.cpu_iowait_pct_max}%`],
+    ['Load avg (1m)',m.load1_avg],
+    ['Memory used (avg/max)',`${m.mem_used_pct_avg}% / ${m.mem_used_pct_max}%`],
+    ['Swap used (max)',m.swap_used_pct_max+'%'],
+    ['Disk util (max)',m.disk_util_pct_max+'%'],
+    ['Disk await (max)',m.disk_await_ms_max+' ms'],
+    ['NIC util (max)',m.net_util_pct_max+'%'],
+    ['Net egress (avg)',(m.net_tx_kbs_avg/1024).toFixed(1)+' MB/s'],
+  ];
+  const devRows=(rows,label,key)=>(rows||[]).map(r=>`<tr><td>${esc(r[key])}</td><td>${r.util_pct_avg}%</td><td>${r.util_pct_max}%</td></tr>`).join('');
+  return `
+    <div class="ihdr" style="margin-top:18px">
+      <div class="grade ${grade}">${grade}</div>
+      <div><div style="font-size:15px;font-weight:700">Server health (SAR) — 24h window</div>
+        <div class="muted">${esc(h.score)} / 100 · ${esc(h.status)}</div></div>
+    </div>
+    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||'No host resource pressure detected.'}</div>
+    <div class="metric-grid">${mc.map(([l,v])=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v">${v}</div></div>`).join('')}</div>
+    ${sarSer&&sarSer.series&&sarSer.series.length?`<div class="panels" style="margin-top:12px">
+      <div class="panel"><h3>CPU busy &amp; iowait (%)</h3><div class="chartbox"><canvas id="cSarCpu"></canvas></div></div>
+      <div class="panel"><h3>Memory &amp; swap (%)</h3><div class="chartbox"><canvas id="cSarMem"></canvas></div></div>
+      <div class="panel"><h3>Disk util (%) &amp; await (ms)</h3><div class="chartbox"><canvas id="cSarDisk"></canvas></div></div>
+      <div class="panel"><h3>NIC util (%) &amp; egress (MB/s)</h3><div class="chartbox"><canvas id="cSarNet"></canvas></div></div>
+    </div>`:''}
+    ${(m.top_disks&&m.top_disks.length)||(m.top_nics&&m.top_nics.length)?`<div class="panels" style="margin-top:12px">
+      ${m.top_disks&&m.top_disks.length?`<div class="panel"><h3>Busiest disks</h3><table class="sar-table"><tr><th>Device</th><th>avg util</th><th>max util</th></tr>${devRows(m.top_disks,'dev','dev')}</table></div>`:''}
+      ${m.top_nics&&m.top_nics.length?`<div class="panel"><h3>Busiest NICs</h3><table class="sar-table"><tr><th>Interface</th><th>avg util</th><th>max util</th></tr>${devRows(m.top_nics,'iface','iface')}</table></div>`:''}
+    </div>`:''}
+    <div class="panels" style="margin-top:12px">
+      <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(sar.findings.pros||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
+      <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(sar.findings.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
+      <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(sar.findings.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
+    </div>`;
+}
+
+function renderCorrelationSection(corr,anom){
+  if(!corr || corr.verdict==='insufficient_data'){
+    return `<div class="panel full"><h3>GC ↔ host correlation</h3><div class="muted">${esc((corr&&corr.findings&&corr.findings[0])||'Not enough overlapping GC + host history yet.')}</div></div>`;
+  }
+  const verdictLabel={gc_bound:'GC-bound (JVM tuning)',host_bound:'Host-bound (OS contention)',mixed:'Mixed signal',insufficient_data:'Insufficient data'}[corr.verdict]||corr.verdict;
+  const corrRows=(corr.correlations||[]).filter(c=>c.strength!=='weak').map(c=>
+    `<tr><td>${esc(c.label)}</td><td>${c.r>0?'+':''}${c.r}</td><td><span class="bnpill ${c.strength==='strong'?'host_memory':'watch'}">${c.strength}</span></td></tr>`
+  ).join('') || '<tr><td colspan="3" class="muted">No moderate/strong correlations in this window.</td></tr>';
+  let anomHtml='';
+  if(anom && anom.method!=='none'){
+    const cls=anom.is_anomalous?'':'calm';
+    anomHtml=`<div style="margin-top:10px">
+      <span class="anomaly-badge ${cls}">ML Tech Preview: ${anom.is_anomalous?'unusual pattern detected':'looks normal'} (score ${anom.overall_anomaly_score}/100, ${esc(anom.method)})</span>
+      <div class="muted" style="margin-top:6px;font-size:11px">${esc(anom.notice)}</div>
+    </div>`;
+  }
+  return `
+    <div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">GC ↔ host correlation
+      <span class="verdictpill ${esc(corr.verdict)}">${esc(verdictLabel)}</span>
+      <span class="muted" style="font-size:11px;font-weight:400">${corr.n_points} overlapping hour(s) over ${corr.days}d</span>
+    </h3>
+      <table class="sar-table" style="margin-bottom:10px"><tr><th>Signal pair</th><th>r</th><th>strength</th></tr>${corrRows}</table>
+      <ul class="list recs">${(corr.findings||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+      ${anomHtml}
+    </div>`;
+}
+
+function renderInstance(s,tr,sar,sarSer,corr,anom){
   const m=s.metrics,h=s.health,inst=s.instance;
   const status = s.alerts.some(a=>a.severity==='critical')?'critical':(s.alerts.length||['C','D','F'].includes(h.grade))?'watch':'ok';
   const grade = ['A','B','C','D','F'].includes(h.grade) ? h.grade : 'F';
@@ -1220,11 +1351,15 @@ function renderInstance(s,tr){
       <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(s.findings.pros||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
       <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
       <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
-    </div>`;
-  _lastMetrics=m; _lastSeries=tr;
+    </div>
+    <h2 style="margin-top:24px">Server &amp; correlation analysis</h2>
+    ${renderSarSection(sar,sarSer)}
+    <div class="panels" style="margin-top:12px">${renderCorrelationSection(corr,anom)}</div>`;
+  _lastMetrics=m; _lastSeries=tr; _lastSar=sar; _lastSarSer=sarSer;
   EXPLORER_TAB='heap';
   drawTrends(tr);
   drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));
+  if(sarSer && sarSer.series && sarSer.series.length) drawSarTrends(sarSer);
 }
 
 function destroyTrendCharts(){Object.values(charts).forEach(c=>c.destroy());charts={};}
@@ -1266,6 +1401,48 @@ function drawTrends(tr){
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:{position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:'Full GCs',font:{size:9}}},
     y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}},title:{display:true,text:'% in GC',font:{size:9}}}
+  }}});
+}
+
+function drawSarTrends(sarSer){
+  // Charts added here join the same `charts` registry as drawTrends() (called
+  // just before this), so destroyTrendCharts() cleans both sets up together
+  // on the next navigation — do not re-call destroyTrendCharts() here.
+  const s=sarSer.series;
+  const span=s.length>1?s[s.length-1].t-s[0].t:0;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const labels=s.map(p=>lab(p.t));
+  const pr = s.length === 1 ? 3 : 0;
+  if(!document.getElementById('cSarCpu')) return; // host data rendered but charts not in DOM (defensive)
+
+  charts.sarCpu=new Chart(cSarCpu,{type:'line',data:{labels,datasets:[
+    {label:'CPU busy avg',data:s.map(p=>p.cpu_busy_avg),borderColor:'#db6d28',backgroundColor:'rgba(219,109,40,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25},
+    {label:'CPU busy max',data:s.map(p=>p.cpu_busy_max),borderColor:'#e5484d',pointRadius:pr,borderWidth:1,tension:.25},
+    {label:'iowait avg',data:s.map(p=>p.iowait_avg),borderColor:'#a371f7',pointRadius:pr,borderWidth:1,tension:.25}
+  ]},options:{...baseOpts(),scales:{...baseOpts().scales,y:{suggestedMax:100,ticks:{font:{size:9}}}}}});
+
+  charts.sarMem=new Chart(cSarMem,{type:'line',data:{labels,datasets:[
+    {label:'mem used avg',data:s.map(p=>p.mem_avg),borderColor:'#00aeef',backgroundColor:'rgba(0,174,239,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25},
+    {label:'mem used max',data:s.map(p=>p.mem_max),borderColor:'#2eb872',pointRadius:pr,borderWidth:1,tension:.25},
+    {label:'swap used max',data:s.map(p=>p.swap_max),borderColor:'#e5484d',pointRadius:pr,borderWidth:1.3,tension:.25}
+  ]},options:{...baseOpts(),scales:{...baseOpts().scales,y:{suggestedMax:100,ticks:{font:{size:9}}}}}});
+
+  charts.sarDisk=new Chart(cSarDisk,{data:{labels,datasets:[
+    {type:'bar',label:'disk util % (max)',data:s.map(p=>p.disk_util_max),backgroundColor:'#f5a623',yAxisID:'y'},
+    {type:'line',label:'await ms (max)',data:s.map(p=>p.disk_await_max),borderColor:'#e5484d',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+  ]},options:{...baseOpts(),scales:{
+    x:{ticks:{maxTicksLimit:8,font:{size:9}}},
+    y:{position:'left',beginAtZero:true,suggestedMax:100,ticks:{font:{size:9}},title:{display:true,text:'% util',font:{size:9}}},
+    y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}},title:{display:true,text:'await ms',font:{size:9}}}
+  }}});
+
+  charts.sarNet=new Chart(cSarNet,{data:{labels,datasets:[
+    {type:'bar',label:'NIC util % (max)',data:s.map(p=>p.net_util_max),backgroundColor:'#00aeef',yAxisID:'y'},
+    {type:'line',label:'egress MB/s (avg)',data:s.map(p=>p.net_tx_avg/1024),borderColor:'#2eb872',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+  ]},options:{...baseOpts(),scales:{
+    x:{ticks:{maxTicksLimit:8,font:{size:9}}},
+    y:{position:'left',beginAtZero:true,suggestedMax:100,ticks:{font:{size:9}},title:{display:true,text:'% util',font:{size:9}}},
+    y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}},title:{display:true,text:'MB/s',font:{size:9}}}
   }}});
 }
 
@@ -1889,10 +2066,15 @@ async function logout(){ try{await fetch('/api/logout',{method:'POST'});}catch(e
 async function changeRange(r){
   CURRENT_RANGE=r;
   if(!CURRENT_INSTANCE) return;
-  const tr=await api('/api/instance/'+encodeURIComponent(CURRENT_INSTANCE)+'/series?range='+encodeURIComponent(r));
-  _lastSeries=tr;
+  const encodedId=encodeURIComponent(CURRENT_INSTANCE);
+  const [tr,sarSer]=await Promise.all([
+    api('/api/instance/'+encodedId+'/series?range='+encodeURIComponent(r)),
+    fetchOptional('/api/instance/'+encodedId+'/sar/series?range='+encodeURIComponent(r)),
+  ]);
+  _lastSeries=tr; _lastSarSer=sarSer;
   drawTrends(tr);
   drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));
+  if(sarSer && sarSer.series && sarSer.series.length) drawSarTrends(sarSer);
 }
 boot();
 </script>

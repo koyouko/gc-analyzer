@@ -134,3 +134,154 @@ export interface Trends {
   heap_max_mb: number | null;
   series: TrendPoint[];
 }
+
+/* -------------------- Server health (SAR) -------------------- */
+export interface SarDevice {
+  dev?: string;
+  iface?: string;
+  util_pct_avg: number;
+  util_pct_max: number;
+  [k: string]: number | string | undefined;
+}
+export interface SarMetrics {
+  sample_count: number;
+  span_seconds?: number;
+  cpu_user_pct_avg?: number;
+  cpu_system_pct_avg?: number;
+  cpu_iowait_pct_avg: number;
+  cpu_iowait_pct_max: number;
+  cpu_busy_pct_avg: number;
+  cpu_busy_pct_max: number;
+  load1_avg: number;
+  load1_max?: number;
+  mem_used_pct_avg: number;
+  mem_used_pct_max: number;
+  swap_used_pct_avg?: number;
+  swap_used_pct_max: number;
+  disk_util_pct_max: number;
+  disk_await_ms_max: number;
+  disk_tps_avg?: number;
+  net_util_pct_max: number;
+  net_rx_kbs_avg?: number;
+  net_tx_kbs_avg: number;
+  top_disks: SarDevice[];
+  top_nics: SarDevice[];
+}
+export interface SarSnapshot {
+  instance: InstanceSnapshot["instance"];
+  latest?: Record<string, number>;
+  metrics: SarMetrics | Record<string, never>;
+  health: Health | null;
+  findings: { pros: string[]; cons: string[]; recommendations: string[] } | null;
+}
+export interface SarTrendPoint {
+  t: number;
+  cpu_busy_avg: number;
+  cpu_busy_max: number;
+  iowait_avg: number;
+  iowait_max?: number;
+  mem_avg: number;
+  mem_max: number;
+  swap_max: number;
+  disk_util_max: number;
+  disk_await_max: number;
+  net_util_max: number;
+  net_tx_avg: number;
+  load1_avg: number;
+}
+export interface SarSeries {
+  instance_id: string;
+  range?: string;
+  bucket_s?: number;
+  series: SarTrendPoint[];
+}
+
+/* -------------------- GC <-> host correlation -------------------- */
+export interface Correlation {
+  label: string;
+  gc_metric: string;
+  host_metric: string;
+  r: number;
+  strength: "weak" | "moderate" | "strong";
+  n: number;
+}
+export interface StormCooccurrence {
+  storm_hours: number;
+  storm_threshold_time_in_gc_pct: number;
+  pct_with_cpu_pressure: number;
+  pct_with_iowait_pressure: number;
+  pct_with_mem_pressure: number;
+  pct_with_swap_activity: number;
+  pct_with_disk_pressure: number;
+  pct_with_net_pressure: number;
+}
+export type CorrelationVerdict = "gc_bound" | "host_bound" | "mixed" | "insufficient_data";
+export interface CorrelationResult {
+  instance_id: string;
+  days: number;
+  n_points: number;
+  verdict: CorrelationVerdict;
+  correlations: Correlation[];
+  storm_cooccurrence: StormCooccurrence | null;
+  findings: string[];
+}
+
+/* -------------------- ML Tech Preview: anomaly scoring -------------------- */
+export interface AnomalyFeature {
+  feature: string;
+  baseline_median: number;
+  recent_max_abs_z: number;
+  recent_worst_value: number;
+  recent_worst_hour: number;
+  anomalous: boolean;
+}
+export interface AnomalyResult {
+  instance_id: string;
+  method: "none" | "robust_zscore" | "isolation_forest";
+  n_baseline: number;
+  n_recent: number;
+  overall_anomaly_score: number | null;
+  is_anomalous: boolean;
+  features: AnomalyFeature[];
+  isolation_forest?: Record<string, unknown> | null;
+  notice: string;
+  message?: string;
+}
+
+/* -------------------- Scaling advisor -------------------- */
+export type ScalingVerdict =
+  | "vertical_memory" | "horizontal" | "rebalance" | "no_action" | "mixed" | "insufficient_data";
+export interface ScalingNode {
+  instance_id: string;
+  dominant_bottleneck: string;
+  gc_grade: Grade | null;
+  host_grade: Grade | null;
+  cpu_busy_pct_avg: number | null;
+  mem_used_pct_avg: number | null;
+  disk_util_pct_max: number | null;
+  net_tx_kbs_avg: number | null;
+  net_util_pct_max: number | null;
+  heap_after_pct_avg: number | null;
+  full_gc_24h: number | null;
+  has_host_data: boolean;
+  has_gc_data: boolean;
+}
+export interface ScalingSkew {
+  net_tx_cv: number | null;
+  cpu_busy_cv: number | null;
+  hot_nodes: string[];
+}
+export interface ScalingResult {
+  cluster: string;
+  role: string;
+  now: number;
+  n_nodes: number;
+  n_nodes_with_data?: number;
+  verdict: ScalingVerdict;
+  confidence: "low" | "medium" | "high";
+  summary: string;
+  evidence: string[];
+  bottleneck_counts?: Record<string, number>;
+  nodes: ScalingNode[];
+  skew: ScalingSkew | null;
+}

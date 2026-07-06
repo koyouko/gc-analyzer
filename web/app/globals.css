@@ -121,6 +121,23 @@ ul.list { margin: 0; padding-left: 17px; } ul.list li { margin: 5px 0; line-heig
 .cfg { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12px; }
 .cfg .k { color: var(--muted); }
 
+/* Server health (SAR) / correlation / scaling advisor */
+.verdictpill { padding: 5px 13px; border-radius: 20px; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #0b1020; }
+.verdictpill.horizontal { background: #00aeef; } .verdictpill.vertical_memory { background: #f5a623; }
+.verdictpill.rebalance { background: #a371f7; } .verdictpill.no_action { background: var(--ok); }
+.verdictpill.mixed, .verdictpill.gc_bound, .verdictpill.host_bound { background: var(--watch); }
+.verdictpill.insufficient_data { background: var(--unknown); }
+.bnpill { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px; color: #0b1020; text-transform: uppercase; letter-spacing: .03em; }
+.bnpill.healthy { background: var(--ok); } .bnpill.watch { background: var(--watch); }
+.bnpill.cpu, .bnpill.iowait, .bnpill.disk, .bnpill.network { background: #db6d28; }
+.bnpill.host_memory, .bnpill.swap { background: var(--crit); } .bnpill.heap { background: #a371f7; }
+.bnpill.no_data { background: var(--unknown); }
+.sar-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.sar-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.sar-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.anomaly-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 14px; font-size: 11px; font-weight: 700; background: var(--watch); color: #0b1020; }
+.anomaly-badge.calm { background: var(--ok); }
+
 /* Reusable hover hint (used by cfg keys; the metric cards have their own). */
 .help { position: relative; cursor: help; }
 .help .info { color: var(--muted); font-size: 10px; margin-left: 4px; opacity: .6; }

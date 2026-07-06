@@ -11,6 +11,11 @@ defaults:
   password: password123        # ssh password (optional, if not using key)
   port: 22                     # ssh port
   kafka_home: /opt/kafka       # path to kafka home (for default logs location)
+  sar:                         # OS-level metrics (CPU/mem/disk/net) over the same SSH session
+    enabled: true               # requires `sysstat` installed + sa1/sa2 cron enabled on the host
+    # source: ssh                # defaults to the node's own `source`; set to local to read a captured dump
+    # sar_bin: sar                # override if sar isn't on PATH for non-interactive SSH shells
+    # sadf_bin: sadf               # preferred: gives structured JSON instead of column-parsed text
 
 nodes:
   - id: broker-1
@@ -49,3 +54,12 @@ nodes:
     source: local              # reads directly from local filesystem
     local_paths:               # local paths/globs to read logs from
       - ./live-logs/broker1/kafkaServer-gc.log*
+
+  # Example of a node with SAR collection pointed at a captured offline dump
+  # (handy for demos/tests, or hosts you reach a different way than SSH#1):
+  - id: broker-offline-sar-example
+    role: broker
+    host: 10.0.1.12
+    sar:
+      source: local
+      local_path: ./samples/broker-1-sar.json   # sadf -j dump, or a `sar -A` text dump
