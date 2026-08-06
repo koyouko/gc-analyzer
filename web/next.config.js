@@ -8,8 +8,6 @@ const backend = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 
 const nextConfig = {
   reactStrictMode: true,
-  // Type-checking still runs at build; ESLint is optional for this app.
-  eslint: { ignoreDuringBuilds: true },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
   },
