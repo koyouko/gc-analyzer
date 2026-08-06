@@ -17,6 +17,7 @@ web/*.tsbuildinfo
 # OS
 .DS_Store
 .gstack/
+.worktrees/
 
 # Local env (use .env.example as template)
 .env
