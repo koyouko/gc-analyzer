@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COPY_APPLICATION_SCRIPT = ROOT / "offline/copy-application.sh"
 BUNDLE_BUILDER_SCRIPT = ROOT / "offline/build-bundle.sh"
 INVENTORY_SCRIPT = ROOT / "offline/generate-inventory.py"
+OFFLINE_INSTALLER_SCRIPT = ROOT / "offline/install-offline.sh"
+OFFLINE_VERIFIER_SCRIPT = ROOT / "offline/verify-offline.sh"
 FORBIDDEN_RELEASE_NAMES = {
     ".env",
     ".venv",
@@ -1274,6 +1276,14 @@ def run_inventory(stage):
     )
 
 
+def verify_inventory(stage):
+    return subprocess.run(
+        [str(INVENTORY_SCRIPT), "--verify", str(stage)],
+        capture_output=True,
+        text=True,
+    )
+
+
 def inventory_contents(stage):
     return {
         name: (stage / name).read_text()
@@ -1360,6 +1370,218 @@ def test_inventory_rejects_unsupported_entry_type(tmp_path):
 
     assert result.returncode != 0
     assert "unsupported entry type" in result.stderr
+
+
+def test_inventory_verify_accepts_untouched_stage_without_mutating_manifests(tmp_path):
+    stage = tmp_path / "gc-analyzer-offline"
+    payload = stage / "app/gcanalyzer/app.py"
+    payload.parent.mkdir(parents=True)
+    payload.write_text("print('healthy')\n")
+    payload.chmod(0o640)
+    assert run_inventory(stage).returncode == 0
+    before = {
+        name: ((stage / name).read_bytes(), (stage / name).stat().st_mtime_ns)
+        for name in ("MANIFEST.paths", "MANIFEST.symlinks", "MANIFEST.sha256")
+    }
+
+    result = verify_inventory(stage)
+
+    assert result.returncode == 0, result.stderr
+    after = {
+        name: ((stage / name).read_bytes(), (stage / name).stat().st_mtime_ns)
+        for name in before
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["changed_file", "changed_symlink", "added_path", "missing_path", "mode_change"],
+)
+def test_inventory_verify_rejects_tampered_stage(tmp_path, tamper):
+    stage = tmp_path / "gc-analyzer-offline"
+    payload = stage / "app/payload.txt"
+    target = stage / "node-runtime/lib/node.js"
+    alternate = stage / "node-runtime/lib/node-alt.js"
+    link = stage / "node-runtime/bin/node"
+    payload.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    link.parent.mkdir(parents=True)
+    payload.write_text("original\n")
+    target.write_text("node\n")
+    alternate.write_text("alternate\n")
+    link.symlink_to("../lib/node.js")
+    assert run_inventory(stage).returncode == 0
+
+    if tamper == "changed_file":
+        payload.write_text("changed\n")
+    elif tamper == "changed_symlink":
+        link.unlink()
+        link.symlink_to("../lib/node-alt.js")
+    elif tamper == "added_path":
+        (stage / "app/added.txt").write_text("added\n")
+    elif tamper == "missing_path":
+        payload.unlink()
+    else:
+        payload.chmod(0o600)
+
+    result = verify_inventory(stage)
+
+    assert result.returncode != 0
+    assert "verification failed" in result.stderr.lower()
+
+
+def installer_source():
+    assert OFFLINE_INSTALLER_SCRIPT.is_file(), "offline installer is missing"
+    return OFFLINE_INSTALLER_SCRIPT.read_text()
+
+
+def verifier_source():
+    assert OFFLINE_VERIFIER_SCRIPT.is_file(), "offline verifier is missing"
+    return OFFLINE_VERIFIER_SCRIPT.read_text()
+
+
+def test_offline_installer_has_strict_preflight_and_stage_aware_errors():
+    source = installer_source()
+
+    assert source.startswith("#!/usr/bin/env bash\n")
+    assert "set -euo pipefail" in source
+    assert "trap 'on_error" in source
+    assert '[[ "$EUID" -eq 0 ]]' in source
+    assert '. /etc/os-release' in source
+    assert '[[ "$ID" == "rhel" ]]' in source
+    assert '[[ "$VERSION_ID" == "8.10" ]]' in source
+    assert '[[ "$(uname -m)" == "x86_64" ]]' in source
+    assert "df -Pk" in source
+    assert "MIN_FREE_KB" in source
+    assert '[[ ${1:-} == "--container-test" ]]' in source
+    assert "unexpected argument" in source
+
+
+def test_offline_installer_verifies_bundle_before_any_rpm_mutation():
+    source = installer_source()
+    main = source.split("main() {", 1)[1]
+
+    assert "sha256sum -c MANIFEST.sha256" in source
+    assert "verify_shell_inventory" in source
+    assert main.index("verify_bundle_before_install") < main.index("install_local_rpms")
+    assert main.index("install_local_rpms") < main.index("verify_python_inventory")
+    assert '"$BUNDLE_ROOT/inventory.py" --verify "$BUNDLE_ROOT"' in source
+
+
+def test_offline_installer_all_package_managers_are_local_only():
+    source = installer_source()
+
+    assert "--disablerepo=*" in source
+    assert "--disableplugin=*" in source
+    assert 'rpms=("$BUNDLE_ROOT"/rpms/*.rpm)' in source
+    assert 'dnf "${dnf_options[@]}" install "${rpms[@]}"' in source
+    assert "pip --no-index" in source
+    assert '--find-links="$BUNDLE_ROOT/python-wheels"' in source
+    assert "--only-binary=:all:" in source
+    assert '-r "$APP_ROOT/requirements-offline.txt"' in source
+    assert "pip check" in source
+    assert "pip install --upgrade" not in source
+    assert '"$NODE_ROOT/bin/node" "$npm_cli" ci --offline' in source
+    assert '--cache "$BUNDLE_ROOT/npm-cache"' in source
+    assert "--no-audit" in source
+
+
+def test_offline_installer_preserves_state_and_uses_exact_runtime_paths():
+    source = installer_source()
+
+    for value in [
+        'APP_ROOT="/opt/gc-analyzer"',
+        'STATE_ROOT="/var/lib/gc-analyzer"',
+        'CONFIG_ROOT="/etc/gc-analyzer"',
+        'NODE_ROOT="$APP_ROOT/runtime/node"',
+        'PYTHON_ROOT="$APP_ROOT/.venv"',
+        'GC_USERS_FILE="$CONFIG_ROOT/users.json"',
+        'GC_DB="$STATE_ROOT/gc_history.db"',
+    ]:
+        assert value in source
+    assert "groupadd --system gc-analyzer" in source
+    assert "useradd --system" in source
+    assert "--shell /sbin/nologin" in source
+    assert 'python3.12 -m venv "$PYTHON_ROOT"' in source
+    assert '"$NODE_ROOT/bin/node"' in source
+    assert "migrate_legacy_state" in source
+    assert "ensure_persistent_link" in source
+    assert "generate_session_secret" in source
+    assert "initialize_users_file" in source
+    assert "auth.load_users()" in source
+    for database_pattern in ["*.db", "*.sqlite", "*.sqlite3", "*.db-wal", "*.db-shm"]:
+        assert database_pattern in source
+    assert "eval " not in source
+    for forbidden in [
+        'rm -rf "$APP_ROOT"',
+        'rm -f "$STATE_ROOT',
+        'rm -f "$CONFIG_ROOT',
+        'rm -rf "$CONFIG_ROOT',
+        'rm -rf "$STATE_ROOT',
+    ]:
+        assert forbidden not in source
+
+
+def test_offline_installer_has_systemd_control_and_container_test_branches():
+    source = installer_source()
+
+    assert "gc-analyzer-backend.service" in source
+    assert "gc-analyzer-frontend.service" in source
+    for command in ["start", "stop", "restart", "status", "logs", "verify"]:
+        assert f"{command})" in source
+    assert "systemctl daemon-reload" in source
+    assert "systemctl enable" in source
+    assert "systemctl start" in source
+    assert 'if [[ "$CONTAINER_TEST" == "1" ]]' in source
+    assert '"$BUNDLE_ROOT/verify-offline.sh"' in source
+    assert "systemctl is-active --quiet" in source
+    assert "trap restore_after_verify EXIT" in source
+
+
+def test_offline_verifier_checks_exact_runtimes_and_built_dependencies():
+    source = verifier_source()
+
+    assert "set -euo pipefail" in source
+    assert "sys.version_info[:2] == (3, 12)" in source
+    for module in ["fastapi", "uvicorn", "paramiko", "yaml", "sklearn", "sqlite3"]:
+        assert module in source
+    assert 'EXPECTED_NODE_VERSION="v22.22.3"' in source
+    assert 'EXPECTED_NPM_MAJOR="10"' in source
+    assert '"$NODE_BIN" --version' in source
+    assert '"$NODE_BIN" "$NPM_CLI" ls --offline' in source
+    assert '.next/BUILD_ID' in source
+
+
+def test_offline_verifier_starts_both_services_with_isolated_state_and_checks_http():
+    source = verifier_source()
+
+    assert 'GC_SCHED_ENABLED="0"' in source
+    assert "GC_DB=" in source
+    assert "GC_USERS_FILE=" in source
+    assert "GC_SESSION_SECRET=" in source
+    assert "BACKEND_URL=" in source
+    assert "/api/health" in source
+    assert 'FRONTEND_URL="http://${FRONTEND_HOST}:${FRONTEND_PORT}/"' in source
+    assert 'FRONTEND_API_URL="http://${FRONTEND_HOST}:${FRONTEND_PORT}/api/health"' in source
+    assert 'wait_for_http_200 "$FRONTEND_API_URL"' in source
+    assert "wait_for_http_200" in source
+    assert "assert_port_available" in source
+    assert "kill -TERM" in source
+    assert "kill -KILL" in source
+    assert "trap cleanup EXIT" in source
+    assert "tail -n" in source
+    assert "runuser -u gc-analyzer" in source
+
+
+@pytest.mark.parametrize(
+    "script",
+    [OFFLINE_INSTALLER_SCRIPT, OFFLINE_VERIFIER_SCRIPT, COPY_APPLICATION_SCRIPT, BUNDLE_BUILDER_SCRIPT],
+)
+def test_all_offline_shell_scripts_have_valid_bash_syntax(script):
+    assert script.is_file(), f"offline shell script is missing: {script.name}"
+    result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_builder_writes_complete_inventory_before_clean_room():

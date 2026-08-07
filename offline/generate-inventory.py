@@ -95,6 +95,10 @@ def write_text(path, lines):
             output.write("\n")
 
 
+def render_text(lines):
+    return "".join(f"{line}\n" for line in lines)
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -135,13 +139,59 @@ def generate(root_argument):
     )
 
 
+def verify(root_argument):
+    root = Path(root_argument)
+    if not root.is_dir() or root.is_symlink():
+        fail(f"stage must be a real directory: {root}")
+    root = root.resolve(strict=True)
+
+    for manifest_name in MANIFEST_NAMES:
+        manifest = root / manifest_name
+        if not manifest.is_file() or manifest.is_symlink():
+            fail(f"inventory verification failed: missing regular {manifest_name}")
+
+    entries, symlinks = scan_entries(root)
+    expected_paths = render_text(
+        f"{entry_type}\t{mode}\t{path}" for path, entry_type, mode in entries
+    )
+    expected_symlinks = render_text(
+        f"{path}\t{target}" for path, target in symlinks
+    )
+
+    regular_files = [path for path, entry_type, _ in entries if entry_type == "file"]
+    regular_files.extend([MANIFEST_PATHS, MANIFEST_SYMLINKS])
+    regular_files.sort(key=os.fsencode)
+    expected_sha256 = render_text(
+        f"{sha256_file(root / path)}  {path}" for path in regular_files
+    )
+
+    expected_manifests = {
+        MANIFEST_PATHS: expected_paths,
+        MANIFEST_SYMLINKS: expected_symlinks,
+        MANIFEST_SHA256: expected_sha256,
+    }
+    for manifest_name, expected in expected_manifests.items():
+        actual = (root / manifest_name).read_text(encoding="utf-8")
+        if actual != expected:
+            fail(f"inventory verification failed: {manifest_name} does not match payload")
+
+
 def main():
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} STAGE_DIRECTORY", file=sys.stderr)
+    if len(sys.argv) == 2:
+        operation = generate
+        root_argument = sys.argv[1]
+    elif len(sys.argv) == 3 and sys.argv[1] == "--verify":
+        operation = verify
+        root_argument = sys.argv[2]
+    else:
+        print(
+            f"usage: {sys.argv[0]} [--verify] STAGE_DIRECTORY",
+            file=sys.stderr,
+        )
         return 2
     try:
-        generate(sys.argv[1])
-    except (OSError, ValueError) as error:
+        operation(root_argument)
+    except (OSError, UnicodeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     return 0
