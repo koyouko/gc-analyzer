@@ -1,4 +1,5 @@
 import subprocess
+import stat
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -55,6 +56,38 @@ def run_git(repository, *arguments):
         capture_output=True,
         text=True,
     )
+
+
+def commit_fixture_repository(repository):
+    run_git(repository, "init", "--quiet")
+    run_git(repository, "add", ".")
+    run_git(
+        repository,
+        "-c",
+        "user.name=GC Analyzer Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "fixture",
+    )
+
+
+def git_head_file_bytes(repository, tracked_path):
+    return subprocess.run(
+        ["git", "-C", str(repository), "show", f"HEAD:{tracked_path}"],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def git_head_file_mode(repository, tracked_path):
+    tree_entry = run_git(
+        repository, "ls-tree", "HEAD", "--", tracked_path
+    ).stdout.strip()
+    assert tree_entry, f"HEAD has no tree entry for {tracked_path}"
+    return tree_entry.split(maxsplit=1)[0]
 
 
 @pytest.mark.parametrize(
@@ -157,6 +190,15 @@ def test_copy_application_stages_exact_tracked_allowlist_without_ignored_cache(
         assert actual == expected
         assert ignored_cache.relative_to(ROOT).as_posix() not in actual
         assert not any("__pycache__" in PurePosixPath(path).parts for path in actual)
+        for tracked_path in expected:
+            staged_path = destination / tracked_path
+            assert not staged_path.is_symlink()
+            assert staged_path.read_bytes() == git_head_file_bytes(ROOT, tracked_path)
+            head_mode = git_head_file_mode(ROOT, tracked_path)
+            assert head_mode in {"100644", "100755"}
+            assert bool(staged_path.stat().st_mode & stat.S_IXUSR) == (
+                head_mode == "100755"
+            )
     finally:
         ignored_cache.unlink(missing_ok=True)
         if not cache_directory_existed:
@@ -190,19 +232,7 @@ def test_copy_application_rejects_forbidden_tracked_path_before_copying(tmp_path
     (source / "offline" / "app-files.txt").write_text("payload\n")
     (source / "payload" / "safe.txt").write_text("safe\n")
     (source / "payload" / "__pycache__" / "unsafe.pyc").write_bytes(b"unsafe")
-    run_git(source, "init", "--quiet")
-    run_git(source, "add", "offline/app-files.txt", "payload")
-    run_git(
-        source,
-        "-c",
-        "user.name=GC Analyzer Tests",
-        "-c",
-        "user.email=tests@example.invalid",
-        "commit",
-        "--quiet",
-        "-m",
-        "fixture",
-    )
+    commit_fixture_repository(source)
 
     result = subprocess.run(
         [str(COPY_APPLICATION_SCRIPT), str(source), str(destination)],
@@ -212,4 +242,51 @@ def test_copy_application_rejects_forbidden_tracked_path_before_copying(tmp_path
 
     assert result.returncode != 0
     assert "forbidden tracked path" in result.stderr
+    assert not destination.exists()
+
+
+def test_copy_application_rejects_worktree_manifest_drift(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "application"
+    (source / "offline").mkdir(parents=True)
+    (source / "payload").mkdir()
+    (source / "alternate").mkdir()
+    manifest = source / "offline" / "app-files.txt"
+    manifest.write_text("payload\n")
+    (source / "payload" / "from-head.txt").write_text("HEAD payload\n")
+    (source / "alternate" / "worktree-only-choice.txt").write_text("alternate\n")
+    commit_fixture_repository(source)
+    manifest.write_text("alternate\n")
+
+    result = subprocess.run(
+        [str(COPY_APPLICATION_SCRIPT), str(source), str(destination)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "allowlist differs from HEAD" in result.stderr
+    assert not destination.exists()
+
+
+def test_copy_application_rejects_committed_external_symlink_before_copying(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "application"
+    external_target = tmp_path / "outside-release.txt"
+    external_target.write_text("must not be packaged\n")
+    (source / "offline").mkdir(parents=True)
+    (source / "payload").mkdir()
+    (source / "offline" / "app-files.txt").write_text("payload\n")
+    (source / "payload" / "safe.txt").write_text("safe\n")
+    (source / "payload" / "external-link").symlink_to(external_target)
+    commit_fixture_repository(source)
+
+    result = subprocess.run(
+        [str(COPY_APPLICATION_SCRIPT), str(source), str(destination)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "unsupported Git mode 120000" in result.stderr
     assert not destination.exists()
