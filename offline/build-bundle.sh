@@ -7,6 +7,7 @@ CONTAINER_PLATFORM="linux/amd64"
 UBI_IMAGE="registry.access.redhat.com/ubi8/ubi:8.10"
 NODE_VERSION="22.22.3"
 NPM_MAJOR_VERSION="10"
+NODE_TEST_IMAGE="node:22.22.3-bookworm-slim"
 NODE_ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
 ARCHIVE_NAME="gc-analyzer-rhel8.10-x86_64-offline.tar.gz"
 
@@ -15,6 +16,7 @@ SOURCE_ROOT=$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)
 WORK_ROOT=${GC_ANALYZER_BUNDLE_WORK_ROOT:-"$SCRIPT_DIR/work"}
 DIST_ROOT=${GC_ANALYZER_BUNDLE_DIST_ROOT:-"$SCRIPT_DIR/dist"}
 STAGE_DIR=${GC_ANALYZER_BUNDLE_STAGE_DIR:-"$WORK_ROOT/$ARCHIVE_NAME.stage"}
+SOURCE_TEST_DIR=${GC_ANALYZER_SOURCE_TEST_DIR:-"$WORK_ROOT/source-test"}
 NPM_WORK_DIR="$WORK_ROOT/npm-work"
 NODE_DOWNLOAD_DIR="$WORK_ROOT/node-download"
 RPM_ROOTS_FILE="$SOURCE_ROOT/offline/rhel8-packages.txt"
@@ -81,7 +83,6 @@ preflight() {
     require_command curl
     require_command docker
     require_command git
-    require_command npm
     require_command python3
     require_command tar
 
@@ -115,17 +116,39 @@ test_source() {
         python_bin="$SOURCE_ROOT/.venv/bin/python"
     fi
 
+    require_descendant "$SOURCE_TEST_DIR" "$WORK_ROOT" "source test"
+    mkdir -p "$WORK_ROOT"
+    rm -rf "$SOURCE_TEST_DIR"
+    mkdir -p "$SOURCE_TEST_DIR"
+
     (
+        cleanup_source_test() {
+            local status=$?
+            trap - EXIT
+            rm -rf -- "$SOURCE_TEST_DIR"
+            exit "$status"
+        }
+        trap cleanup_source_test EXIT
+
         cd "$SOURCE_ROOT"
         "$python_bin" -m pytest -q
-        "$python_bin" -m compileall -q frontend gcanalyzer seed
-    )
-    (
-        cd "$SOURCE_ROOT/web"
-        npm ci
-        npm run typecheck
-        npm run audit:prod
-        npm run build
+        "$python_bin" -m compileall -q gcanalyzer seed tests
+
+        git -C "$SOURCE_ROOT" archive --format=tar HEAD -- web \
+            | tar -xf - -C "$SOURCE_TEST_DIR"
+
+        docker run --rm --platform "$CONTAINER_PLATFORM" \
+            -v "$SOURCE_TEST_DIR/web:/workspace" \
+            -w /workspace \
+            "$NODE_TEST_IMAGE" \
+            sh -eu -c '
+                test "$(node --version)" = "v$1"
+                case "$(npm --version)" in "$2".*) ;; *) exit 1 ;; esac
+                npm ci
+                npm run typecheck
+                npm run audit:prod
+                npm run build
+            ' _ "$NODE_VERSION" "$NPM_MAJOR_VERSION"
     )
 }
 

@@ -299,6 +299,13 @@ def builder_source():
     return BUNDLE_BUILDER_SCRIPT.read_text()
 
 
+def builder_function_body(function_name, next_function_name):
+    source = builder_source()
+    return source.split(f"{function_name}() {{", 1)[1].split(
+        f"\n{next_function_name}() {{", 1
+    )[0]
+
+
 def test_bundle_builder_has_required_shell_contract_and_functions():
     source = builder_source()
 
@@ -362,6 +369,124 @@ def test_bundle_builder_runs_source_gates_and_populates_linux_npm_cache():
     assert "package-lock.json" in source
     assert "/bundle/npm-cache" in source
     assert "web/node_modules" not in source
+
+
+def test_source_gate_uses_exact_linux_node_and_committed_isolated_web_copy():
+    source = builder_source()
+    body = builder_function_body("test_source", "prepare_stage")
+
+    assert 'NODE_TEST_IMAGE="node:22.22.3-bookworm-slim"' in source
+    assert 'git -C "$SOURCE_ROOT" archive --format=tar HEAD -- web' in body
+    assert '"$SOURCE_TEST_DIR/web:/workspace"' in body
+    assert 'docker run --rm --platform "$CONTAINER_PLATFORM"' in body
+    assert '"$NODE_TEST_IMAGE"' in body
+    assert 'test "$(node --version)" = "v$1"' in body
+    assert 'case "$(npm --version)" in "$2".*)' in body
+    assert "npm ci" in body
+    assert "npm run typecheck" in body
+    assert "npm run audit:prod" in body
+    assert "npm run build" in body
+    assert 'cd "$SOURCE_ROOT/web"' not in body
+    assert '"$SOURCE_ROOT/web:/workspace"' not in body
+
+
+def test_source_gate_compileall_includes_backend_seed_and_tests():
+    body = builder_function_body("test_source", "prepare_stage")
+
+    assert 'compileall -q gcanalyzer seed tests' in body
+    assert "require_command npm" not in builder_function_body("preflight", "test_source")
+
+
+def create_source_gate_fixture(tmp_path):
+    source = tmp_path / "source"
+    (source / "web").mkdir(parents=True)
+    (source / "gcanalyzer").mkdir()
+    (source / "seed").mkdir()
+    (source / "tests").mkdir()
+    (source / ".gitignore").write_text(".venv/\nweb/node_modules/\n")
+    (source / "web" / "package.json").write_text('{"scripts": {}}\n')
+    (source / "web" / "package-lock.json").write_text(
+        '{"name": "fixture", "lockfileVersion": 3, "packages": {}}\n'
+    )
+    head_marker = source / "web" / "from-head.txt"
+    head_marker.write_text("committed\n")
+    commit_fixture_repository(source)
+    head_marker.write_text("working-tree\n")
+
+    python_log = tmp_path / "python.log"
+    python_stub = source / ".venv" / "bin" / "python"
+    python_stub.parent.mkdir(parents=True)
+    python_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$PYTHON_LOG\"\n"
+    )
+    python_stub.chmod(0o755)
+
+    repository_cache = source / "web" / "node_modules"
+    repository_cache.mkdir()
+    repository_sentinel = repository_cache / "must-survive"
+    repository_sentinel.write_text("untouched\n")
+    return source, python_log, repository_sentinel
+
+
+def test_source_gate_behavior_uses_head_copy_without_touching_repository(tmp_path):
+    source, python_log, repository_sentinel = create_source_gate_fixture(tmp_path)
+    work_root = tmp_path / "work"
+    source_test_dir = work_root / "source-test"
+    docker_log = tmp_path / "docker.log"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+SOURCE_ROOT={shlex.quote(str(source))}
+WORK_ROOT={shlex.quote(str(work_root))}
+SOURCE_TEST_DIR={shlex.quote(str(source_test_dir))}
+export PYTHON_LOG={shlex.quote(str(python_log))}
+docker() {{
+    printf '%s\\n' "$@" > {shlex.quote(str(docker_log))}
+    printf 'exported=%s\\n' "$(cat "$SOURCE_TEST_DIR/web/from-head.txt")" \
+        >> {shlex.quote(str(docker_log))}
+}}
+npm() {{ return 99; }}
+test_source
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert repository_sentinel.read_text() == "untouched\n"
+    assert not source_test_dir.exists()
+    docker_arguments = docker_log.read_text()
+    assert "linux/amd64" in docker_arguments
+    assert "node:22.22.3-bookworm-slim" in docker_arguments
+    assert f"{source_test_dir}/web:/workspace" in docker_arguments
+    assert f"{source}/web:/workspace" not in docker_arguments
+    assert "exported=committed" in docker_arguments
+    python_commands = python_log.read_text()
+    assert "-m pytest -q" in python_commands
+    assert "-m compileall -q gcanalyzer seed tests" in python_commands
+
+
+def test_source_gate_cleans_disposable_copy_when_container_fails(tmp_path):
+    source, _, repository_sentinel = create_source_gate_fixture(tmp_path)
+    work_root = tmp_path / "work"
+    source_test_dir = work_root / "source-test"
+    docker_log = tmp_path / "docker-failed"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+SOURCE_ROOT={shlex.quote(str(source))}
+WORK_ROOT={shlex.quote(str(work_root))}
+SOURCE_TEST_DIR={shlex.quote(str(source_test_dir))}
+export PYTHON_LOG={shlex.quote(str(tmp_path / 'python-failed.log'))}
+docker() {{ touch {shlex.quote(str(docker_log))}; return 37; }}
+npm() {{ return 99; }}
+test_source
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 37
+    assert docker_log.is_file()
+    assert not source_test_dir.exists()
+    assert repository_sentinel.read_text() == "untouched\n"
 
 
 def test_bundle_builder_uses_approved_copy_manifest_and_clean_room_steps():
