@@ -1,5 +1,6 @@
 import subprocess
 import stat
+import shlex
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 COPY_APPLICATION_SCRIPT = ROOT / "offline/copy-application.sh"
+BUNDLE_BUILDER_SCRIPT = ROOT / "offline/build-bundle.sh"
 FORBIDDEN_RELEASE_NAMES = {
     ".env",
     ".venv",
@@ -290,3 +292,185 @@ def test_copy_application_rejects_committed_external_symlink_before_copying(tmp_
     assert result.returncode != 0
     assert "unsupported Git mode 120000" in result.stderr
     assert not destination.exists()
+
+
+def builder_source():
+    assert BUNDLE_BUILDER_SCRIPT.is_file(), "offline bundle builder is missing"
+    return BUNDLE_BUILDER_SCRIPT.read_text()
+
+
+def test_bundle_builder_has_required_shell_contract_and_functions():
+    source = builder_source()
+
+    assert source.startswith("#!/usr/bin/env bash\n")
+    assert "set -euo pipefail" in source
+    for function_name in [
+        "preflight",
+        "test_source",
+        "prepare_stage",
+        "download_rpms",
+        "download_node_runtime",
+        "download_python_wheels",
+        "populate_npm_cache",
+        "copy_application",
+        "write_version_manifest",
+        "write_checksums",
+        "run_clean_room",
+        "create_archive",
+    ]:
+        assert f"{function_name}()" in source
+    assert '[[ "${BASH_SOURCE[0]}" == "$0" ]]' in source
+
+
+def test_bundle_builder_targets_exact_rhel_platform_and_resolvers():
+    source = builder_source()
+
+    assert 'TARGET_RHEL_VERSION="8.10"' in source
+    assert 'TARGET_ARCH="x86_64"' in source
+    assert 'CONTAINER_PLATFORM="linux/amd64"' in source
+    assert 'UBI_IMAGE="registry.access.redhat.com/ubi8/ubi:8.10"' in source
+    assert 'docker run --rm --platform "$CONTAINER_PLATFORM"' in source
+    assert 'dnf download --resolve --alldeps' in source
+    assert '"$RPM_ROOTS_FILE"' in source
+    assert 'python3.12 -m pip download --only-binary=:all:' in source
+    assert '--dest /bundle/python-wheels' in source
+    assert '-r /src/requirements-offline.txt' in source
+
+
+def test_bundle_builder_verifies_exact_official_node_runtime():
+    source = builder_source()
+
+    assert 'NODE_VERSION="22.22.3"' in source
+    assert 'NODE_ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"' in source
+    assert 'https://nodejs.org/dist/v${NODE_VERSION}' in source
+    assert "SHASUMS256.txt" in source
+    assert "sha256sum --check" in source
+    assert 'node --version' in source
+    assert 'npm --version' in source
+
+
+def test_bundle_builder_runs_source_gates_and_populates_linux_npm_cache():
+    source = builder_source()
+
+    assert "pytest" in source
+    assert "compileall" in source
+    assert "npm ci" in source
+    assert "npm run typecheck" in source
+    assert "npm run audit:prod" in source
+    assert "npm run build" in source
+    assert "npm audit --omit=dev --audit-level=high" in source
+    assert "package-lock.json" in source
+    assert "/bundle/npm-cache" in source
+    assert "web/node_modules" not in source
+
+
+def test_bundle_builder_uses_approved_copy_manifest_and_clean_room_steps():
+    source = builder_source()
+
+    assert '"$COPY_APPLICATION_SCRIPT" "$SOURCE_ROOT" "$STAGE_DIR/app"' in source
+    assert '"$INSTALLER_SCRIPT"' in source
+    assert '"$VERIFIER_SCRIPT"' in source
+    assert "VERSIONS.txt" in source
+    assert "MANIFEST.sha256" in source
+    assert "sha256sum" in source
+    assert '"$CLEAN_ROOM_SCRIPT" "$STAGE_DIR"' in source
+    assert 'ARCHIVE_NAME="gc-analyzer-rhel8.10-x86_64-offline.tar.gz"' in source
+    assert '"$ARCHIVE_PATH.sha256"' in source
+
+
+def test_bundle_builder_main_orders_clean_room_strictly_before_archive():
+    source = builder_source()
+    main_body = source.split("main() {", 1)[1].split("\n}", 1)[0]
+
+    expected_order = [
+        "preflight",
+        "test_source",
+        "prepare_stage",
+        "download_rpms",
+        "download_node_runtime",
+        "download_python_wheels",
+        "populate_npm_cache",
+        "copy_application",
+        "write_version_manifest",
+        "write_checksums",
+        "run_clean_room",
+        "create_archive",
+    ]
+    calls = [line.strip() for line in main_body.splitlines() if line.strip()]
+    assert calls == expected_order
+
+
+def test_bundle_builder_does_not_archive_when_clean_room_fails(tmp_path):
+    marker = tmp_path / "archive-created"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+preflight() {{ :; }}
+test_source() {{ :; }}
+prepare_stage() {{ :; }}
+download_rpms() {{ :; }}
+download_node_runtime() {{ :; }}
+download_python_wheels() {{ :; }}
+populate_npm_cache() {{ :; }}
+copy_application() {{ :; }}
+write_version_manifest() {{ :; }}
+write_checksums() {{ :; }}
+run_clean_room() {{ return 42; }}
+create_archive() {{ touch {marker!s}; }}
+main
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 42
+    assert not marker.exists()
+
+
+def test_bundle_builder_places_ubi_image_before_container_command():
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+docker() {{ printf '%s\n' "$@"; }}
+run_ubi -v /host:/container -- bash -c 'printf ignored'
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "run",
+        "--rm",
+        "--platform",
+        "linux/amd64",
+        "-v",
+        "/host:/container",
+        "registry.access.redhat.com/ubi8/ubi:8.10",
+        "bash",
+        "-c",
+        "printf ignored",
+    ]
+
+
+def test_bundle_builder_rejects_lexical_path_escape(tmp_path):
+    work_root = tmp_path / "work"
+    escaped_stage = work_root / ".." / "outside"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+require_descendant \
+    {shlex.quote(str(escaped_stage))} \
+    {shlex.quote(str(work_root))} \
+    stage
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "stage must be beneath" in result.stderr
+
+
+def test_bundle_builder_has_valid_bash_syntax():
+    result = subprocess.run(
+        ["bash", "-n", str(BUNDLE_BUILDER_SCRIPT)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
