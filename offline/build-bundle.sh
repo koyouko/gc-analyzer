@@ -83,6 +83,19 @@ canonical_path() {
     python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
+strip_trailing_separators() {
+    local path=$1
+    while [[ "$path" != "/" && "$path" == */ ]]; do
+        path=${path%/}
+    done
+    printf '%s' "$path"
+}
+
+normalize_managed_output_roots() {
+    WORK_ROOT=$(strip_trailing_separators "$WORK_ROOT")
+    DIST_ROOT=$(strip_trailing_separators "$DIST_ROOT")
+}
+
 validate_managed_root() {
     local root=$1
     local label=$2
@@ -106,6 +119,7 @@ validate_managed_descendant() {
 validate_managed_output_paths() {
     local work_canonical
     local dist_canonical
+    normalize_managed_output_roots
     validate_managed_root "$WORK_ROOT" "WORK_ROOT"
     validate_managed_root "$DIST_ROOT" "DIST_ROOT"
     work_canonical=$(canonical_path "$WORK_ROOT")

@@ -903,6 +903,72 @@ repair_build_ownership
     assert not dist_root.exists()
 
 
+@pytest.mark.parametrize(
+    ("root_name", "trailing_slashes"),
+    [
+        ("work", "/"),
+        ("work", "///"),
+        ("dist", "/"),
+        ("dist", "///"),
+    ],
+)
+def test_managed_output_roots_reject_symlink_aliases_with_trailing_slashes(
+    tmp_path, root_name, trailing_slashes
+):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    symlink_target = tmp_path / f"{root_name}-target"
+    symlink_target.mkdir()
+    symlink_alias = tmp_path / f"{root_name}-alias"
+    symlink_alias.symlink_to(symlink_target, target_is_directory=True)
+    if root_name == "work":
+        work_root = f"{symlink_alias}{trailing_slashes}"
+    else:
+        dist_root = f"{symlink_alias}{trailing_slashes}"
+    docker_marker = tmp_path / "docker-called"
+    removal_marker = tmp_path / "removal-called"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{builder_root_assignments(work_root, dist_root)}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ touch {shlex.quote(str(docker_marker))}; }}
+rm() {{ touch {shlex.quote(str(removal_marker))}; command rm "$@"; }}
+repair_build_ownership
+prepare_stage
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert not (symlink_target / ".gc-analyzer-bundle-root").exists()
+    assert not docker_marker.exists()
+    assert not removal_marker.exists()
+
+
+def test_managed_output_roots_use_normalized_paths_for_marker_and_chown(tmp_path):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    docker_log = tmp_path / "docker.log"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{builder_root_assignments(f'{work_root}///', f'{dist_root}//')}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ printf '%s\n' "$@" > {shlex.quote(str(docker_log))}; }}
+repair_build_ownership
+printf '%s\n%s\n' "$WORK_ROOT" "$DIST_ROOT"
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [str(work_root), str(dist_root)]
+    assert (work_root / ".gc-analyzer-bundle-root").is_file()
+    assert (dist_root / ".gc-analyzer-bundle-root").is_file()
+    docker_arguments = docker_log.read_text().splitlines()
+    assert f"{work_root}:/work" in docker_arguments
+    assert f"{dist_root}:/dist" in docker_arguments
+
+
 def test_managed_output_roots_initialize_empty_roots_and_reuse_marker(tmp_path):
     work_root = tmp_path / "work"
     dist_root = tmp_path / "dist"
