@@ -111,9 +111,14 @@ verify_manifest_records() {
 }
 
 verify_shell_inventory() {
-    local temporary path relative entry_type mode target
+    local temporary path relative entry_type mode target canonical_root resolved_target
     temporary=$(mktemp -d)
     trap 'rm -rf -- "$temporary"' RETURN
+    canonical_root=$(readlink -f -- "$BUNDLE_ROOT") \
+        || fail "unable to resolve canonical bundle root: $BUNDLE_ROOT"
+    [[ -d "$canonical_root" && ! -L "$canonical_root" ]] \
+        || fail "bundle root must be a real directory: $BUNDLE_ROOT"
+    canonical_root=${canonical_root%/}
 
     while IFS= read -r -d '' path; do
         relative=${path#./}
@@ -122,8 +127,19 @@ verify_shell_inventory() {
             entry_type="symlink"
             mode="0777"
             target=$(readlink -- "$path")
+            [[ -n "$target" && "$target" != /* ]] \
+                || fail "payload symlink has an absolute or empty target: $relative"
             [[ "$target" != *$'\n'* && "$target" != *$'\r'* && "$target" != *$'\t'* ]] \
                 || fail "payload contains an ambiguous symlink target"
+            if ! resolved_target=$(readlink -f -- "$path"); then
+                fail "payload symlink is broken or cyclic: $relative -> $target"
+            fi
+            [[ -e "$resolved_target" ]] \
+                || fail "payload symlink is broken: $relative -> $target"
+            case "$resolved_target" in
+                "$canonical_root"/*) ;;
+                *) fail "payload symlink escapes bundle root: $relative -> $target" ;;
+            esac
             printf '%s\t%s\n' "$relative" "$target" \
                 >> "$temporary/MANIFEST.symlinks.unsorted"
         elif [[ -f "$path" ]]; then
@@ -331,8 +347,14 @@ prepare_persistent_state() {
     ensure_persistent_link "$APP_ROOT/clusters" "$CLUSTERS_ROOT"
     ensure_persistent_link "$APP_ROOT/config.json" "$CONFIG_ROOT/config.json"
 
-    chown "$SERVICE_USER:$SERVICE_GROUP" "$STATE_ROOT" "$CLUSTERS_ROOT"
-    chmod 0750 "$STATE_ROOT" "$CONFIG_ROOT" "$CLUSTERS_ROOT"
+    chown root:"$SERVICE_GROUP" "$CONFIG_ROOT"
+    chmod 0750 "$CONFIG_ROOT"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$STATE_ROOT"
+    chmod 0750 "$STATE_ROOT"
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$CLUSTERS_ROOT"
+    find "$CLUSTERS_ROOT" -type d -exec chmod 0750 {} +
+    find "$CLUSTERS_ROOT" -type f -exec chmod 0640 {} +
+    chmod 0750 "$CLUSTERS_ROOT"
     chown root:"$SERVICE_GROUP" "$ENV_FILE" "$SESSION_SECRET_FILE" \
         "$CONFIG_ROOT/config.json"
     chmod 0640 "$ENV_FILE" "$SESSION_SECRET_FILE" "$CONFIG_ROOT/config.json"
@@ -373,14 +395,17 @@ install_frontend() {
     [[ "$("$NODE_ROOT/bin/node" --version)" == "v22.22.3" ]] \
         || fail "bundled Node version is not v22.22.3"
     chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_ROOT/web"
-    runuser -u gc-analyzer -- env \
-        HOME="$STATE_ROOT" PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
-        "$NODE_ROOT/bin/node" "$npm_cli" ci --offline \
-        --cache "$BUNDLE_ROOT/npm-cache" --no-audit
-    runuser -u gc-analyzer -- env \
-        HOME="$STATE_ROOT" PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
-        BACKEND_URL=http://127.0.0.1:8083 \
-        "$NODE_ROOT/bin/node" "$npm_cli" run build
+    (
+        cd "$APP_ROOT/web"
+        runuser -u gc-analyzer -- env \
+            HOME="$STATE_ROOT" PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
+            "$NODE_ROOT/bin/node" "$npm_cli" ci --offline \
+            --cache "$BUNDLE_ROOT/npm-cache" --no-audit
+        runuser -u gc-analyzer -- env \
+            HOME="$STATE_ROOT" PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
+            BACKEND_URL=http://127.0.0.1:8083 \
+            "$NODE_ROOT/bin/node" "$npm_cli" run build
+    )
     [[ -s "$APP_ROOT/web/.next/BUILD_ID" ]] \
         || fail "frontend production build did not create .next/BUILD_ID"
 }
@@ -524,4 +549,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

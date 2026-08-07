@@ -1,6 +1,7 @@
 import hashlib
 import itertools
 import os
+import shutil
 import subprocess
 import stat
 import shlex
@@ -1441,6 +1442,129 @@ def verifier_source():
     return OFFLINE_VERIFIER_SCRIPT.read_text()
 
 
+def installer_function_body(function_name, next_function_name):
+    source = installer_source()
+    return source.split(f"{function_name}() {{", 1)[1].split(
+        f"\n{next_function_name}() {{", 1
+    )[0]
+
+
+def rewrite_bundle_manifests(stage):
+    symlinks = []
+    for path in sorted(stage.rglob("*"), key=lambda item: os.fsencode(item.relative_to(stage))):
+        if path.is_symlink():
+            symlinks.append(
+                f"{path.relative_to(stage).as_posix()}\t{os.readlink(path)}"
+            )
+    (stage / "MANIFEST.symlinks").write_text(
+        "".join(f"{line}\n" for line in symlinks)
+    )
+
+    regular_paths = []
+    for line in (stage / "MANIFEST.paths").read_text().splitlines():
+        entry_type, _mode, relative = line.split("\t")
+        if entry_type == "file":
+            regular_paths.append(relative)
+    regular_paths.extend(["MANIFEST.paths", "MANIFEST.symlinks"])
+    regular_paths.sort(key=os.fsencode)
+    (stage / "MANIFEST.sha256").write_text(
+        "".join(
+            f"{hashlib.sha256((stage / relative).read_bytes()).hexdigest()}  {relative}\n"
+            for relative in regular_paths
+        )
+    )
+
+
+def create_installer_bundle_fixture(tmp_path, symlink_case):
+    stage = tmp_path / "gc-analyzer-offline"
+    for directory in [
+        "app",
+        "rpms",
+        "node-runtime/bin",
+        "node-runtime/lib",
+        "python-wheels",
+        "npm-cache",
+    ]:
+        (stage / directory).mkdir(parents=True, exist_ok=True)
+    for relative in [
+        "app/payload.txt",
+        "rpms/package.rpm",
+        "python-wheels/package.whl",
+        "npm-cache/cache-entry",
+        "inventory.py",
+        "verify-offline.sh",
+        "node-runtime/lib/npm.js",
+        "node-runtime/lib/npm-alt.js",
+    ]:
+        (stage / relative).write_text(f"fixture: {relative}\n")
+
+    primary = stage / "node-runtime/bin/npm"
+    primary.symlink_to("../lib/npm.js")
+    chain = None
+    if symlink_case in {"chain_escape", "loop"}:
+        primary.unlink()
+        primary.symlink_to("npm-chain")
+        chain = stage / "node-runtime/bin/npm-chain"
+        chain.symlink_to("../lib/npm.js")
+
+    assert run_inventory(stage).returncode == 0
+    outside = tmp_path / "outside-target"
+    outside.write_text("outside\n")
+    if symlink_case == "external_escape":
+        primary.unlink()
+        primary.symlink_to(os.path.relpath(outside, primary.parent))
+    elif symlink_case == "absolute":
+        primary.unlink()
+        primary.symlink_to(outside)
+    elif symlink_case == "broken":
+        primary.unlink()
+        primary.symlink_to("../lib/missing.js")
+    elif symlink_case == "literal_mismatch":
+        primary.unlink()
+        primary.symlink_to("../lib/npm-alt.js")
+    elif symlink_case == "chain_escape":
+        chain.unlink()
+        chain.symlink_to(os.path.relpath(outside, chain.parent))
+    elif symlink_case == "loop":
+        chain.unlink()
+        chain.symlink_to("npm")
+    if symlink_case not in {"safe_internal", "literal_mismatch"}:
+        rewrite_bundle_manifests(stage)
+    return stage
+
+
+def run_shell_bundle_verification(tmp_path, stage):
+    marker = tmp_path / "dnf-called"
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, command in [
+        ("readlink", shutil.which("greadlink") or shutil.which("readlink")),
+        ("stat", shutil.which("gstat") or shutil.which("stat")),
+    ]:
+        assert command, f"required test command is missing: {name}"
+        wrapper = tools / name
+        wrapper.write_text(
+            f'#!/usr/bin/env bash\nexec {shlex.quote(command)} "$@"\n'
+        )
+        wrapper.chmod(0o755)
+    command = f"""
+source {shlex.quote(str(OFFLINE_INSTALLER_SCRIPT))}
+BUNDLE_ROOT={shlex.quote(str(stage))}
+install_local_rpms() {{ touch {shlex.quote(str(marker))}; }}
+verify_bundle_before_install
+install_local_rpms
+"""
+    environment = os.environ.copy()
+    environment["PATH"] = f"{tools}:{environment['PATH']}"
+    result = subprocess.run(
+        ["bash", "-c", command],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    return result, marker
+
+
 def test_offline_installer_has_strict_preflight_and_stage_aware_errors():
     source = installer_source()
 
@@ -1487,6 +1611,53 @@ def test_offline_installer_all_package_managers_are_local_only():
     assert "--no-audit" in source
 
 
+def test_offline_frontend_commands_run_from_installed_web_directory_only(tmp_path):
+    source = installer_source()
+    body = installer_function_body("install_frontend", "apply_permissions")
+
+    assert 'cd "$APP_ROOT/web"' in body
+    assert body.index('cd "$APP_ROOT/web"') < body.index('"$npm_cli" ci --offline')
+    assert body.index('cd "$APP_ROOT/web"') < body.index('"$npm_cli" run build')
+    assert 'cd "$BUNDLE_ROOT"' not in body
+    assert '--prefix "$BUNDLE_ROOT' not in body
+
+    app_root = tmp_path / "opt/gc-analyzer"
+    web_root = app_root / "web"
+    node_root = app_root / "runtime/node"
+    bundle_root = tmp_path / "bundle"
+    web_root.mkdir(parents=True)
+    (node_root / "bin").mkdir(parents=True)
+    (node_root / "lib/node_modules/npm/bin").mkdir(parents=True)
+    (bundle_root / "npm-cache").mkdir(parents=True)
+    node = node_root / "bin/node"
+    node.write_text('#!/usr/bin/env bash\nprintf "v22.22.3\\n"\n')
+    node.chmod(0o755)
+    (node_root / "lib/node_modules/npm/bin/npm-cli.js").write_text("fixture\n")
+    cwd_log = tmp_path / "npm-cwds"
+    command = f"""
+source {shlex.quote(str(OFFLINE_INSTALLER_SCRIPT))}
+APP_ROOT={shlex.quote(str(app_root))}
+NODE_ROOT={shlex.quote(str(node_root))}
+BUNDLE_ROOT={shlex.quote(str(bundle_root))}
+STATE_ROOT={shlex.quote(str(tmp_path / 'state'))}
+SERVICE_USER=gc-analyzer
+runuser() {{
+    printf '%s\n' "$PWD" >> {shlex.quote(str(cwd_log))}
+    case " $* " in
+        *' run build '*) mkdir -p "$APP_ROOT/web/.next"; printf id > "$APP_ROOT/web/.next/BUILD_ID" ;;
+    esac
+}}
+chown() {{ :; }}
+install_frontend
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert cwd_log.read_text().splitlines() == [str(web_root), str(web_root)]
+    assert str(bundle_root) not in cwd_log.read_text()
+
+
 def test_offline_installer_preserves_state_and_uses_exact_runtime_paths():
     source = installer_source()
 
@@ -1521,6 +1692,54 @@ def test_offline_installer_preserves_state_and_uses_exact_runtime_paths():
         'rm -rf "$STATE_ROOT',
     ]:
         assert forbidden not in source
+
+
+def test_offline_config_permissions_allow_service_traversal_without_broad_writes():
+    source = installer_source()
+    state_body = installer_function_body(
+        "prepare_persistent_state", "install_python_environment"
+    )
+    main = source.split("main() {", 1)[1]
+
+    assert 'chown root:"$SERVICE_GROUP" "$CONFIG_ROOT"' in state_body
+    assert 'chmod 0750 "$CONFIG_ROOT"' in state_body
+    assert 'chown -R "$SERVICE_USER:$SERVICE_GROUP" "$CLUSTERS_ROOT"' in state_body
+    assert 'chmod 0750 "$CLUSTERS_ROOT"' in state_body
+    assert 'find "$CLUSTERS_ROOT" -type f -exec chmod 0640' in state_body
+    assert 'chown "$SERVICE_USER:$SERVICE_GROUP" "$GC_USERS_FILE"' in source
+    assert 'chmod 0600 "$GC_USERS_FILE"' in source
+    assert 'chown root:"$SERVICE_GROUP" "$ENV_FILE" "$SESSION_SECRET_FILE"' in state_body
+    assert 'chmod 0640 "$ENV_FILE" "$SESSION_SECRET_FILE"' in state_body
+    assert '"$CONFIG_ROOT/config.json"' in state_body
+    assert main.index("prepare_persistent_state") < main.index("verify_installation")
+
+
+@pytest.mark.parametrize(
+    ("symlink_case", "expected_success"),
+    [
+        ("safe_internal", True),
+        ("external_escape", False),
+        ("absolute", False),
+        ("broken", False),
+        ("chain_escape", False),
+        ("loop", False),
+        ("literal_mismatch", False),
+    ],
+)
+def test_shell_bundle_verification_resolves_symlinks_before_rpm_install(
+    tmp_path, symlink_case, expected_success
+):
+    stage = create_installer_bundle_fixture(tmp_path, symlink_case)
+
+    result, dnf_marker = run_shell_bundle_verification(tmp_path, stage)
+
+    if expected_success:
+        assert result.returncode == 0, result.stderr
+        assert dnf_marker.is_file()
+    else:
+        assert result.returncode != 0
+        assert not dnf_marker.exists()
+        assert "symlink" in result.stderr.lower()
 
 
 def test_offline_installer_has_systemd_control_and_container_test_branches():
