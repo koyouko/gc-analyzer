@@ -83,26 +83,27 @@ canonical_path() {
     python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
-strip_trailing_separators() {
+validate_canonical_managed_path() {
     local path=$1
-    while [[ "$path" != "/" && "$path" == */ ]]; do
-        path=${path%/}
-    done
-    printf '%s' "$path"
-}
-
-normalize_managed_output_roots() {
-    WORK_ROOT=$(strip_trailing_separators "$WORK_ROOT")
-    DIST_ROOT=$(strip_trailing_separators "$DIST_ROOT")
+    local label=$2
+    local lexical_path
+    local real_path
+    [[ -n "$path" ]] || fail "$label must not be empty"
+    [[ "$path" == /* ]] || fail "$label must be an absolute path: $path"
+    lexical_path=$(python3 -c \
+        'import os, sys; print(os.path.normpath(sys.argv[1]))' "$path")
+    [[ "$path" == "$lexical_path" ]] \
+        || fail "$label must be lexically normalized: $path"
+    real_path=$(canonical_path "$path")
+    [[ "$path" == "$real_path" ]] \
+        || fail "$label must not contain symlink components: $path"
 }
 
 validate_managed_root() {
     local root=$1
     local label=$2
-    [[ -n "$root" ]] || fail "$label must not be empty"
-    [[ "$root" == /* ]] || fail "$label must be an absolute path: $root"
+    validate_canonical_managed_path "$root" "$label"
     [[ "$root" != "/" ]] || fail "$label must not be /"
-    [[ ! -L "$root" ]] || fail "$label must not be a symlink: $root"
     if [[ -e "$root" ]]; then
         [[ -d "$root" ]] || fail "$label must be a directory: $root"
     fi
@@ -112,27 +113,22 @@ validate_managed_descendant() {
     local path=$1
     local root=$2
     local label=$3
+    validate_canonical_managed_path "$path" "$label"
     require_descendant "$path" "$root" "$label"
-    [[ ! -L "$path" ]] || fail "$label must not be a symlink: $path"
 }
 
 validate_managed_output_paths() {
-    local work_canonical
-    local dist_canonical
-    normalize_managed_output_roots
     validate_managed_root "$WORK_ROOT" "WORK_ROOT"
     validate_managed_root "$DIST_ROOT" "DIST_ROOT"
-    work_canonical=$(canonical_path "$WORK_ROOT")
-    dist_canonical=$(canonical_path "$DIST_ROOT")
-    [[ "$work_canonical" != "$dist_canonical" ]] \
+    [[ "$WORK_ROOT" != "$DIST_ROOT" ]] \
         || fail "WORK_ROOT and DIST_ROOT must be different directories"
-    case "$work_canonical/" in
-        "$dist_canonical"/*)
+    case "$WORK_ROOT/" in
+        "$DIST_ROOT"/*)
             fail "WORK_ROOT and DIST_ROOT must not overlap"
             ;;
     esac
-    case "$dist_canonical/" in
-        "$work_canonical"/*)
+    case "$DIST_ROOT/" in
+        "$WORK_ROOT"/*)
             fail "WORK_ROOT and DIST_ROOT must not overlap"
             ;;
     esac
