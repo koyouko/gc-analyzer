@@ -13,6 +13,8 @@ NODE_TEST_IMAGE_TAG="node:22.22.3-bookworm-slim"
 NODE_ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
 STAGE_NAME="gc-analyzer-offline"
 ARCHIVE_NAME="gc-analyzer-rhel8.10-x86_64-offline.tar.gz"
+MANAGED_ROOT_MARKER=".gc-analyzer-bundle-root"
+MANAGED_ROOT_MAGIC="GC_ANALYZER_BUNDLE_MANAGED_ROOT_V1"
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ORIGINAL_SOURCE_ROOT=$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)
@@ -77,6 +79,102 @@ require_descendant() {
     esac
 }
 
+canonical_path() {
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+validate_managed_root() {
+    local root=$1
+    local label=$2
+    [[ -n "$root" ]] || fail "$label must not be empty"
+    [[ "$root" == /* ]] || fail "$label must be an absolute path: $root"
+    [[ "$root" != "/" ]] || fail "$label must not be /"
+    [[ ! -L "$root" ]] || fail "$label must not be a symlink: $root"
+    if [[ -e "$root" ]]; then
+        [[ -d "$root" ]] || fail "$label must be a directory: $root"
+    fi
+}
+
+validate_managed_descendant() {
+    local path=$1
+    local root=$2
+    local label=$3
+    require_descendant "$path" "$root" "$label"
+    [[ ! -L "$path" ]] || fail "$label must not be a symlink: $path"
+}
+
+validate_managed_output_paths() {
+    local work_canonical
+    local dist_canonical
+    validate_managed_root "$WORK_ROOT" "WORK_ROOT"
+    validate_managed_root "$DIST_ROOT" "DIST_ROOT"
+    work_canonical=$(canonical_path "$WORK_ROOT")
+    dist_canonical=$(canonical_path "$DIST_ROOT")
+    [[ "$work_canonical" != "$dist_canonical" ]] \
+        || fail "WORK_ROOT and DIST_ROOT must be different directories"
+    case "$work_canonical/" in
+        "$dist_canonical"/*)
+            fail "WORK_ROOT and DIST_ROOT must not overlap"
+            ;;
+    esac
+    case "$dist_canonical/" in
+        "$work_canonical"/*)
+            fail "WORK_ROOT and DIST_ROOT must not overlap"
+            ;;
+    esac
+
+    validate_managed_descendant "$STAGE_DIR" "$WORK_ROOT" "stage"
+    validate_managed_descendant \
+        "$SOURCE_SNAPSHOT_DIR" "$WORK_ROOT" "source snapshot"
+    validate_managed_descendant "$SOURCE_TEST_DIR" "$WORK_ROOT" "source test"
+    validate_managed_descendant "$NPM_WORK_DIR" "$WORK_ROOT" "npm work"
+    validate_managed_descendant \
+        "$NODE_DOWNLOAD_DIR" "$WORK_ROOT" "Node download"
+    validate_managed_descendant "$ARCHIVE_PATH" "$DIST_ROOT" "archive"
+}
+
+assert_managed_root_marker() {
+    local root=$1
+    local label=$2
+    local marker="$root/$MANAGED_ROOT_MARKER"
+    local marker_size
+    [[ -f "$marker" && ! -L "$marker" ]] \
+        || fail "$label is not a marked GC Analyzer bundle directory: $root"
+    marker_size=$(wc -c < "$marker" | tr -d ' ')
+    [[ "$marker_size" == "${#MANAGED_ROOT_MAGIC}" ]] \
+        || fail "$label marker has invalid content: $marker"
+    [[ "$(cat "$marker")" == "$MANAGED_ROOT_MAGIC" ]] \
+        || fail "$label marker has invalid content: $marker"
+}
+
+initialize_managed_root() {
+    local root=$1
+    local label=$2
+    local marker="$root/$MANAGED_ROOT_MARKER"
+    if [[ ! -e "$root" ]]; then
+        mkdir -p "$root"
+    fi
+    [[ -d "$root" && ! -L "$root" ]] \
+        || fail "$label must be a regular directory: $root"
+    if [[ -z "$(find "$root" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        printf '%s' "$MANAGED_ROOT_MAGIC" > "$marker"
+    fi
+    assert_managed_root_marker "$root" "$label"
+}
+
+initialize_managed_output_roots() {
+    validate_managed_output_paths
+    initialize_managed_root "$WORK_ROOT" "WORK_ROOT"
+    initialize_managed_root "$DIST_ROOT" "DIST_ROOT"
+    validate_managed_output_paths
+}
+
+assert_managed_output_roots() {
+    validate_managed_output_paths
+    assert_managed_root_marker "$WORK_ROOT" "WORK_ROOT"
+    assert_managed_root_marker "$DIST_ROOT" "DIST_ROOT"
+}
+
 assert_source_snapshot() {
     [[ -d "$SOURCE_SNAPSHOT_DIR/.git" ]] \
         || fail "standalone source snapshot is missing: $SOURCE_SNAPSHOT_DIR"
@@ -127,8 +225,8 @@ run_ubi() {
 }
 
 repair_build_ownership() {
+    initialize_managed_output_roots
     [[ -n "$RESOLVED_UBI_IMAGE_ID" ]] || fail "UBI resolver image is not frozen"
-    mkdir -p "$WORK_ROOT" "$DIST_ROOT"
     docker run --rm --platform "$CONTAINER_PLATFORM" \
         -e "HOST_UID=$HOST_UID" \
         -e "HOST_GID=$HOST_GID" \
@@ -140,7 +238,7 @@ repair_build_ownership() {
 }
 
 create_source_snapshot() {
-    require_descendant "$SOURCE_SNAPSHOT_DIR" "$WORK_ROOT" "source snapshot"
+    assert_managed_output_roots
     rm -rf "$SOURCE_SNAPSHOT_DIR"
     git clone --no-local --no-checkout \
         "$ORIGINAL_SOURCE_ROOT" "$SOURCE_SNAPSHOT_DIR"
@@ -157,6 +255,7 @@ preflight() {
     require_command id
     require_command python3
     require_command tar
+    initialize_managed_output_roots
 
     current_head=$(git -C "$ORIGINAL_SOURCE_ROOT" rev-parse HEAD)
     [[ "$current_head" == "$SOURCE_COMMIT" ]] \
@@ -209,8 +308,8 @@ preflight() {
 }
 
 test_source() {
+    assert_managed_output_roots
     assert_source_snapshot
-    require_descendant "$SOURCE_TEST_DIR" "$WORK_ROOT" "source test"
     rm -rf "$SOURCE_TEST_DIR"
     mkdir -p "$SOURCE_TEST_DIR"
 
@@ -262,10 +361,7 @@ test_source() {
 }
 
 prepare_stage() {
-    require_descendant "$STAGE_DIR" "$WORK_ROOT" "stage"
-    require_descendant "$NPM_WORK_DIR" "$WORK_ROOT" "npm work"
-    require_descendant "$NODE_DOWNLOAD_DIR" "$WORK_ROOT" "Node download"
-    require_descendant "$ARCHIVE_PATH" "$DIST_ROOT" "archive"
+    assert_managed_output_roots
     [[ "$(basename "$STAGE_DIR")" == "$STAGE_NAME" ]] \
         || fail "stage directory must be named $STAGE_NAME"
 
@@ -283,6 +379,7 @@ prepare_stage() {
 }
 
 download_rpms() {
+    assert_managed_output_roots
     assert_source_snapshot
     run_ubi \
         -e "HOST_UID=$HOST_UID" \
@@ -312,6 +409,7 @@ download_rpms() {
 
 download_node_runtime() {
     local node_base_url="https://nodejs.org/dist/v${NODE_VERSION}"
+    assert_managed_output_roots
     curl --fail --location --retry 3 \
         --output "$NODE_DOWNLOAD_DIR/$NODE_ARCHIVE" \
         "$node_base_url/$NODE_ARCHIVE"
@@ -360,6 +458,7 @@ download_node_runtime() {
 }
 
 download_python_wheels() {
+    assert_managed_output_roots
     assert_source_snapshot
     run_ubi \
         -e "HOST_UID=$HOST_UID" \
@@ -387,6 +486,7 @@ download_python_wheels() {
 }
 
 populate_npm_cache() {
+    assert_managed_output_roots
     assert_source_snapshot
     git -C "$SOURCE_SNAPSHOT_DIR" show "$SOURCE_COMMIT:web/package.json" \
         > "$NPM_WORK_DIR/package.json"
@@ -414,6 +514,7 @@ populate_npm_cache() {
 }
 
 copy_application() {
+    assert_managed_output_roots
     assert_source_snapshot
     rmdir "$STAGE_DIR/app"
     "$COPY_APPLICATION_SCRIPT" "$SOURCE_SNAPSHOT_DIR" "$STAGE_DIR/app" "$SOURCE_COMMIT"
@@ -493,6 +594,7 @@ PY
 }
 
 write_checksums() {
+    assert_managed_output_roots
     assert_source_snapshot
     "$SOURCE_SNAPSHOT_DIR/offline/generate-inventory.py" "$STAGE_DIR"
     [[ -s "$STAGE_DIR/MANIFEST.paths" ]] || fail "path inventory is empty"
@@ -501,12 +603,14 @@ write_checksums() {
 }
 
 run_clean_room() {
+    assert_managed_output_roots
     assert_source_snapshot
     "$CLEAN_ROOM_SCRIPT" "$STAGE_DIR"
 }
 
 create_archive() {
     local source_date_epoch
+    assert_managed_output_roots
     assert_source_snapshot
     source_date_epoch=$(git -C "$SOURCE_SNAPSHOT_DIR" \
         show -s --format=%ct "$SOURCE_COMMIT")

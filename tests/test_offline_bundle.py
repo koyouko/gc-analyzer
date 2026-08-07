@@ -310,6 +310,19 @@ def builder_function_body(function_name, next_function_name):
     )[0]
 
 
+def builder_root_assignments(work_root, dist_root):
+    return f"""
+WORK_ROOT={shlex.quote(str(work_root))}
+DIST_ROOT={shlex.quote(str(dist_root))}
+STAGE_DIR="$WORK_ROOT/$STAGE_NAME"
+SOURCE_SNAPSHOT_DIR="$WORK_ROOT/source-snapshot"
+SOURCE_TEST_DIR="$WORK_ROOT/source-test"
+NPM_WORK_DIR="$WORK_ROOT/npm-work"
+NODE_DOWNLOAD_DIR="$WORK_ROOT/node-download"
+ARCHIVE_PATH="$DIST_ROOT/$ARCHIVE_NAME"
+"""
+
+
 def test_bundle_builder_has_required_shell_contract_and_functions():
     source = builder_source()
 
@@ -440,6 +453,7 @@ SOURCE_SNAPSHOT_DIR={shlex.quote(str(source))}
 SOURCE_COMMIT={shlex.quote(frozen_commit)}
 RESOLVED_UBI_IMAGE_ID=sha256:ubi-image-id
 RESOLVED_NODE_TEST_IMAGE_ID=sha256:node-image-id
+assert_managed_output_roots() {{ :; }}
 assert_source_snapshot() {{ :; }}
 docker() {{
     printf '%s\\n' "$@" >> {shlex.quote(str(docker_log))}
@@ -482,6 +496,7 @@ SOURCE_SNAPSHOT_DIR={shlex.quote(str(source))}
 SOURCE_COMMIT={shlex.quote(frozen_commit)}
 RESOLVED_UBI_IMAGE_ID=sha256:ubi-image-id
 RESOLVED_NODE_TEST_IMAGE_ID=sha256:node-image-id
+assert_managed_output_roots() {{ :; }}
 assert_source_snapshot() {{ :; }}
 docker() {{
     case " $* " in
@@ -757,15 +772,15 @@ def test_prepare_stage_repairs_ownership_before_removing_stale_output(tmp_path):
     stale = stage / "root-owned/stale.txt"
     stale.parent.mkdir(parents=True)
     stale.write_text("stale\n")
+    dist_root.mkdir()
+    marker_name = ".gc-analyzer-bundle-root"
+    marker_magic = "GC_ANALYZER_BUNDLE_MANAGED_ROOT_V1"
+    (work_root / marker_name).write_text(marker_magic)
+    (dist_root / marker_name).write_text(marker_magic)
     repair_marker = tmp_path / "ownership-repaired"
     command = f"""
 source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
-WORK_ROOT={shlex.quote(str(work_root))}
-DIST_ROOT={shlex.quote(str(dist_root))}
-STAGE_DIR={shlex.quote(str(stage))}
-NPM_WORK_DIR="$WORK_ROOT/npm-work"
-NODE_DOWNLOAD_DIR="$WORK_ROOT/node-download"
-ARCHIVE_PATH="$DIST_ROOT/$ARCHIVE_NAME"
+{builder_root_assignments(work_root, dist_root)}
 repair_build_ownership() {{ touch {shlex.quote(str(repair_marker))}; }}
 prepare_stage
 """
@@ -782,8 +797,7 @@ def test_ownership_repair_passes_numeric_host_uid_and_gid(tmp_path):
     docker_log = tmp_path / "docker-ownership.log"
     command = f"""
 source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
-WORK_ROOT={shlex.quote(str(tmp_path / 'work'))}
-DIST_ROOT={shlex.quote(str(tmp_path / 'dist'))}
+{builder_root_assignments(tmp_path / 'work', tmp_path / 'dist')}
 HOST_UID=1234
 HOST_GID=5678
 RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
@@ -799,6 +813,143 @@ repair_build_ownership
     assert "HOST_GID=5678" in docker_arguments
     assert "sha256:frozen-ubi" in docker_arguments
     assert 'chown -R "$HOST_UID:$HOST_GID" /work /dist' in docker_arguments
+
+
+@pytest.mark.parametrize(
+    "unsafe_layout",
+    [
+        "work_root",
+        "dist_root",
+        "empty_work_root",
+        "empty_dist_root",
+        "unmarked_nonempty",
+        "symlink_root",
+        "wrong_marker",
+        "symlink_marker",
+        "equal_roots",
+        "nested_roots",
+    ],
+)
+def test_managed_output_roots_reject_unsafe_layout_before_docker_or_removal(
+    tmp_path, unsafe_layout
+):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    protected = tmp_path / "protected.txt"
+    protected.write_text("must remain\n")
+    if unsafe_layout == "work_root":
+        work_root = Path("/")
+    elif unsafe_layout == "dist_root":
+        dist_root = Path("/")
+    elif unsafe_layout == "empty_work_root":
+        work_root = ""
+    elif unsafe_layout == "empty_dist_root":
+        dist_root = ""
+    elif unsafe_layout == "unmarked_nonempty":
+        work_root.mkdir()
+        (work_root / "existing.txt").write_text("do not chown or remove\n")
+    elif unsafe_layout == "symlink_root":
+        real_root = tmp_path / "real-work"
+        real_root.mkdir()
+        work_root.symlink_to(real_root, target_is_directory=True)
+    elif unsafe_layout == "wrong_marker":
+        work_root.mkdir()
+        (work_root / ".gc-analyzer-bundle-root").write_text("wrong")
+    elif unsafe_layout == "symlink_marker":
+        work_root.mkdir()
+        marker_target = tmp_path / "marker-target"
+        marker_target.write_text("GC_ANALYZER_BUNDLE_MANAGED_ROOT_V1")
+        (work_root / ".gc-analyzer-bundle-root").symlink_to(marker_target)
+    elif unsafe_layout == "equal_roots":
+        dist_root = work_root
+    else:
+        dist_root = work_root / "nested-dist"
+    docker_marker = tmp_path / "docker-called"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{builder_root_assignments(work_root, dist_root)}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ touch {shlex.quote(str(docker_marker))}; }}
+repair_build_ownership
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert not docker_marker.exists()
+    assert protected.read_text() == "must remain\n"
+    if unsafe_layout == "unmarked_nonempty":
+        assert (work_root / "existing.txt").read_text() == "do not chown or remove\n"
+
+
+def test_managed_output_roots_reject_unsafe_descendant_before_docker(tmp_path):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    docker_marker = tmp_path / "docker-called"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{builder_root_assignments(work_root, dist_root)}
+STAGE_DIR={shlex.quote(str(tmp_path / 'outside-stage'))}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ touch {shlex.quote(str(docker_marker))}; }}
+repair_build_ownership
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert not docker_marker.exists()
+    assert not work_root.exists()
+    assert not dist_root.exists()
+
+
+def test_managed_output_roots_initialize_empty_roots_and_reuse_marker(tmp_path):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    work_root.mkdir()
+    dist_root.mkdir()
+    docker_log = tmp_path / "docker.log"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{builder_root_assignments(work_root, dist_root)}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ printf 'called\\n' >> {shlex.quote(str(docker_log))}; }}
+repair_build_ownership
+repair_build_ownership
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    marker_name = ".gc-analyzer-bundle-root"
+    expected_magic = "GC_ANALYZER_BUNDLE_MANAGED_ROOT_V1"
+    for root in (work_root, dist_root):
+        marker = root / marker_name
+        assert marker.is_file()
+        assert not marker.is_symlink()
+        assert marker.read_text() == expected_magic
+    assert docker_log.read_text().splitlines() == ["called", "called"]
+
+
+def test_managed_root_markers_are_outside_stage_and_archive_payload(tmp_path):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    docker_log = tmp_path / "docker.log"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{builder_root_assignments(work_root, dist_root)}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ printf 'called\\n' >> {shlex.quote(str(docker_log))}; }}
+repair_build_ownership
+prepare_stage
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (work_root / ".gc-analyzer-bundle-root").is_file()
+    assert (dist_root / ".gc-analyzer-bundle-root").is_file()
+    assert not (work_root / "gc-analyzer-offline/.gc-analyzer-bundle-root").exists()
 
 
 def run_inventory(stage):
