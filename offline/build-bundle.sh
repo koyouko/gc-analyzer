@@ -1,30 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 TARGET_RHEL_VERSION="8.10"
 TARGET_ARCH="x86_64"
 CONTAINER_PLATFORM="linux/amd64"
-UBI_IMAGE="registry.access.redhat.com/ubi8/ubi:8.10"
+UBI_IMAGE_TAG="registry.access.redhat.com/ubi8/ubi:8.10"
 NODE_VERSION="22.22.3"
 NPM_MAJOR_VERSION="10"
-NODE_TEST_IMAGE="node:22.22.3-bookworm-slim"
+PYTEST_VERSION="9.1.1"
+NODE_TEST_IMAGE_TAG="node:22.22.3-bookworm-slim"
 NODE_ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
+STAGE_NAME="gc-analyzer-offline"
 ARCHIVE_NAME="gc-analyzer-rhel8.10-x86_64-offline.tar.gz"
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-SOURCE_ROOT=$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)
+ORIGINAL_SOURCE_ROOT=$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)
+STARTUP_SOURCE_COMMIT=$(git -C "$ORIGINAL_SOURCE_ROOT" rev-parse HEAD)
+SOURCE_COMMIT=${GC_ANALYZER_SOURCE_COMMIT:-"$STARTUP_SOURCE_COMMIT"}
 WORK_ROOT=${GC_ANALYZER_BUNDLE_WORK_ROOT:-"$SCRIPT_DIR/work"}
 DIST_ROOT=${GC_ANALYZER_BUNDLE_DIST_ROOT:-"$SCRIPT_DIR/dist"}
-STAGE_DIR=${GC_ANALYZER_BUNDLE_STAGE_DIR:-"$WORK_ROOT/$ARCHIVE_NAME.stage"}
+STAGE_DIR=${GC_ANALYZER_BUNDLE_STAGE_DIR:-"$WORK_ROOT/$STAGE_NAME"}
+SOURCE_SNAPSHOT_DIR=${GC_ANALYZER_SOURCE_SNAPSHOT_DIR:-"$WORK_ROOT/source-snapshot"}
 SOURCE_TEST_DIR=${GC_ANALYZER_SOURCE_TEST_DIR:-"$WORK_ROOT/source-test"}
 NPM_WORK_DIR="$WORK_ROOT/npm-work"
 NODE_DOWNLOAD_DIR="$WORK_ROOT/node-download"
-RPM_ROOTS_FILE="$SOURCE_ROOT/offline/rhel8-packages.txt"
-COPY_APPLICATION_SCRIPT=${GC_ANALYZER_COPY_APPLICATION_SCRIPT:-"$SOURCE_ROOT/offline/copy-application.sh"}
-INSTALLER_SCRIPT=${GC_ANALYZER_INSTALLER_SCRIPT:-"$SOURCE_ROOT/offline/install-offline.sh"}
-VERIFIER_SCRIPT=${GC_ANALYZER_VERIFIER_SCRIPT:-"$SOURCE_ROOT/offline/verify-offline.sh"}
-CLEAN_ROOM_SCRIPT=${GC_ANALYZER_CLEAN_ROOM_SCRIPT:-"$SOURCE_ROOT/offline/test-clean-room.sh"}
+RPM_ROOTS_FILE="$SOURCE_SNAPSHOT_DIR/offline/rhel8-packages.txt"
+COPY_APPLICATION_SCRIPT="$SOURCE_SNAPSHOT_DIR/offline/copy-application.sh"
+INSTALLER_SCRIPT="$SOURCE_SNAPSHOT_DIR/offline/install-offline.sh"
+VERIFIER_SCRIPT="$SOURCE_SNAPSHOT_DIR/offline/verify-offline.sh"
+CLEAN_ROOM_SCRIPT="$SOURCE_SNAPSHOT_DIR/offline/test-clean-room.sh"
+INVENTORY_SCRIPT="$SOURCE_SNAPSHOT_DIR/offline/generate-inventory.py"
 ARCHIVE_PATH="$DIST_ROOT/$ARCHIVE_NAME"
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+
+RESOLVED_UBI_IMAGE_ID=""
+RESOLVED_UBI_IMAGE_DIGEST=""
+RESOLVED_NODE_TEST_IMAGE_ID=""
+RESOLVED_NODE_TEST_IMAGE_DIGEST=""
 RESOLVED_NPM_VERSION=""
 
 fail() {
@@ -63,8 +77,42 @@ require_descendant() {
     esac
 }
 
+assert_source_snapshot() {
+    [[ -d "$SOURCE_SNAPSHOT_DIR/.git" ]] \
+        || fail "standalone source snapshot is missing: $SOURCE_SNAPSHOT_DIR"
+    [[ "$(git -C "$SOURCE_SNAPSHOT_DIR" rev-parse HEAD)" == "$SOURCE_COMMIT" ]] \
+        || fail "source snapshot HEAD changed"
+    git -C "$SOURCE_SNAPSHOT_DIR" diff --quiet "$SOURCE_COMMIT" -- \
+        || fail "source snapshot worktree changed"
+    git -C "$SOURCE_SNAPSHOT_DIR" diff --cached --quiet "$SOURCE_COMMIT" -- \
+        || fail "source snapshot index changed"
+    [[ -z "$(git -C "$SOURCE_SNAPSHOT_DIR" ls-files --others --exclude-standard)" ]] \
+        || fail "source snapshot has untracked files"
+}
+
+resolve_image() {
+    local image_tag=$1
+    local id_variable=$2
+    local digest_variable=$3
+    local image_id
+    local image_digest
+    local image_platform
+
+    image_id=$(docker image inspect --format '{{.Id}}' "$image_tag")
+    image_digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image_tag")
+    image_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id")
+    [[ "$image_id" == sha256:* ]] || fail "resolver image has no immutable ID: $image_tag"
+    [[ "$image_digest" == *@sha256:* ]] \
+        || fail "resolver image has no repository digest: $image_tag"
+    [[ "$image_platform" == "$CONTAINER_PLATFORM" ]] \
+        || fail "resolver image platform mismatch: $image_tag is $image_platform"
+    printf -v "$id_variable" '%s' "$image_id"
+    printf -v "$digest_variable" '%s' "$image_digest"
+}
+
 run_ubi() {
     local docker_options=()
+    [[ -n "$RESOLVED_UBI_IMAGE_ID" ]] || fail "UBI resolver image is not frozen"
     while (($# > 0)) && [[ "$1" != "--" ]]; do
         (($# >= 2)) || fail "Docker option is missing a value: $1"
         docker_options+=("$1" "$2")
@@ -75,49 +123,94 @@ run_ubi() {
     (($# > 0)) || fail "run_ubi requires a container command"
 
     docker run --rm --platform "$CONTAINER_PLATFORM" \
-        "${docker_options[@]}" "$UBI_IMAGE" "$@"
+        "${docker_options[@]}" "$RESOLVED_UBI_IMAGE_ID" "$@"
+}
+
+repair_build_ownership() {
+    [[ -n "$RESOLVED_UBI_IMAGE_ID" ]] || fail "UBI resolver image is not frozen"
+    mkdir -p "$WORK_ROOT" "$DIST_ROOT"
+    docker run --rm --platform "$CONTAINER_PLATFORM" \
+        -e "HOST_UID=$HOST_UID" \
+        -e "HOST_GID=$HOST_GID" \
+        -v "$WORK_ROOT:/work" \
+        -v "$DIST_ROOT:/dist" \
+        "$RESOLVED_UBI_IMAGE_ID" \
+        bash -euo pipefail -c \
+            'chown -R "$HOST_UID:$HOST_GID" /work /dist'
+}
+
+create_source_snapshot() {
+    require_descendant "$SOURCE_SNAPSHOT_DIR" "$WORK_ROOT" "source snapshot"
+    rm -rf "$SOURCE_SNAPSHOT_DIR"
+    git clone --no-local --no-checkout \
+        "$ORIGINAL_SOURCE_ROOT" "$SOURCE_SNAPSHOT_DIR"
+    git -C "$SOURCE_SNAPSHOT_DIR" checkout --detach "$SOURCE_COMMIT"
+    assert_source_snapshot
 }
 
 preflight() {
+    local current_head
     ((BASH_VERSINFO[0] >= 4)) || fail "Bash 4 or newer is required"
     require_command curl
     require_command docker
     require_command git
+    require_command id
     require_command python3
     require_command tar
 
-    [[ -s "$RPM_ROOTS_FILE" ]] || fail "RPM root manifest is missing or empty: $RPM_ROOTS_FILE"
-    [[ -s "$SOURCE_ROOT/requirements-offline.txt" ]] \
-        || fail "offline Python requirements are missing"
-    [[ -s "$SOURCE_ROOT/web/package-lock.json" ]] \
-        || fail "committed frontend package lock is missing"
-    [[ -x "$COPY_APPLICATION_SCRIPT" ]] \
-        || fail "application copy helper is missing or not executable: $COPY_APPLICATION_SCRIPT"
-    [[ -x "$INSTALLER_SCRIPT" ]] \
-        || fail "offline installer is missing or not executable: $INSTALLER_SCRIPT"
-    [[ -x "$VERIFIER_SCRIPT" ]] \
-        || fail "offline verifier is missing or not executable: $VERIFIER_SCRIPT"
-    [[ -x "$CLEAN_ROOM_SCRIPT" ]] \
-        || fail "clean-room test is missing or not executable: $CLEAN_ROOM_SCRIPT"
-
-    git -C "$SOURCE_ROOT" diff --quiet HEAD -- \
-        || fail "Git worktree has modified tracked files"
-    git -C "$SOURCE_ROOT" diff --cached --quiet HEAD -- \
-        || fail "Git index has staged changes"
-    [[ -z "$(git -C "$SOURCE_ROOT" ls-files --others --exclude-standard)" ]] \
-        || fail "Git worktree has untracked files"
+    current_head=$(git -C "$ORIGINAL_SOURCE_ROOT" rev-parse HEAD)
+    [[ "$current_head" == "$SOURCE_COMMIT" ]] \
+        || fail "original repository HEAD changed after builder startup"
+    git -C "$ORIGINAL_SOURCE_ROOT" diff --quiet "$SOURCE_COMMIT" -- \
+        || fail "original Git worktree has modified tracked files"
+    git -C "$ORIGINAL_SOURCE_ROOT" diff --cached --quiet "$SOURCE_COMMIT" -- \
+        || fail "original Git index has staged changes"
+    [[ -z "$(git -C "$ORIGINAL_SOURCE_ROOT" ls-files --others --exclude-standard)" ]] \
+        || fail "original Git worktree has untracked files"
 
     docker info >/dev/null
+    docker pull --platform "$CONTAINER_PLATFORM" "$UBI_IMAGE_TAG" >/dev/null
+    docker pull --platform "$CONTAINER_PLATFORM" "$NODE_TEST_IMAGE_TAG" >/dev/null
+    resolve_image "$UBI_IMAGE_TAG" \
+        RESOLVED_UBI_IMAGE_ID RESOLVED_UBI_IMAGE_DIGEST
+    resolve_image "$NODE_TEST_IMAGE_TAG" \
+        RESOLVED_NODE_TEST_IMAGE_ID RESOLVED_NODE_TEST_IMAGE_DIGEST
+
+    docker run --rm --platform "$CONTAINER_PLATFORM" \
+        "$RESOLVED_UBI_IMAGE_ID" bash -euo pipefail -c '
+            . /etc/os-release
+            test "$VERSION_ID" = "8.10"
+            test "$(uname -m)" = "x86_64"
+        '
+    docker run --rm --platform "$CONTAINER_PLATFORM" \
+        "$RESOLVED_NODE_TEST_IMAGE_ID" sh -eu -c '
+            test "$(uname -m)" = "x86_64"
+            test "$(node --version)" = "v$1"
+            case "$(npm --version)" in "$2".*) ;; *) exit 1 ;; esac
+        ' _ "$NODE_VERSION" "$NPM_MAJOR_VERSION"
+
+    repair_build_ownership
+    create_source_snapshot
+    [[ -s "$RPM_ROOTS_FILE" ]] || fail "RPM root manifest is missing or empty"
+    git -C "$SOURCE_SNAPSHOT_DIR" cat-file -e \
+        "$SOURCE_COMMIT:requirements-offline.txt"
+    git -C "$SOURCE_SNAPSHOT_DIR" cat-file -e \
+        "$SOURCE_COMMIT:web/package-lock.json"
+    for required_path in \
+        offline/copy-application.sh \
+        offline/generate-inventory.py \
+        offline/install-offline.sh \
+        offline/verify-offline.sh \
+        offline/test-clean-room.sh; do
+        git -C "$SOURCE_SNAPSHOT_DIR" cat-file -e \
+            "$SOURCE_COMMIT:$required_path" \
+            || fail "required committed build input is missing: $required_path"
+    done
 }
 
 test_source() {
-    local python_bin=python3
-    if [[ -x "$SOURCE_ROOT/.venv/bin/python" ]]; then
-        python_bin="$SOURCE_ROOT/.venv/bin/python"
-    fi
-
+    assert_source_snapshot
     require_descendant "$SOURCE_TEST_DIR" "$WORK_ROOT" "source test"
-    mkdir -p "$WORK_ROOT"
     rm -rf "$SOURCE_TEST_DIR"
     mkdir -p "$SOURCE_TEST_DIR"
 
@@ -130,18 +223,34 @@ test_source() {
         }
         trap cleanup_source_test EXIT
 
-        cd "$SOURCE_ROOT"
-        "$python_bin" -m pytest -q
-        "$python_bin" -m compileall -q gcanalyzer seed tests
-
-        git -C "$SOURCE_ROOT" archive --format=tar HEAD -- web \
-            | tar -xf - -C "$SOURCE_TEST_DIR"
-
         docker run --rm --platform "$CONTAINER_PLATFORM" \
+            -v "$SOURCE_SNAPSHOT_DIR:/snapshot:ro" \
+            "$RESOLVED_UBI_IMAGE_ID" \
+            bash -euo pipefail -c '
+                . /etc/os-release
+                test "$VERSION_ID" = "$1"
+                test "$(uname -m)" = "x86_64"
+                dnf install -y python3.12 python3.12-pip git tar gzip >/dev/null
+                python3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)"
+                cp -a /snapshot /source
+                python3.12 -m pip install --only-binary=:all: \
+                    -r /source/requirements-offline.txt "pytest==$2"
+                cd /source
+                python3.12 -m pytest -q
+                python3.12 -m compileall -q gcanalyzer seed tests
+            ' _ "$TARGET_RHEL_VERSION" "$PYTEST_VERSION"
+
+        git -C "$SOURCE_SNAPSHOT_DIR" archive --format=tar \
+            "$SOURCE_COMMIT" -- web \
+            | tar -xf - -C "$SOURCE_TEST_DIR"
+        docker run --rm --platform "$CONTAINER_PLATFORM" \
+            --user "$HOST_UID:$HOST_GID" \
+            -e HOME=/tmp/node-home \
             -v "$SOURCE_TEST_DIR/web:/workspace" \
             -w /workspace \
-            "$NODE_TEST_IMAGE" \
+            "$RESOLVED_NODE_TEST_IMAGE_ID" \
             sh -eu -c '
+                mkdir -p "$HOME"
                 test "$(node --version)" = "v$1"
                 case "$(npm --version)" in "$2".*) ;; *) exit 1 ;; esac
                 npm ci
@@ -157,9 +266,11 @@ prepare_stage() {
     require_descendant "$NPM_WORK_DIR" "$WORK_ROOT" "npm work"
     require_descendant "$NODE_DOWNLOAD_DIR" "$WORK_ROOT" "Node download"
     require_descendant "$ARCHIVE_PATH" "$DIST_ROOT" "archive"
+    [[ "$(basename "$STAGE_DIR")" == "$STAGE_NAME" ]] \
+        || fail "stage directory must be named $STAGE_NAME"
 
-    mkdir -p "$WORK_ROOT" "$DIST_ROOT"
-    rm -rf "$STAGE_DIR" "$NPM_WORK_DIR" "$NODE_DOWNLOAD_DIR"
+    repair_build_ownership
+    rm -rf "$STAGE_DIR" "$NPM_WORK_DIR" "$NODE_DOWNLOAD_DIR" "$SOURCE_TEST_DIR"
     rm -f "$ARCHIVE_PATH" "$ARCHIVE_PATH.sha256"
     mkdir -p \
         "$STAGE_DIR/app" \
@@ -172,11 +283,22 @@ prepare_stage() {
 }
 
 download_rpms() {
+    assert_source_snapshot
     run_ubi \
-        -v "$SOURCE_ROOT:/src:ro" \
+        -e "HOST_UID=$HOST_UID" \
+        -e "HOST_GID=$HOST_GID" \
+        -v "$SOURCE_SNAPSHOT_DIR:/src:ro" \
         -v "$STAGE_DIR:/bundle" \
         -- \
         bash -euo pipefail -c '
+            repair_container_ownership() {
+                status=$?
+                trap - EXIT
+                chown -R "$HOST_UID:$HOST_GID" /bundle
+                exit "$status"
+            }
+            trap repair_container_ownership EXIT
+            umask 022
             dnf install -y dnf-plugins-core >/dev/null
             mapfile -t packages < /src/offline/rhel8-packages.txt
             ((${#packages[@]} > 0))
@@ -198,10 +320,20 @@ download_node_runtime() {
         "$node_base_url/SHASUMS256.txt"
 
     run_ubi \
+        -e "HOST_UID=$HOST_UID" \
+        -e "HOST_GID=$HOST_GID" \
         -v "$NODE_DOWNLOAD_DIR:/downloads:ro" \
         -v "$STAGE_DIR/node-runtime:/runtime" \
         -- \
         bash -euo pipefail -c '
+            repair_container_ownership() {
+                status=$?
+                trap - EXIT
+                chown -R "$HOST_UID:$HOST_GID" /runtime
+                exit "$status"
+            }
+            trap repair_container_ownership EXIT
+            umask 022
             dnf install -y tar xz >/dev/null
             cd /downloads
             awk -v archive="$1" '\''$2 == archive {print}'\'' SHASUMS256.txt \
@@ -228,11 +360,22 @@ download_node_runtime() {
 }
 
 download_python_wheels() {
+    assert_source_snapshot
     run_ubi \
-        -v "$SOURCE_ROOT:/src:ro" \
+        -e "HOST_UID=$HOST_UID" \
+        -e "HOST_GID=$HOST_GID" \
+        -v "$SOURCE_SNAPSHOT_DIR:/src:ro" \
         -v "$STAGE_DIR:/bundle" \
         -- \
         bash -euo pipefail -c '
+            repair_container_ownership() {
+                status=$?
+                trap - EXIT
+                chown -R "$HOST_UID:$HOST_GID" /bundle
+                exit "$status"
+            }
+            trap repair_container_ownership EXIT
+            umask 022
             dnf install -y python3.12 python3.12-pip >/dev/null
             python3.12 -m pip download --only-binary=:all: \
                 --dest /bundle/python-wheels \
@@ -244,18 +387,23 @@ download_python_wheels() {
 }
 
 populate_npm_cache() {
-    git -C "$SOURCE_ROOT" cat-file -e HEAD:web/package.json
-    git -C "$SOURCE_ROOT" cat-file -e HEAD:web/package-lock.json
-    git -C "$SOURCE_ROOT" show HEAD:web/package.json > "$NPM_WORK_DIR/package.json"
-    git -C "$SOURCE_ROOT" show HEAD:web/package-lock.json > "$NPM_WORK_DIR/package-lock.json"
+    assert_source_snapshot
+    git -C "$SOURCE_SNAPSHOT_DIR" show "$SOURCE_COMMIT:web/package.json" \
+        > "$NPM_WORK_DIR/package.json"
+    git -C "$SOURCE_SNAPSHOT_DIR" show "$SOURCE_COMMIT:web/package-lock.json" \
+        > "$NPM_WORK_DIR/package-lock.json"
 
     run_ubi \
+        --user "$HOST_UID:$HOST_GID" \
+        -e HOME=/tmp/npm-home \
         -v "$STAGE_DIR/node-runtime:/runtime:ro" \
         -v "$NPM_WORK_DIR:/workspace" \
         -v "$STAGE_DIR/npm-cache:/bundle/npm-cache" \
         -w /workspace \
         -- \
         bash -euo pipefail -c '
+            mkdir -p "$HOME"
+            umask 022
             export PATH="/runtime/bin:$PATH"
             test "$(node --version)" = "v$1"
             case "$(npm --version)" in "$2".*) ;; *) exit 1 ;; esac
@@ -266,28 +414,58 @@ populate_npm_cache() {
 }
 
 copy_application() {
-    [[ -x "$INSTALLER_SCRIPT" ]] || fail "offline installer is unavailable"
-    [[ -x "$VERIFIER_SCRIPT" ]] || fail "offline verifier is unavailable"
-
+    assert_source_snapshot
     rmdir "$STAGE_DIR/app"
-    "$COPY_APPLICATION_SCRIPT" "$SOURCE_ROOT" "$STAGE_DIR/app"
-    install -m 0755 "$INSTALLER_SCRIPT" "$STAGE_DIR/install-offline.sh"
-    install -m 0755 "$VERIFIER_SCRIPT" "$STAGE_DIR/verify-offline.sh"
+    "$COPY_APPLICATION_SCRIPT" "$SOURCE_SNAPSHOT_DIR" "$STAGE_DIR/app" "$SOURCE_COMMIT"
+    git -C "$SOURCE_SNAPSHOT_DIR" show \
+        "$SOURCE_COMMIT:offline/install-offline.sh" > "$STAGE_DIR/install-offline.sh"
+    git -C "$SOURCE_SNAPSHOT_DIR" show \
+        "$SOURCE_COMMIT:offline/verify-offline.sh" > "$STAGE_DIR/verify-offline.sh"
+    git -C "$SOURCE_SNAPSHOT_DIR" show \
+        "$SOURCE_COMMIT:offline/generate-inventory.py" > "$STAGE_DIR/inventory.py"
+    chmod 0755 \
+        "$STAGE_DIR/install-offline.sh" \
+        "$STAGE_DIR/verify-offline.sh" \
+        "$STAGE_DIR/inventory.py"
 }
 
 write_version_manifest() {
-    local source_commit
     local frontend_versions
-    source_commit=$(git -C "$SOURCE_ROOT" rev-parse HEAD)
-    frontend_versions=$(python3 - "$SOURCE_ROOT/web/package.json" <<'PY'
+    local backend_dependencies
+    local artifact_inventory
+    assert_source_snapshot
+
+    frontend_versions=$(git -C "$SOURCE_SNAPSHOT_DIR" \
+        show "$SOURCE_COMMIT:web/package.json" \
+        | python3 -c '
 import json
 import sys
-
-with open(sys.argv[1], encoding="utf-8") as package_file:
-    package = json.load(package_file)
-
+package = json.load(sys.stdin)
+dependencies = package["dependencies"]
 for dependency in ("next", "react", "react-dom", "chart.js", "react-chartjs-2"):
-    print(f"frontend_{dependency}={package['dependencies'][dependency]}")
+    print(f"frontend_{dependency}={dependencies[dependency]}")
+')
+    backend_dependencies=$(git -C "$SOURCE_SNAPSHOT_DIR" \
+        show "$SOURCE_COMMIT:requirements-offline.txt")
+    artifact_inventory=$(python3 - "$STAGE_DIR/rpms" "$STAGE_DIR/python-wheels" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+for label, directory in (("rpm_artifact", Path(sys.argv[1])), ("python_wheel", Path(sys.argv[2]))):
+    for artifact in sorted(directory.iterdir(), key=lambda path: path.name.encode()):
+        if not artifact.is_file() or artifact.is_symlink():
+            raise SystemExit(f"unexpected non-file artifact: {artifact}")
+        if "\n" in artifact.name or "\r" in artifact.name or "\t" in artifact.name:
+            raise SystemExit(f"ambiguous artifact filename: {artifact.name!r}")
+        print(f"{label}={artifact.name} sha256={sha256_file(artifact)}")
 PY
 )
 
@@ -295,52 +473,66 @@ PY
         printf 'target_rhel=%s\n' "$TARGET_RHEL_VERSION"
         printf 'target_arch=%s\n' "$TARGET_ARCH"
         printf 'container_platform=%s\n' "$CONTAINER_PLATFORM"
-        printf 'resolver_image=%s\n' "$UBI_IMAGE"
+        printf 'resolver_ubi_tag=%s\n' "$UBI_IMAGE_TAG"
+        printf 'resolver_ubi_id=%s\n' "$RESOLVED_UBI_IMAGE_ID"
+        printf 'resolver_ubi_digest=%s\n' "$RESOLVED_UBI_IMAGE_DIGEST"
+        printf 'resolver_node_test_tag=%s\n' "$NODE_TEST_IMAGE_TAG"
+        printf 'resolver_node_test_id=%s\n' "$RESOLVED_NODE_TEST_IMAGE_ID"
+        printf 'resolver_node_test_digest=%s\n' "$RESOLVED_NODE_TEST_IMAGE_DIGEST"
         printf 'python=%s\n' "3.12"
+        printf 'pytest=%s\n' "$PYTEST_VERSION"
         printf 'node=%s\n' "$NODE_VERSION"
         printf 'npm=%s\n' "$RESOLVED_NPM_VERSION"
         printf '%s\n' "$frontend_versions"
         while IFS= read -r dependency || [[ -n "$dependency" ]]; do
             printf 'backend_dependency=%s\n' "$dependency"
-        done < "$SOURCE_ROOT/requirements-offline.txt"
-        printf 'source_commit=%s\n' "$source_commit"
+        done <<< "$backend_dependencies"
+        printf '%s\n' "$artifact_inventory"
+        printf 'source_commit=%s\n' "$SOURCE_COMMIT"
     } > "$STAGE_DIR/VERSIONS.txt"
 }
 
 write_checksums() {
-    rm -f "$STAGE_DIR/MANIFEST.sha256"
-    run_ubi \
-        -v "$STAGE_DIR:/bundle" \
-        -w /bundle \
-        -- \
-        bash -euo pipefail -c '
-            dnf install -y coreutils findutils >/dev/null
-            find . -type f ! -path ./MANIFEST.sha256 -print0 \
-                | LC_ALL=C sort -z \
-                | xargs -0 sha256sum > MANIFEST.sha256
-            test -s MANIFEST.sha256
-        '
+    assert_source_snapshot
+    "$SOURCE_SNAPSHOT_DIR/offline/generate-inventory.py" "$STAGE_DIR"
+    [[ -s "$STAGE_DIR/MANIFEST.paths" ]] || fail "path inventory is empty"
+    [[ -f "$STAGE_DIR/MANIFEST.symlinks" ]] || fail "symlink inventory is missing"
+    [[ -s "$STAGE_DIR/MANIFEST.sha256" ]] || fail "checksum inventory is empty"
 }
 
 run_clean_room() {
+    assert_source_snapshot
     "$CLEAN_ROOM_SCRIPT" "$STAGE_DIR"
 }
 
 create_archive() {
     local source_date_epoch
-    source_date_epoch=$(git -C "$SOURCE_ROOT" show -s --format=%ct HEAD)
+    assert_source_snapshot
+    source_date_epoch=$(git -C "$SOURCE_SNAPSHOT_DIR" \
+        show -s --format=%ct "$SOURCE_COMMIT")
 
     run_ubi \
-        -v "$STAGE_DIR:/stage:ro" \
+        -e "HOST_UID=$HOST_UID" \
+        -e "HOST_GID=$HOST_GID" \
+        -v "$WORK_ROOT:/work:ro" \
         -v "$DIST_ROOT:/dist" \
         -e "SOURCE_DATE_EPOCH=$source_date_epoch" \
         -e "ARCHIVE_NAME=$ARCHIVE_NAME" \
+        -e "STAGE_NAME=$STAGE_NAME" \
         -- \
         bash -euo pipefail -c '
+            repair_container_ownership() {
+                status=$?
+                trap - EXIT
+                chown -R "$HOST_UID:$HOST_GID" /dist
+                exit "$status"
+            }
+            trap repair_container_ownership EXIT
+            umask 022
             dnf install -y gzip tar >/dev/null
             GZIP=-n tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" \
                 --owner=0 --group=0 --numeric-owner \
-                -C /stage -czf "/dist/$ARCHIVE_NAME" .
+                -C /work -czf "/dist/$ARCHIVE_NAME" "$STAGE_NAME"
             cd /dist
             sha256sum "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
         '

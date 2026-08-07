@@ -1,6 +1,9 @@
+import hashlib
+import os
 import subprocess
 import stat
 import shlex
+import tarfile
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -9,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 COPY_APPLICATION_SCRIPT = ROOT / "offline/copy-application.sh"
 BUNDLE_BUILDER_SCRIPT = ROOT / "offline/build-bundle.sh"
+INVENTORY_SCRIPT = ROOT / "offline/generate-inventory.py"
 FORBIDDEN_RELEASE_NAMES = {
     ".env",
     ".venv",
@@ -311,6 +315,7 @@ def test_bundle_builder_has_required_shell_contract_and_functions():
 
     assert source.startswith("#!/usr/bin/env bash\n")
     assert "set -euo pipefail" in source
+    assert "umask 022" in source
     for function_name in [
         "preflight",
         "test_source",
@@ -335,7 +340,7 @@ def test_bundle_builder_targets_exact_rhel_platform_and_resolvers():
     assert 'TARGET_RHEL_VERSION="8.10"' in source
     assert 'TARGET_ARCH="x86_64"' in source
     assert 'CONTAINER_PLATFORM="linux/amd64"' in source
-    assert 'UBI_IMAGE="registry.access.redhat.com/ubi8/ubi:8.10"' in source
+    assert 'UBI_IMAGE_TAG="registry.access.redhat.com/ubi8/ubi:8.10"' in source
     assert 'docker run --rm --platform "$CONTAINER_PLATFORM"' in source
     assert 'dnf download --resolve --alldeps' in source
     assert '"$RPM_ROOTS_FILE"' in source
@@ -375,11 +380,12 @@ def test_source_gate_uses_exact_linux_node_and_committed_isolated_web_copy():
     source = builder_source()
     body = builder_function_body("test_source", "prepare_stage")
 
-    assert 'NODE_TEST_IMAGE="node:22.22.3-bookworm-slim"' in source
-    assert 'git -C "$SOURCE_ROOT" archive --format=tar HEAD -- web' in body
+    assert 'NODE_TEST_IMAGE_TAG="node:22.22.3-bookworm-slim"' in source
+    assert 'git -C "$SOURCE_SNAPSHOT_DIR" archive --format=tar' in body
+    assert '"$SOURCE_COMMIT" -- web' in body
     assert '"$SOURCE_TEST_DIR/web:/workspace"' in body
     assert 'docker run --rm --platform "$CONTAINER_PLATFORM"' in body
-    assert '"$NODE_TEST_IMAGE"' in body
+    assert '"$RESOLVED_NODE_TEST_IMAGE_ID"' in body
     assert 'test "$(node --version)" = "v$1"' in body
     assert 'case "$(npm --version)" in "$2".*)' in body
     assert "npm ci" in body
@@ -393,7 +399,7 @@ def test_source_gate_uses_exact_linux_node_and_committed_isolated_web_copy():
 def test_source_gate_compileall_includes_backend_seed_and_tests():
     body = builder_function_body("test_source", "prepare_stage")
 
-    assert 'compileall -q gcanalyzer seed tests' in body
+    assert 'python3.12 -m compileall -q gcanalyzer seed tests' in body
     assert "require_command npm" not in builder_function_body("preflight", "test_source")
 
 
@@ -411,39 +417,38 @@ def create_source_gate_fixture(tmp_path):
     head_marker = source / "web" / "from-head.txt"
     head_marker.write_text("committed\n")
     commit_fixture_repository(source)
+    frozen_commit = run_git(source, "rev-parse", "HEAD").stdout.strip()
     head_marker.write_text("working-tree\n")
-
-    python_log = tmp_path / "python.log"
-    python_stub = source / ".venv" / "bin" / "python"
-    python_stub.parent.mkdir(parents=True)
-    python_stub.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$PYTHON_LOG\"\n"
-    )
-    python_stub.chmod(0o755)
 
     repository_cache = source / "web" / "node_modules"
     repository_cache.mkdir()
     repository_sentinel = repository_cache / "must-survive"
     repository_sentinel.write_text("untouched\n")
-    return source, python_log, repository_sentinel
+    return source, frozen_commit, repository_sentinel
 
 
 def test_source_gate_behavior_uses_head_copy_without_touching_repository(tmp_path):
-    source, python_log, repository_sentinel = create_source_gate_fixture(tmp_path)
+    source, frozen_commit, repository_sentinel = create_source_gate_fixture(tmp_path)
     work_root = tmp_path / "work"
     source_test_dir = work_root / "source-test"
     docker_log = tmp_path / "docker.log"
     command = f"""
 source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
-SOURCE_ROOT={shlex.quote(str(source))}
 WORK_ROOT={shlex.quote(str(work_root))}
 SOURCE_TEST_DIR={shlex.quote(str(source_test_dir))}
-export PYTHON_LOG={shlex.quote(str(python_log))}
+SOURCE_SNAPSHOT_DIR={shlex.quote(str(source))}
+SOURCE_COMMIT={shlex.quote(frozen_commit)}
+RESOLVED_UBI_IMAGE_ID=sha256:ubi-image-id
+RESOLVED_NODE_TEST_IMAGE_ID=sha256:node-image-id
+assert_source_snapshot() {{ :; }}
 docker() {{
-    printf '%s\\n' "$@" > {shlex.quote(str(docker_log))}
-    printf 'exported=%s\\n' "$(cat "$SOURCE_TEST_DIR/web/from-head.txt")" \
-        >> {shlex.quote(str(docker_log))}
+    printf '%s\\n' "$@" >> {shlex.quote(str(docker_log))}
+    case " $* " in
+        *sha256:node-image-id*)
+            printf 'exported=%s\\n' "$(cat "$SOURCE_TEST_DIR/web/from-head.txt")" \
+                >> {shlex.quote(str(docker_log))}
+            ;;
+    esac
 }}
 npm() {{ return 99; }}
 test_source
@@ -456,27 +461,36 @@ test_source
     assert not source_test_dir.exists()
     docker_arguments = docker_log.read_text()
     assert "linux/amd64" in docker_arguments
-    assert "node:22.22.3-bookworm-slim" in docker_arguments
+    assert "sha256:node-image-id" in docker_arguments
     assert f"{source_test_dir}/web:/workspace" in docker_arguments
     assert f"{source}/web:/workspace" not in docker_arguments
     assert "exported=committed" in docker_arguments
-    python_commands = python_log.read_text()
-    assert "-m pytest -q" in python_commands
-    assert "-m compileall -q gcanalyzer seed tests" in python_commands
+    assert "sha256:ubi-image-id" in docker_arguments
+    assert "sha256:node-image-id" in docker_arguments
 
 
 def test_source_gate_cleans_disposable_copy_when_container_fails(tmp_path):
-    source, _, repository_sentinel = create_source_gate_fixture(tmp_path)
+    source, frozen_commit, repository_sentinel = create_source_gate_fixture(tmp_path)
     work_root = tmp_path / "work"
     source_test_dir = work_root / "source-test"
     docker_log = tmp_path / "docker-failed"
     command = f"""
 source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
-SOURCE_ROOT={shlex.quote(str(source))}
 WORK_ROOT={shlex.quote(str(work_root))}
 SOURCE_TEST_DIR={shlex.quote(str(source_test_dir))}
-export PYTHON_LOG={shlex.quote(str(tmp_path / 'python-failed.log'))}
-docker() {{ touch {shlex.quote(str(docker_log))}; return 37; }}
+SOURCE_SNAPSHOT_DIR={shlex.quote(str(source))}
+SOURCE_COMMIT={shlex.quote(frozen_commit)}
+RESOLVED_UBI_IMAGE_ID=sha256:ubi-image-id
+RESOLVED_NODE_TEST_IMAGE_ID=sha256:node-image-id
+assert_source_snapshot() {{ :; }}
+docker() {{
+    case " $* " in
+        *sha256:node-image-id*)
+            touch {shlex.quote(str(docker_log))}
+            return 37
+            ;;
+    esac
+}}
 npm() {{ return 99; }}
 test_source
 """
@@ -492,9 +506,9 @@ test_source
 def test_bundle_builder_uses_approved_copy_manifest_and_clean_room_steps():
     source = builder_source()
 
-    assert '"$COPY_APPLICATION_SCRIPT" "$SOURCE_ROOT" "$STAGE_DIR/app"' in source
-    assert '"$INSTALLER_SCRIPT"' in source
-    assert '"$VERIFIER_SCRIPT"' in source
+    assert '"$COPY_APPLICATION_SCRIPT" "$SOURCE_SNAPSHOT_DIR" "$STAGE_DIR/app" "$SOURCE_COMMIT"' in source
+    assert '"$SOURCE_COMMIT:offline/install-offline.sh"' in source
+    assert '"$SOURCE_COMMIT:offline/verify-offline.sh"' in source
     assert "VERSIONS.txt" in source
     assert "MANIFEST.sha256" in source
     assert "sha256sum" in source
@@ -553,6 +567,7 @@ main
 def test_bundle_builder_places_ubi_image_before_container_command():
     command = f"""
 source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
 docker() {{ printf '%s\n' "$@"; }}
 run_ubi -v /host:/container -- bash -c 'printf ignored'
 """
@@ -567,7 +582,7 @@ run_ubi -v /host:/container -- bash -c 'printf ignored'
         "linux/amd64",
         "-v",
         "/host:/container",
-        "registry.access.redhat.com/ubi8/ubi:8.10",
+        "sha256:frozen-ubi",
         "bash",
         "-c",
         "printf ignored",
@@ -599,3 +614,385 @@ def test_bundle_builder_has_valid_bash_syntax():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_python_gate_is_exact_ubi_810_amd64_python312_with_pinned_tests():
+    source = builder_source()
+    body = builder_function_body("test_source", "prepare_stage")
+
+    assert 'PYTEST_VERSION="9.1.1"' in source
+    assert '"$RESOLVED_UBI_IMAGE_ID"' in body
+    assert '--platform "$CONTAINER_PLATFORM"' in body
+    assert 'test "$VERSION_ID" = "$1"' in body
+    assert '_ "$TARGET_RHEL_VERSION" "$PYTEST_VERSION"' in body
+    assert 'test "$(uname -m)" = "x86_64"' in body
+    assert 'sys.version_info[:2] == (3, 12)' in body
+    assert "dnf install -y python3.12 python3.12-pip git tar gzip" in body
+    assert "python3.12 -m pip install" in body
+    assert '-r /source/requirements-offline.txt "pytest==$2"' in body
+    assert "python3.12 -m pytest -q" in body
+    assert "python_bin" not in body
+    assert ".venv/bin/python" not in body
+
+
+def test_builder_freezes_clean_source_commit_and_uses_standalone_snapshot():
+    source = builder_source()
+    preflight = builder_function_body("preflight", "test_source")
+
+    assert 'STARTUP_SOURCE_COMMIT=$(git -C "$ORIGINAL_SOURCE_ROOT" rev-parse HEAD)' in source
+    assert 'SOURCE_COMMIT=${GC_ANALYZER_SOURCE_COMMIT:-"$STARTUP_SOURCE_COMMIT"}' in source
+    assert 'git -C "$ORIGINAL_SOURCE_ROOT" diff --quiet "$SOURCE_COMMIT" --' in preflight
+    assert 'git -C "$ORIGINAL_SOURCE_ROOT" diff --cached --quiet "$SOURCE_COMMIT" --' in preflight
+    assert 'git -C "$ORIGINAL_SOURCE_ROOT" rev-parse HEAD' in preflight
+    assert "create_source_snapshot" in preflight
+    assert 'git clone --no-local --no-checkout' in source
+    assert 'checkout --detach "$SOURCE_COMMIT"' in source
+    assert 'rev-parse HEAD' in builder_function_body(
+        "assert_source_snapshot", "resolve_image"
+    )
+
+
+def test_later_bundle_inputs_are_read_only_from_frozen_snapshot():
+    source = builder_source()
+
+    assert 'RPM_ROOTS_FILE="$SOURCE_SNAPSHOT_DIR/offline/rhel8-packages.txt"' in source
+    assert 'COPY_APPLICATION_SCRIPT="$SOURCE_SNAPSHOT_DIR/offline/copy-application.sh"' in source
+    assert '"$COPY_APPLICATION_SCRIPT" "$SOURCE_SNAPSHOT_DIR" "$STAGE_DIR/app" "$SOURCE_COMMIT"' in source
+    assert 'show "$SOURCE_COMMIT:web/package.json"' in source
+    assert 'show "$SOURCE_COMMIT:web/package-lock.json"' in source
+    assert 'show "$SOURCE_COMMIT:requirements-offline.txt"' in source
+    assert '"$SOURCE_COMMIT:offline/install-offline.sh"' in source
+    assert '"$SOURCE_COMMIT:offline/verify-offline.sh"' in source
+    assert 'printf \'source_commit=%s\\n\' "$SOURCE_COMMIT"' in source
+    for function_name, next_name in [
+        ("test_source", "prepare_stage"),
+        ("download_rpms", "download_node_runtime"),
+        ("download_python_wheels", "populate_npm_cache"),
+        ("populate_npm_cache", "copy_application"),
+        ("copy_application", "write_version_manifest"),
+        ("write_version_manifest", "write_checksums"),
+        ("run_clean_room", "create_archive"),
+        ("create_archive", "main"),
+    ]:
+        assert '"$ORIGINAL_SOURCE_ROOT' not in builder_function_body(
+            function_name, next_name
+        )
+
+
+def test_copy_application_can_package_explicit_commit_after_head_moves(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "application"
+    (source / "offline").mkdir(parents=True)
+    (source / "payload").mkdir()
+    (source / "offline" / "app-files.txt").write_text("payload\n")
+    payload = source / "payload" / "version.txt"
+    payload.write_text("frozen\n")
+    commit_fixture_repository(source)
+    frozen_commit = run_git(source, "rev-parse", "HEAD").stdout.strip()
+    payload.write_text("later\n")
+    run_git(source, "add", "payload/version.txt")
+    run_git(
+        source,
+        "-c",
+        "user.name=GC Analyzer Tests",
+        "-c",
+        "user.email=tests@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "later",
+    )
+
+    subprocess.run(
+        [
+            str(COPY_APPLICATION_SCRIPT),
+            str(source),
+            str(destination),
+            frozen_commit,
+        ],
+        check=True,
+    )
+
+    assert (destination / "payload/version.txt").read_text() == "frozen\n"
+
+
+def test_resolver_images_are_pulled_validated_and_frozen_by_id():
+    source = builder_source()
+    preflight = builder_function_body("preflight", "test_source")
+    run_ubi_body = builder_function_body("run_ubi", "repair_build_ownership")
+
+    assert 'UBI_IMAGE_TAG="registry.access.redhat.com/ubi8/ubi:8.10"' in source
+    assert 'NODE_TEST_IMAGE_TAG="node:22.22.3-bookworm-slim"' in source
+    assert 'docker pull --platform "$CONTAINER_PLATFORM" "$UBI_IMAGE_TAG"' in preflight
+    assert 'docker pull --platform "$CONTAINER_PLATFORM" "$NODE_TEST_IMAGE_TAG"' in preflight
+    assert "resolve_image" in preflight
+    assert "RepoDigests" in source
+    assert '"$RESOLVED_UBI_IMAGE_ID"' in run_ubi_body
+    assert '"$UBI_IMAGE_TAG"' not in run_ubi_body
+    assert 'test "$(uname -m)" = "x86_64"' in preflight
+    assert 'test "$(node --version)" = "v$1"' in preflight
+    assert 'case "$(npm --version)" in "$2".*)' in preflight
+
+
+def test_writable_containers_propagate_host_identity_and_repair_ownership():
+    source = builder_source()
+    test_source_body = builder_function_body("test_source", "prepare_stage")
+    npm_body = builder_function_body("populate_npm_cache", "copy_application")
+    prepare_body = builder_function_body("prepare_stage", "download_rpms")
+
+    assert 'HOST_UID=$(id -u)' in source
+    assert 'HOST_GID=$(id -g)' in source
+    for body in (test_source_body, npm_body):
+        assert '--user "$HOST_UID:$HOST_GID"' in body
+        assert '-e HOME=/tmp/' in body
+    assert "repair_build_ownership" in prepare_body
+    assert source.count("trap repair_container_ownership EXIT") >= 4
+    assert 'chown -R "$HOST_UID:$HOST_GID"' in source
+
+
+def test_prepare_stage_repairs_ownership_before_removing_stale_output(tmp_path):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    stage = work_root / "gc-analyzer-offline"
+    stale = stage / "root-owned/stale.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale\n")
+    repair_marker = tmp_path / "ownership-repaired"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+WORK_ROOT={shlex.quote(str(work_root))}
+DIST_ROOT={shlex.quote(str(dist_root))}
+STAGE_DIR={shlex.quote(str(stage))}
+NPM_WORK_DIR="$WORK_ROOT/npm-work"
+NODE_DOWNLOAD_DIR="$WORK_ROOT/node-download"
+ARCHIVE_PATH="$DIST_ROOT/$ARCHIVE_NAME"
+repair_build_ownership() {{ touch {shlex.quote(str(repair_marker))}; }}
+prepare_stage
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert repair_marker.is_file()
+    assert not stale.exists()
+    assert (stage / "app").is_dir()
+
+
+def test_ownership_repair_passes_numeric_host_uid_and_gid(tmp_path):
+    docker_log = tmp_path / "docker-ownership.log"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+WORK_ROOT={shlex.quote(str(tmp_path / 'work'))}
+DIST_ROOT={shlex.quote(str(tmp_path / 'dist'))}
+HOST_UID=1234
+HOST_GID=5678
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+docker() {{ printf '%s\\n' "$@" > {shlex.quote(str(docker_log))}; }}
+repair_build_ownership
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    docker_arguments = docker_log.read_text().splitlines()
+    assert "HOST_UID=1234" in docker_arguments
+    assert "HOST_GID=5678" in docker_arguments
+    assert "sha256:frozen-ubi" in docker_arguments
+    assert 'chown -R "$HOST_UID:$HOST_GID" /work /dist' in docker_arguments
+
+
+def run_inventory(stage):
+    return subprocess.run(
+        [str(INVENTORY_SCRIPT), str(stage)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def inventory_contents(stage):
+    return {
+        name: (stage / name).read_text()
+        for name in ("MANIFEST.paths", "MANIFEST.symlinks", "MANIFEST.sha256")
+    }
+
+
+def test_inventory_tracks_files_modes_safe_symlinks_and_added_entries(tmp_path):
+    stage = tmp_path / "gc-analyzer-offline"
+    binary = stage / "node-runtime/bin/node"
+    target = stage / "node-runtime/lib/node_modules/next/dist/bin/next"
+    link = stage / "node-runtime/lib/node_modules/.bin/next"
+    binary.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    link.parent.mkdir(parents=True)
+    binary.write_text("node-v1\n")
+    binary.chmod(0o755)
+    target.write_text("next-v1\n")
+    link.symlink_to("../next/dist/bin/next")
+
+    first = run_inventory(stage)
+    assert first.returncode == 0, first.stderr
+    baseline = inventory_contents(stage)
+    assert "file\t0755\tnode-runtime/bin/node\n" in baseline["MANIFEST.paths"]
+    assert "symlink\t0777\tnode-runtime/lib/node_modules/.bin/next\n" in baseline[
+        "MANIFEST.paths"
+    ]
+    assert (
+        "node-runtime/lib/node_modules/.bin/next\t../next/dist/bin/next\n"
+        in baseline["MANIFEST.symlinks"]
+    )
+    assert "MANIFEST.paths" in baseline["MANIFEST.sha256"]
+    assert "MANIFEST.symlinks" in baseline["MANIFEST.sha256"]
+
+    binary.write_text("node-v2\n")
+    assert run_inventory(stage).returncode == 0
+    changed_file = inventory_contents(stage)
+    assert changed_file["MANIFEST.sha256"] != baseline["MANIFEST.sha256"]
+
+    second_target = target.with_name("next-alt")
+    second_target.write_text("next-v1\n")
+    link.unlink()
+    link.symlink_to("../next/dist/bin/next-alt")
+    assert run_inventory(stage).returncode == 0
+    changed_link = inventory_contents(stage)
+    assert changed_link["MANIFEST.symlinks"] != changed_file["MANIFEST.symlinks"]
+
+    added = stage / "app/added.txt"
+    added.parent.mkdir()
+    added.write_text("added\n")
+    assert run_inventory(stage).returncode == 0
+    changed_entries = inventory_contents(stage)
+    assert changed_entries["MANIFEST.paths"] != changed_link["MANIFEST.paths"]
+    assert "app/added.txt" in changed_entries["MANIFEST.paths"]
+
+
+@pytest.mark.parametrize("unsafe_kind", ["absolute", "escape", "broken", "tab"])
+def test_inventory_rejects_unsafe_or_ambiguous_entries(tmp_path, unsafe_kind):
+    stage = tmp_path / "gc-analyzer-offline"
+    stage.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("outside\n")
+    if unsafe_kind == "absolute":
+        (stage / "link").symlink_to(outside)
+    elif unsafe_kind == "escape":
+        (stage / "link").symlink_to("../outside")
+    elif unsafe_kind == "broken":
+        (stage / "link").symlink_to("missing")
+    else:
+        (stage / "bad\tname").write_text("ambiguous\n")
+
+    result = run_inventory(stage)
+
+    assert result.returncode != 0
+
+
+def test_inventory_rejects_unsupported_entry_type(tmp_path):
+    stage = tmp_path / "gc-analyzer-offline"
+    stage.mkdir()
+    fifo = stage / "pipe"
+    os.mkfifo(fifo)
+
+    result = run_inventory(stage)
+
+    assert result.returncode != 0
+    assert "unsupported entry type" in result.stderr
+
+
+def test_builder_writes_complete_inventory_before_clean_room():
+    source = builder_source()
+    body = builder_function_body("write_checksums", "run_clean_room")
+
+    assert 'generate-inventory.py" "$STAGE_DIR"' in body
+    assert "MANIFEST.paths" in source
+    assert "MANIFEST.symlinks" in source
+    main = source.split("main() {", 1)[1].split('\n}\n\nif [[', 1)[0]
+    assert main.index("write_checksums") < main.index("run_clean_room")
+
+
+def test_archive_contains_gc_analyzer_offline_as_top_level(tmp_path):
+    source = builder_source()
+    create_body = builder_function_body("create_archive", "main")
+
+    assert 'STAGE_NAME="gc-analyzer-offline"' in source
+    assert 'STAGE_DIR=${GC_ANALYZER_BUNDLE_STAGE_DIR:-"$WORK_ROOT/$STAGE_NAME"}' in source
+    assert '-C /work -czf "/dist/$ARCHIVE_NAME" "$STAGE_NAME"' in create_body
+
+    work = tmp_path / "work"
+    stage = work / "gc-analyzer-offline"
+    (stage / "app").mkdir(parents=True)
+    (stage / "app/file.txt").write_text("payload\n")
+    archive = tmp_path / "bundle.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(stage, arcname="gc-analyzer-offline")
+    with tarfile.open(archive, "r:gz") as tar:
+        names = tar.getnames()
+
+    assert names[0] == "gc-analyzer-offline"
+    assert "gc-analyzer-offline/app/file.txt" in names
+
+
+def test_versions_records_resolvers_and_sorted_artifact_hashes():
+    source = builder_source()
+    body = builder_function_body("write_version_manifest", "write_checksums")
+
+    for field in [
+        "resolver_ubi_tag",
+        "resolver_ubi_id",
+        "resolver_ubi_digest",
+        "resolver_node_test_tag",
+        "resolver_node_test_id",
+        "resolver_node_test_digest",
+        "rpm_artifact",
+        "python_wheel",
+    ]:
+        assert field in body
+    assert "sha256" in body
+    assert "sorted" in body
+
+
+def test_version_manifest_behavior_records_sorted_hashed_artifacts(tmp_path):
+    stage = tmp_path / "gc-analyzer-offline"
+    rpms = stage / "rpms"
+    wheels = stage / "python-wheels"
+    rpms.mkdir(parents=True)
+    wheels.mkdir()
+    artifacts = {
+        rpms / "z-package.rpm": b"rpm-z",
+        rpms / "a-package.rpm": b"rpm-a",
+        wheels / "z_package.whl": b"wheel-z",
+        wheels / "a_package.whl": b"wheel-a",
+    }
+    for artifact, content in artifacts.items():
+        artifact.write_bytes(content)
+    source_commit = run_git(ROOT, "rev-parse", "HEAD").stdout.strip()
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+SOURCE_SNAPSHOT_DIR={shlex.quote(str(ROOT))}
+SOURCE_COMMIT={shlex.quote(source_commit)}
+STAGE_DIR={shlex.quote(str(stage))}
+RESOLVED_UBI_IMAGE_ID=sha256:ubi-id
+RESOLVED_UBI_IMAGE_DIGEST=registry/ubi@sha256:ubi-digest
+RESOLVED_NODE_TEST_IMAGE_ID=sha256:node-id
+RESOLVED_NODE_TEST_IMAGE_DIGEST=node@sha256:node-digest
+RESOLVED_NPM_VERSION=10.9.4
+assert_source_snapshot() {{ :; }}
+write_version_manifest
+"""
+
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    lines = (stage / "VERSIONS.txt").read_text().splitlines()
+    rpm_lines = [line for line in lines if line.startswith("rpm_artifact=")]
+    wheel_lines = [line for line in lines if line.startswith("python_wheel=")]
+    assert rpm_lines == sorted(rpm_lines)
+    assert wheel_lines == sorted(wheel_lines)
+    for artifact, content in artifacts.items():
+        label = "rpm_artifact" if artifact.suffix == ".rpm" else "python_wheel"
+        expected = (
+            f"{label}={artifact.name} "
+            f"sha256={hashlib.sha256(content).hexdigest()}"
+        )
+        assert expected in lines
+    assert f"source_commit={source_commit}" in lines
+    assert "resolver_ubi_id=sha256:ubi-id" in lines
+    assert "resolver_node_test_id=sha256:node-id" in lines
