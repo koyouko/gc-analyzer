@@ -1,4 +1,5 @@
 import hashlib
+import itertools
 import os
 import subprocess
 import stat
@@ -321,6 +322,61 @@ NPM_WORK_DIR="$WORK_ROOT/npm-work"
 NODE_DOWNLOAD_DIR="$WORK_ROOT/node-download"
 ARCHIVE_PATH="$DIST_ROOT/$ARCHIVE_NAME"
 """
+
+
+MANAGED_WORK_CHILDREN = [
+    "STAGE_DIR",
+    "SOURCE_SNAPSHOT_DIR",
+    "SOURCE_TEST_DIR",
+    "NPM_WORK_DIR",
+    "NODE_DOWNLOAD_DIR",
+]
+
+
+def managed_path_values(work_root, dist_root):
+    return {
+        "STAGE_DIR": work_root / "gc-analyzer-offline",
+        "SOURCE_SNAPSHOT_DIR": work_root / "source-snapshot",
+        "SOURCE_TEST_DIR": work_root / "source-test",
+        "NPM_WORK_DIR": work_root / "npm-work",
+        "NODE_DOWNLOAD_DIR": work_root / "node-download",
+        "ARCHIVE_PATH": dist_root / "gc-analyzer-rhel8.10-x86_64-offline.tar.gz",
+    }
+
+
+def managed_path_assignments(work_root, dist_root, paths):
+    assignments = [
+        f"WORK_ROOT={shlex.quote(str(work_root))}",
+        f"DIST_ROOT={shlex.quote(str(dist_root))}",
+    ]
+    assignments.extend(
+        f"{name}={shlex.quote(str(paths[name]))}"
+        for name in [*MANAGED_WORK_CHILDREN, "ARCHIVE_PATH"]
+    )
+    return "\n".join(assignments)
+
+
+def run_managed_layout_guard(tmp_path, assignments, protected_file):
+    marker_call = tmp_path / "marker-called"
+    docker_call = tmp_path / "docker-called"
+    removal_call = tmp_path / "removal-called"
+    clone_call = tmp_path / "clone-called"
+    command = f"""
+source {shlex.quote(str(BUNDLE_BUILDER_SCRIPT))}
+{assignments}
+RESOLVED_UBI_IMAGE_ID=sha256:frozen-ubi
+initialize_managed_root() {{ touch {shlex.quote(str(marker_call))}; }}
+assert_managed_root_marker() {{ touch {shlex.quote(str(marker_call))}; }}
+assert_source_snapshot() {{ :; }}
+docker() {{ touch {shlex.quote(str(docker_call))}; }}
+rm() {{ touch {shlex.quote(str(removal_call))}; command rm "$@"; }}
+git() {{ touch {shlex.quote(str(clone_call))}; }}
+repair_build_ownership
+prepare_stage
+create_source_snapshot
+"""
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+    return result, marker_call, docker_call, removal_call, clone_call, protected_file
 
 
 def test_bundle_builder_has_required_shell_contract_and_functions():
@@ -901,6 +957,103 @@ repair_build_ownership
     assert not docker_marker.exists()
     assert not work_root.exists()
     assert not dist_root.exists()
+
+
+@pytest.mark.parametrize("child_name", MANAGED_WORK_CHILDREN)
+def test_managed_work_children_must_be_strict_descendants_before_side_effects(
+    tmp_path, child_name
+):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    work_root.mkdir()
+    protected = work_root / "protected.txt"
+    protected.write_text("must survive\n")
+    paths = managed_path_values(work_root, dist_root)
+    paths[child_name] = work_root
+    outcome = run_managed_layout_guard(
+        tmp_path,
+        managed_path_assignments(work_root, dist_root, paths),
+        protected,
+    )
+    result, marker_call, docker_call, removal_call, clone_call, protected = outcome
+
+    assert result.returncode != 0
+    assert protected.read_text() == "must survive\n"
+    assert not marker_call.exists()
+    assert not docker_call.exists()
+    assert not removal_call.exists()
+    assert not clone_call.exists()
+
+
+@pytest.mark.parametrize(
+    ("first_child", "second_child", "relationship"),
+    [
+        (*pair, relationship)
+        for pair, relationship in itertools.product(
+            itertools.combinations(MANAGED_WORK_CHILDREN, 2),
+            ["equal", "first_parent", "second_parent"],
+        )
+    ],
+)
+def test_managed_work_children_must_be_pairwise_disjoint_before_side_effects(
+    tmp_path, first_child, second_child, relationship
+):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    work_root.mkdir()
+    protected = work_root / "protected.txt"
+    protected.write_text("must survive\n")
+    paths = managed_path_values(work_root, dist_root)
+    if relationship == "equal":
+        paths[second_child] = paths[first_child]
+    elif relationship == "first_parent":
+        paths[second_child] = paths[first_child] / "nested"
+    else:
+        paths[first_child] = paths[second_child] / "nested"
+    outcome = run_managed_layout_guard(
+        tmp_path,
+        managed_path_assignments(work_root, dist_root, paths),
+        protected,
+    )
+    result, marker_call, docker_call, removal_call, clone_call, protected = outcome
+
+    assert result.returncode != 0
+    assert protected.read_text() == "must survive\n"
+    assert not marker_call.exists()
+    assert not docker_call.exists()
+    assert not removal_call.exists()
+    assert not clone_call.exists()
+
+
+@pytest.mark.parametrize("archive_layout", ["dist_root", "work_root", "stage"])
+def test_archive_path_must_be_strict_and_isolated_before_side_effects(
+    tmp_path, archive_layout
+):
+    work_root = tmp_path / "work"
+    dist_root = tmp_path / "dist"
+    work_root.mkdir()
+    protected = work_root / "protected.txt"
+    protected.write_text("must survive\n")
+    paths = managed_path_values(work_root, dist_root)
+    if archive_layout == "dist_root":
+        paths["ARCHIVE_PATH"] = dist_root
+    elif archive_layout == "work_root":
+        paths["ARCHIVE_PATH"] = work_root
+    else:
+        paths["ARCHIVE_PATH"] = paths["STAGE_DIR"]
+    outcome = run_managed_layout_guard(
+        tmp_path,
+        managed_path_assignments(work_root, dist_root, paths),
+        protected,
+    )
+    result, marker_call, docker_call, removal_call, clone_call, protected = outcome
+
+    assert result.returncode != 0
+    assert protected.read_text() == "must survive\n"
+    assert not marker_call.exists()
+    assert not docker_call.exists()
+    assert not removal_call.exists()
+    assert not clone_call.exists()
 
 
 @pytest.mark.parametrize(

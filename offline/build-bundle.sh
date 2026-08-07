@@ -70,6 +70,8 @@ require_descendant() {
         || fail "unsafe $label path"
     normalized_path=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$path")
     normalized_parent=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$parent")
+    [[ "$normalized_path" != "$normalized_parent" ]] \
+        || fail "$label must be a strict descendant of $parent: $path"
     case "$normalized_path/" in
         "$normalized_parent"/*)
             ;;
@@ -77,6 +79,33 @@ require_descendant() {
             fail "$label must be beneath $parent: $path"
             ;;
     esac
+}
+
+managed_paths_overlap() {
+    local first=$1
+    local second=$2
+    [[ "$first" == "$second" ]] && return 0
+    case "$first/" in
+        "$second"/*)
+            return 0
+            ;;
+    esac
+    case "$second/" in
+        "$first"/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+require_disjoint_managed_paths() {
+    local first=$1
+    local first_label=$2
+    local second=$3
+    local second_label=$4
+    if managed_paths_overlap "$first" "$second"; then
+        fail "$first_label and $second_label must not overlap"
+    fi
 }
 
 canonical_path() {
@@ -118,6 +147,22 @@ validate_managed_descendant() {
 }
 
 validate_managed_output_paths() {
+    local work_paths=(
+        "$STAGE_DIR"
+        "$SOURCE_SNAPSHOT_DIR"
+        "$SOURCE_TEST_DIR"
+        "$NPM_WORK_DIR"
+        "$NODE_DOWNLOAD_DIR"
+    )
+    local work_labels=(
+        "stage"
+        "source snapshot"
+        "source test"
+        "npm work"
+        "Node download"
+    )
+    local i
+    local j
     validate_managed_root "$WORK_ROOT" "WORK_ROOT"
     validate_managed_root "$DIST_ROOT" "DIST_ROOT"
     [[ "$WORK_ROOT" != "$DIST_ROOT" ]] \
@@ -133,14 +178,26 @@ validate_managed_output_paths() {
             ;;
     esac
 
-    validate_managed_descendant "$STAGE_DIR" "$WORK_ROOT" "stage"
-    validate_managed_descendant \
-        "$SOURCE_SNAPSHOT_DIR" "$WORK_ROOT" "source snapshot"
-    validate_managed_descendant "$SOURCE_TEST_DIR" "$WORK_ROOT" "source test"
-    validate_managed_descendant "$NPM_WORK_DIR" "$WORK_ROOT" "npm work"
-    validate_managed_descendant \
-        "$NODE_DOWNLOAD_DIR" "$WORK_ROOT" "Node download"
+    for ((i = 0; i < ${#work_paths[@]}; i++)); do
+        validate_managed_descendant \
+            "${work_paths[$i]}" "$WORK_ROOT" "${work_labels[$i]}"
+    done
+    for ((i = 0; i < ${#work_paths[@]}; i++)); do
+        for ((j = i + 1; j < ${#work_paths[@]}; j++)); do
+            require_disjoint_managed_paths \
+                "${work_paths[$i]}" "${work_labels[$i]}" \
+                "${work_paths[$j]}" "${work_labels[$j]}"
+        done
+    done
+
     validate_managed_descendant "$ARCHIVE_PATH" "$DIST_ROOT" "archive"
+    require_disjoint_managed_paths \
+        "$ARCHIVE_PATH" "archive" "$WORK_ROOT" "WORK_ROOT"
+    for ((i = 0; i < ${#work_paths[@]}; i++)); do
+        require_disjoint_managed_paths \
+            "$ARCHIVE_PATH" "archive" \
+            "${work_paths[$i]}" "${work_labels[$i]}"
+    done
 }
 
 assert_managed_root_marker() {
