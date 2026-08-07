@@ -1,0 +1,15 @@
+frontend
+gcanalyzer
+seed
+web/app
+web/components
+web/lib
+web/next.config.js
+web/package.json
+web/package-lock.json
+web/tsconfig.json
+requirements.txt
+requirements-offline.txt
+manage-app.sh
+README.md
+architecture_and_user_guide.html

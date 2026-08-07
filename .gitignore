@@ -25,3 +25,7 @@ web/*.tsbuildinfo
 # manage-app.sh runtime files
 gcanalyzer-*.log
 gcanalyzer-*.pid
+
+# Offline bundle build outputs
+offline/dist/
+offline/work/
