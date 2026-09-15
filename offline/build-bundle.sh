@@ -302,11 +302,13 @@ repair_build_ownership() {
     docker run --rm --platform "$CONTAINER_PLATFORM" \
         -e "HOST_UID=$HOST_UID" \
         -e "HOST_GID=$HOST_GID" \
+        -e "SNAPSHOT_PATH=/work/${SOURCE_SNAPSHOT_DIR#"$WORK_ROOT"/}" \
         -v "$WORK_ROOT:/work" \
         -v "$DIST_ROOT:/dist" \
         "$RESOLVED_UBI_IMAGE_ID" \
         bash -euo pipefail -c \
-            'chown -R "$HOST_UID:$HOST_GID" /work /dist'
+            'find /work /dist -path "$SNAPSHOT_PATH" -prune -o \
+                -exec chown "$HOST_UID:$HOST_GID" {} +'
 }
 
 create_source_snapshot() {
