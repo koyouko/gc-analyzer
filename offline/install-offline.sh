@@ -547,10 +547,14 @@ install_frontend() {
             HOME="$STATE_ROOT" PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
             "$NODE_ROOT/bin/node" "$npm_cli" ci --offline \
             --cache "$BUNDLE_ROOT/npm-cache" --no-audit
+        # RHEL 8 has glibc 2.28; Next's native compiler requires 2.29.
+        # Seed Next's fallback directory so it never downloads the WASM compiler.
+        install -d -m 0755 node_modules/next/wasm node_modules/next/wasm/@next
+        cp -a node_modules/@next/swc-wasm-nodejs node_modules/next/wasm/@next/
         runuser -u gc-analyzer -- env \
             HOME="$STATE_ROOT" PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
-            BACKEND_URL=http://127.0.0.1:8083 \
-            "$NODE_ROOT/bin/node" "$npm_cli" run build
+            BACKEND_URL=http://127.0.0.1:8083 NEXT_TELEMETRY_DISABLED=1 \
+            "$NODE_ROOT/bin/node" "$npm_cli" run build -- --webpack
     )
     [[ -s "$APP_ROOT/web/.next/BUILD_ID" ]] \
         || fail "frontend production build did not create .next/BUILD_ID"

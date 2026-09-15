@@ -1649,6 +1649,9 @@ def test_offline_frontend_commands_run_from_installed_web_directory_only(tmp_pat
     node.write_text('#!/usr/bin/env bash\nprintf "v22.22.3\\n"\n')
     node.chmod(0o755)
     (node_root / "lib/node_modules/npm/bin/npm-cli.js").write_text("fixture\n")
+    compiler = web_root / "node_modules/@next/swc-wasm-nodejs"
+    compiler.mkdir(parents=True)
+    (compiler / "wasm.js").write_text("portable compiler fixture\n")
     cwd_log = tmp_path / "npm-cwds"
     command = f"""
 source {shlex.quote(str(OFFLINE_INSTALLER_SCRIPT))}
@@ -1660,7 +1663,10 @@ SERVICE_USER=gc-analyzer
 runuser() {{
     printf '%s\n' "$PWD" >> {shlex.quote(str(cwd_log))}
     case " $* " in
-        *' run build '*) mkdir -p "$APP_ROOT/web/.next"; printf id > "$APP_ROOT/web/.next/BUILD_ID" ;;
+        *' run build '*)
+            [[ " $* " == *' -- --webpack '* ]] || return 91
+            [[ -f "$APP_ROOT/web/node_modules/next/wasm/@next/swc-wasm-nodejs/wasm.js" ]] || return 92
+            mkdir -p "$APP_ROOT/web/.next"; printf id > "$APP_ROOT/web/.next/BUILD_ID" ;;
     esac
 }}
 chown() {{ :; }}

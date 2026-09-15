@@ -621,7 +621,7 @@ import json
 import sys
 package = json.load(sys.stdin)
 dependencies = package["dependencies"]
-for dependency in ("next", "react", "react-dom", "chart.js", "react-chartjs-2"):
+for dependency in ("next", "@next/swc-wasm-nodejs", "react", "react-dom", "chart.js", "react-chartjs-2"):
     print(f"frontend_{dependency}={dependencies[dependency]}")
 ')
     backend_dependencies=$(git -C "$SOURCE_SNAPSHOT_DIR" \

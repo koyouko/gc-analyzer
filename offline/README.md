@@ -41,6 +41,7 @@ with at least **4 GiB RAM** is recommended for the frontend production build.
 | scikit-learn | 1.9.0, with NumPy, SciPy and all transitive wheels |
 | Node.js / npm | 22.22.3 / bundled npm 10 |
 | Next.js | 16.3.5 |
+| Offline frontend compiler | Next SWC WebAssembly 16.3.5, using webpack on RHEL 8's existing glibc 2.28 |
 | React / React DOM | 19.2.8 |
 | Chart.js | 4.5.1 for the optional Next client; the dashboard's vendor asset is also local |
 | OS packages | Python, certificates, networking/archive tools, service-account tools, systemd, DNF, C++ runtime and their RPM dependency closure |
@@ -50,6 +51,10 @@ its exact filename and SHA-256, plus the source commit and immutable build image
 `app/web/package-lock.json` records all frontend dependencies. `MANIFEST.sha256`
 covers the entire payload. Third-party licenses shipped with packages remain
 inside the RPMs, wheels, Node distribution and npm packages.
+
+The offline installer preloads the portable compiler from the npm cache. Native
+SWC compatibility warnings during the build are expected on RHEL 8; the bundled
+WebAssembly fallback completes the build without downloads or replacing glibc.
 
 ## Access And Control
 
