@@ -1,0 +1,7 @@
+python3.12
+python3.12-pip
+ca-certificates
+curl
+tar
+gzip
+shadow-utils

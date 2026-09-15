@@ -1,5 +1,10 @@
 import ClusterView from "@/components/ClusterView";
 
-export default function Page({ params }: { params: { cluster: string } }) {
-  return <ClusterView cluster={decodeURIComponent(params.cluster)} />;
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ cluster: string }>;
+}) {
+  const { cluster } = await params;
+  return <ClusterView cluster={decodeURIComponent(cluster)} />;
 }

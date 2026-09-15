@@ -54,6 +54,7 @@ The output is `gc-analyzer-rhel8.10-x86_64-offline.tar.gz` with this layout:
 gc-analyzer-offline/
   app/                  application source, frontend source, and lockfiles
   rpms/                 RHEL-compatible Python and runtime RPM closure
+  node-runtime/         Node.js 22 Linux x86_64 runtime
   python-wheels/        backend wheels and transitive dependencies
   npm-cache/            npm cache sufficient for npm ci --offline
   install-offline.sh    local-only installation entry point
