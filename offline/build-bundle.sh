@@ -263,8 +263,8 @@ resolve_image() {
     local image_digest
     local image_platform
 
-    image_id=$(docker image inspect --format '{{.Id}}' "$image_tag")
-    image_digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image_tag")
+    image_id=$(docker image inspect --platform "$CONTAINER_PLATFORM" --format '{{.Id}}' "$image_tag")
+    image_digest=$(docker image inspect --platform "$CONTAINER_PLATFORM" --format '{{index .RepoDigests 0}}' "$image_tag")
     image_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id")
     [[ "$image_id" == sha256:* ]] || fail "resolver image has no immutable ID: $image_tag"
     [[ "$image_digest" == *@sha256:* ]] \

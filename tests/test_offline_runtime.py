@@ -52,6 +52,7 @@ def test_source_gate_includes_api_client_and_javascript_tests():
     assert '"httpx==0.28.1"' in script
     assert 'node --test /source/frontend/dashboard.test.cjs /source/tests/*.cjs' in script
     assert 'GC_ANALYZER_CLEAN_ROOM_IMAGE="$RESOLVED_UBI_IMAGE_ID"' in script
+    assert 'image inspect --platform "$CONTAINER_PLATFORM"' in script
 
 
 def test_fresh_offline_install_uses_random_bootstrap_passwords():

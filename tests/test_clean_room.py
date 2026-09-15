@@ -88,7 +88,7 @@ def room(tmp_path):
     )
     executable(
         binaries / "docker",
-        f"#!{sys.executable}\n"
+        f"#!{Path(sys.executable).resolve()}\n"
         + textwrap.dedent(
             r"""
             import json
