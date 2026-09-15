@@ -13,3 +13,4 @@ requirements-offline.txt
 manage-app.sh
 README.md
 architecture_and_user_guide.html
+prometheus.example.json

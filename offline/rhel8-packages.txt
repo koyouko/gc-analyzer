@@ -5,3 +5,5 @@ curl
 tar
 gzip
 shadow-utils
+util-linux
+libstdc++

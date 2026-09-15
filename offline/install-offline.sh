@@ -272,6 +272,7 @@ migrate_legacy_state() {
         move_if_destination_absent "$APP_ROOT/.session_secret" "$SESSION_SECRET_FILE"
         move_if_destination_absent "$APP_ROOT/.env" "$ENV_FILE"
         move_if_destination_absent "$APP_ROOT/config.json" "$CONFIG_ROOT/config.json"
+        move_if_destination_absent "$APP_ROOT/prometheus.json" "$STATE_ROOT/prometheus.json"
         move_if_destination_absent "$APP_ROOT/clusters" "$CLUSTERS_ROOT"
     fi
 }
@@ -368,7 +369,7 @@ prepare_persistent_state() {
 install_python_environment() {
     CURRENT_STAGE="offline Python environment"
     python3.12 -m venv "$PYTHON_ROOT"
-    "$PYTHON_ROOT/bin/python" -m pip --no-index \
+    "$PYTHON_ROOT/bin/python" -m pip install --no-index \
         --find-links="$BUNDLE_ROOT/python-wheels" --only-binary=:all: \
         -r "$APP_ROOT/requirements-offline.txt"
     "$PYTHON_ROOT/bin/python" -m pip check
@@ -381,8 +382,27 @@ initialize_users_file() {
     if [[ ! -e "$GC_USERS_FILE" && ! -L "$GC_USERS_FILE" ]]; then
         (
             cd "$APP_ROOT"
-            GC_USERS_FILE="$GC_USERS_FILE" "$PYTHON_ROOT/bin/python" -c \
-                'from gcanalyzer import auth; auth.load_users()'
+            GC_USERS_FILE="$GC_USERS_FILE" "$PYTHON_ROOT/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+import secrets
+from gcanalyzer import auth
+
+credentials = {
+    "admin": os.environ.get("GC_ADMIN_PASSWORD") or secrets.token_urlsafe(24),
+    "readonly": os.environ.get("GC_READONLY_PASSWORD") or secrets.token_urlsafe(24),
+}
+os.environ["GC_ADMIN_PASSWORD"] = credentials["admin"]
+os.environ["GC_READONLY_PASSWORD"] = credentials["readonly"]
+path = Path(os.environ["GC_USERS_FILE"]).with_name("bootstrap-credentials.json")
+with path.open("x") as output:
+    os.chmod(path, 0o600)
+    json.dump(credentials, output, indent=2)
+    output.write("\n")
+auth.load_users()
+print(f"Initial passwords saved for root only: {path}")
+PY
         )
         chown "$SERVICE_USER:$SERVICE_GROUP" "$GC_USERS_FILE"
         chmod 0600 "$GC_USERS_FILE"
@@ -437,6 +457,7 @@ WorkingDirectory=/opt/gc-analyzer
 EnvironmentFile=-/etc/gc-analyzer/gc-analyzer.env
 Environment=GC_DB=/var/lib/gc-analyzer/gc_history.db
 Environment=GC_USERS_FILE=/etc/gc-analyzer/users.json
+Environment=GC_PROMETHEUS_CONFIG=/var/lib/gc-analyzer/prometheus.json
 Environment=GC_SCHED_ENABLED=1
 ExecStart=/opt/gc-analyzer/.venv/bin/python -m gcanalyzer.app --host 127.0.0.1 --port 8083 --db /var/lib/gc-analyzer/gc_history.db
 Restart=on-failure

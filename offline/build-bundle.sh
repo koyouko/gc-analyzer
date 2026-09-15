@@ -399,26 +399,29 @@ test_source() {
                 dnf install -y python3.12 python3.12-pip git tar gzip >/dev/null
                 python3.12 -c "import sys; assert sys.version_info[:2] == (3, 12)"
                 cp -a /snapshot /source
+                chown -R 0:0 /source
                 python3.12 -m pip install --only-binary=:all: \
-                    -r /source/requirements-offline.txt "pytest==$2"
+                    -r /source/requirements-offline.txt "pytest==$2" "httpx==0.28.1"
                 cd /source
                 python3.12 -m pytest -q
                 python3.12 -m compileall -q gcanalyzer seed tests
             ' _ "$TARGET_RHEL_VERSION" "$PYTEST_VERSION"
 
         git -C "$SOURCE_SNAPSHOT_DIR" archive --format=tar \
-            "$SOURCE_COMMIT" -- web \
+            "$SOURCE_COMMIT" -- web frontend tests \
             | tar -xf - -C "$SOURCE_TEST_DIR"
         docker run --rm --platform "$CONTAINER_PLATFORM" \
             --user "$HOST_UID:$HOST_GID" \
             -e HOME=/tmp/node-home \
             -v "$SOURCE_TEST_DIR/web:/workspace" \
+            -v "$SOURCE_TEST_DIR:/source:ro" \
             -w /workspace \
             "$RESOLVED_NODE_TEST_IMAGE_ID" \
             sh -eu -c '
                 mkdir -p "$HOME"
                 test "$(node --version)" = "v$1"
                 case "$(npm --version)" in "$2".*) ;; *) exit 1 ;; esac
+                node --test /source/frontend/dashboard.test.cjs /source/tests/*.cjs
                 npm ci
                 npm run typecheck
                 npm run audit:prod
@@ -672,7 +675,7 @@ write_checksums() {
 run_clean_room() {
     assert_managed_output_roots
     assert_source_snapshot
-    "$CLEAN_ROOM_SCRIPT" "$STAGE_DIR"
+    GC_ANALYZER_CLEAN_ROOM_IMAGE="$RESOLVED_UBI_IMAGE_ID" "$CLEAN_ROOM_SCRIPT" "$STAGE_DIR"
 }
 
 create_archive() {

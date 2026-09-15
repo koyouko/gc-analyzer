@@ -141,6 +141,8 @@ def test_rhel8_package_roots_are_exact_and_ordered():
         "tar",
         "gzip",
         "shadow-utils",
+        "util-linux",
+        "libstdc++",
     ]
 
 
@@ -161,6 +163,7 @@ def test_application_release_allowlist_is_exact_and_ordered():
         "manage-app.sh",
         "README.md",
         "architecture_and_user_guide.html",
+        "prometheus.example.json",
     ]
 
 
@@ -481,6 +484,9 @@ def create_source_gate_fixture(tmp_path):
     (source / "gcanalyzer").mkdir()
     (source / "seed").mkdir()
     (source / "tests").mkdir()
+    (source / "tests" / "test_fixture.py").write_text("# Source gate fixture\n")
+    (source / "frontend").mkdir()
+    (source / "frontend" / "dashboard.test.cjs").write_text("// Source gate fixture\n")
     (source / ".gitignore").write_text(".venv/\nweb/node_modules/\n")
     (source / "web" / "package.json").write_text('{"scripts": {}}\n')
     (source / "web" / "package-lock.json").write_text(
@@ -1600,7 +1606,7 @@ def test_offline_installer_all_package_managers_are_local_only():
     assert "--disableplugin=*" in source
     assert 'rpms=("$BUNDLE_ROOT"/rpms/*.rpm)' in source
     assert 'dnf "${dnf_options[@]}" install "${rpms[@]}"' in source
-    assert "pip --no-index" in source
+    assert "pip install --no-index" in source
     assert '--find-links="$BUNDLE_ROOT/python-wheels"' in source
     assert "--only-binary=:all:" in source
     assert '-r "$APP_ROOT/requirements-offline.txt"' in source

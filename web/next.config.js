@@ -9,7 +9,13 @@ const backend = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 const nextConfig = {
   reactStrictMode: true,
   async rewrites() {
-    return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
+    return {
+      beforeFiles: [
+        { source: "/", destination: `${backend}/` },
+        { source: "/assets/:path*", destination: `${backend}/assets/:path*` },
+        { source: "/api/:path*", destination: `${backend}/api/:path*` },
+      ],
+    };
   },
 };
 

@@ -135,7 +135,7 @@ prepare_temporary_state() {
     TEMP_ROOT=$(mktemp -d /var/tmp/gc-analyzer-verify.XXXXXXXX)
     BACKEND_LOG="$TEMP_ROOT/backend.log"
     FRONTEND_LOG="$TEMP_ROOT/frontend.log"
-    mkdir -p "$TEMP_ROOT/home"
+    mkdir -p "$TEMP_ROOT/home" "$TEMP_ROOT/config"
     chown -R "$SERVICE_USER:$SERVICE_USER" "$TEMP_ROOT"
 }
 
@@ -147,6 +147,8 @@ start_backend() {
             HOME="$TEMP_ROOT/home" \
             GC_DB="$TEMP_ROOT/verify.db" \
             GC_USERS_FILE="$TEMP_ROOT/users.json" \
+            GC_CONFIG_DIR="$TEMP_ROOT/config" \
+            GC_PROMETHEUS_CONFIG="$TEMP_ROOT/prometheus.json" \
             GC_SESSION_SECRET="$session_secret" \
             GC_SCHED_ENABLED="0" \
             "$PYTHON_BIN" -m gcanalyzer.app \
@@ -185,6 +187,10 @@ main() {
     wait_for_http_200 "$BACKEND_URL/api/health" "backend health endpoint"
     wait_for_http_200 "$FRONTEND_URL" "frontend root"
     wait_for_http_200 "$FRONTEND_API_URL" "frontend proxy health endpoint"
+    wait_for_http_200 "${FRONTEND_URL}assets/prometheus-settings.js" "Prometheus settings asset"
+    curl --fail --silent --show-error --max-time 5 "$FRONTEND_URL" \
+        | grep '/assets/prometheus-settings.js' >/dev/null \
+        || fail "frontend does not serve the current dashboard"
     require_alive "$BACKEND_PID" "backend"
     require_alive "$FRONTEND_PID" "frontend"
     printf 'Offline installation verified: Python, Node, npm, backend, frontend, and proxy are healthy.\n'
