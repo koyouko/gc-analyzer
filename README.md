@@ -31,6 +31,11 @@ percentiles, Full-GC detection, heap occupancy, tuning advice) but runs
 
 ## Running The App
 
+**Air-gapped RHEL 8.10 x86_64:** use the self-contained
+[offline deployment package](offline/README.md). It includes the Python/Node
+runtimes, Python wheels, frontend npm cache and local RPM dependencies. Install
+with `sudo bash offline/deploy.sh`; no separate dependency downloads are needed.
+
 Use `manage-app.sh` as the single control surface for local setup, deployment,
 startup, shutdown, status, and logs:
 
@@ -78,8 +83,9 @@ Set `GC_CONFIG_DIR` to override the cluster configuration directory.
 
 ### Optional Legacy Next.js Frontend
 
-The following is only for the legacy `web/` client. It requires Node.js and does
-not provide the supported static dashboard's current quality/investigation UI.
+The optional `web/` server requires Node.js. Its root, assets and API routes now
+forward to the supported dashboard, including quality/investigation and Settings.
+The older Next.js views remain in the source for compatibility.
 The separate demo database and demo clock are explicit:
 
 ```bash
@@ -96,7 +102,7 @@ npm run build && npm start           # Next.js UI on http://127.0.0.1:3000
 #   (dev mode: npm run dev)
 ```
 
-The Next.js app proxies `/api/*` to the backend, so the browser stays
+The Next.js app proxies `/`, `/assets/*` and `/api/*` to the backend, so the browser stays
 same-origin (no CORS). Point it elsewhere with `BACKEND_URL=http://host:8000`.
 
 ### Quick Start — No Build

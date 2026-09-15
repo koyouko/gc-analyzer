@@ -7,3 +7,11 @@ gzip
 shadow-utils
 util-linux
 libstdc++
+bash
+coreutils
+findutils
+grep
+sed
+gawk
+dnf
+systemd

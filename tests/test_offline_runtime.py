@@ -69,3 +69,10 @@ def test_offline_smoke_checks_current_dashboard_and_isolates_config():
     assert 'GC_PROMETHEUS_CONFIG="$TEMP_ROOT/prometheus.json"' in script
     assert '/assets/prometheus-settings.js' in script
     assert 'bootstrap-credentials.json' not in script
+
+
+def test_rpm_closure_is_verified_without_the_resolver_installed_packages():
+    script = (ROOT / "offline/build-bundle.sh").read_text()
+    assert '--installroot=/rpm-closure' in script
+    assert '--network none' in script
+    assert 'rpm --root /rpm-closure --initdb' in script

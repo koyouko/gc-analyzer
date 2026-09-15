@@ -680,6 +680,26 @@ write_checksums() {
 run_clean_room() {
     assert_managed_output_roots
     assert_source_snapshot
+    docker run --rm --platform "$CONTAINER_PLATFORM" --network none \
+        -v "$STAGE_DIR/rpms:/rpms:ro" "$RESOLVED_UBI_IMAGE_ID" \
+        bash -euo pipefail -c '
+            mkdir /rpm-closure
+            rpm --root /rpm-closure --initdb
+            rpm --root /rpm-closure --import /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+            dnf -y --installroot=/rpm-closure --releasever=8.10 \
+                --disablerepo="*" --disableplugin="*" \
+                --setopt=install_weak_deps=False --setopt=localpkg_gpgcheck=True \
+                install /rpms/*.rpm
+            chroot /rpm-closure /bin/bash -euc '\''
+                for command in python3.12 dnf awk cut df find grep id mkdir \
+                    mktemp readlink sed sha256sum sort stat tr uname wc \
+                    groupadd useradd getent install ln mv runuser setsid curl \
+                    tar gzip systemctl; do
+                    command -v "$command" >/dev/null
+                done
+                python3.12 -c "import ssl, sqlite3, venv"
+            '\''
+        '
     GC_ANALYZER_CLEAN_ROOM_IMAGE="$RESOLVED_UBI_IMAGE_ID" "$CLEAN_ROOM_SCRIPT" "$STAGE_DIR"
 }
 

@@ -443,6 +443,8 @@
     <!-- 1b. Application Control -->
     <section id="control" class="doc-section">
       <h2>Application Control</h2>
+      <p><strong>Offline RHEL 8.10 x86_64:</strong> the release includes Python, Node.js, all Python and frontend packages, and local RPM dependencies. From the complete repository run <code>sudo bash offline/deploy.sh</code>. No internet or separate application dependency installation is required; the installer installs the supplied RPMs. See the <a href="offline/README.md">offline deployment guide</a> for the OS baseline and release verification details.</p>
+      <p>On the offline server, open <code>http://SERVER:3000</code> and use <code>sudo gc-analyzerctl start|stop|restart|status|logs|verify</code> for control. Prometheus remains editable under <strong>Settings &gt; Prometheus</strong>; its persistent file is <code>/var/lib/gc-analyzer/prometheus.json</code>.</p>
       <p>
         Use <code>manage-app.sh</code> for setup, deployment, startup, shutdown, status, and logs. Normal startup uses installed dependencies without contacting package repositories or adding demo data. Setup/deploy installs dependencies; seed is an explicit demo-only operation. Startup waits for a successful <code>/api/health</code> response.
       </p>

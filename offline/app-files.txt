@@ -14,3 +14,4 @@ manage-app.sh
 README.md
 architecture_and_user_guide.html
 prometheus.example.json
+offline/README.md

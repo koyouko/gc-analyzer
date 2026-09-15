@@ -143,6 +143,14 @@ def test_rhel8_package_roots_are_exact_and_ordered():
         "shadow-utils",
         "util-linux",
         "libstdc++",
+        "bash",
+        "coreutils",
+        "findutils",
+        "grep",
+        "sed",
+        "gawk",
+        "dnf",
+        "systemd",
     ]
 
 
@@ -164,6 +172,7 @@ def test_application_release_allowlist_is_exact_and_ordered():
         "README.md",
         "architecture_and_user_guide.html",
         "prometheus.example.json",
+        "offline/README.md",
     ]
 
 
