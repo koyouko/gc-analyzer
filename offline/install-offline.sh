@@ -209,12 +209,22 @@ verify_bundle_before_install() {
 }
 
 install_local_rpms() {
-    local rpms dnf_options
+    local rpms dnf_options candidate
+    local compatible_rpms=()
     CURRENT_STAGE="local RPM installation"
     shopt -s nullglob
     rpms=("$BUNDLE_ROOT"/rpms/*.rpm)
     shopt -u nullglob
     ((${#rpms[@]} > 0)) || fail "bundle contains no RPM files"
+    # UBI uses the equivalent single-binary coreutils provider. Keep that
+    # installed provider instead of erasing OS packages to install the split one.
+    if rpm -q coreutils-single >/dev/null 2>&1; then
+        for candidate in "${rpms[@]}"; do
+            case "${candidate##*/}" in coreutils-[0-9]*.rpm) continue ;; esac
+            compatible_rpms+=("$candidate")
+        done
+        rpms=("${compatible_rpms[@]}")
+    fi
     dnf_options=(-y '--disablerepo=*' '--disableplugin=*' --setopt=install_weak_deps=False)
     dnf "${dnf_options[@]}" install "${rpms[@]}"
 }

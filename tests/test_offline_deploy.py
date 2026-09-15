@@ -22,6 +22,8 @@ INSTALLER = textwrap.dedent(
     set -euo pipefail
     [[ "$#" == 0 ]]
     [[ "$EUID" == 0 ]]
+    [[ "$(stat -c %a ..)" == 755 ]]
+    [[ "$(stat -c '%u:%g' ..)" == 0:0 ]]
     printf '%s\n' "$PWD" > "$DEPLOY_TEST_LOG"
     [[ -f data && "$(< data)" == 'payload' ]]
     exit "${DEPLOY_TEST_STATUS:-0}"

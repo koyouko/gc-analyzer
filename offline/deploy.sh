@@ -204,6 +204,10 @@ def main():
             members, links = validate_archive(archive)
             extract_archive(archive, members, links, temporary)
         bundle = os.path.join(temporary, BUNDLE)
+        # Permit service-account traversal only after verifying and extracting
+        # the public bundle, while keeping the outer directory root-writable only.
+        os.chown(temporary, 0, 0)
+        os.chmod(temporary, 0o755)
         print("Verified offline archive; starting installer.", flush=True)
         # The installer enforces the exact RHEL 8.10 / x86_64 target before RPMs.
         status = subprocess.call([os.path.join(bundle, "install-offline.sh")], cwd=bundle)

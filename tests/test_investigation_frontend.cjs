@@ -1,11 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const vm = require('node:vm');
 
 function renderer() {
   const context = {window:{}, module:{exports:{}}};
-  vm.runInNewContext(fs.readFileSync('frontend/investigations.js','utf8'),context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../frontend/investigations.js'),'utf8'),context);
   return context.module.exports.resultHtml;
 }
 

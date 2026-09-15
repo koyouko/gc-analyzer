@@ -82,3 +82,21 @@ def test_rpm_closure_is_verified_without_the_resolver_installed_packages():
 def test_build_ownership_repair_does_not_touch_frozen_git_objects():
     script = (ROOT / "offline/build-bundle.sh").read_text()
     assert '-path "$SNAPSHOT_PATH" -prune' in script
+
+
+def test_offline_rpms_preserve_an_installed_equivalent_coreutils_provider(tmp_path):
+    rpms = tmp_path / "rpms"
+    rpms.mkdir()
+    for name in ("coreutils-8.30.x86_64.rpm", "coreutils-common-8.30.x86_64.rpm", "python3.12-3.12.x86_64.rpm"):
+        (rpms / name).touch()
+    result = subprocess.run([BASH, "-c", f'''
+source {shlex.quote(str(ROOT / "offline/install-offline.sh"))}
+BUNDLE_ROOT={shlex.quote(str(tmp_path))}
+rpm() {{ [[ "$*" == "-q coreutils-single" ]]; }}
+dnf() {{ printf '%s\\n' "$@"; }}
+install_local_rpms
+'''], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert str(rpms / "coreutils-8.30.x86_64.rpm") not in result.stdout.splitlines()
+    assert str(rpms / "coreutils-common-8.30.x86_64.rpm") in result.stdout.splitlines()
+    assert "--disablerepo=*" in result.stdout
