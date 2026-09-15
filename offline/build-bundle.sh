@@ -265,6 +265,11 @@ resolve_image() {
 
     image_id=$(docker image inspect --platform "$CONTAINER_PLATFORM" --format '{{.Id}}' "$image_tag")
     image_digest=$(docker image inspect --platform "$CONTAINER_PLATFORM" --format '{{index .RepoDigests 0}}' "$image_tag")
+    # Containerd-backed Docker may expose a child manifest before registering
+    # it as a runnable local image. Pull that immutable reference explicitly.
+    if ! docker image inspect "$image_id" >/dev/null 2>&1; then
+        docker pull --platform "$CONTAINER_PLATFORM" "${image_digest%@*}@$image_id" >/dev/null
+    fi
     image_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id")
     [[ "$image_id" == sha256:* ]] || fail "resolver image has no immutable ID: $image_tag"
     [[ "$image_digest" == *@sha256:* ]] \

@@ -118,6 +118,7 @@ def room(tmp_path):
             # program is executed, so its conditionals and exit statuses are real.
             root = os.environ["FAKE_ROOT"]
             for source, target in (
+                ("$EUID", "${FAKE_EUID:-0}"),
                 ("/etc/os-release", root + "/os-release"),
                 ("/incoming", os.environ["FAKE_STAGE"]),
                 ("/bundle", root + "/bundle"),
