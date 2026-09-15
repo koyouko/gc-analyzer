@@ -370,7 +370,10 @@ rollback_failed_install() {
                 systemctl stop gc-analyzer-frontend.service \
                     gc-analyzer-backend.service >/dev/null 2>&1 || true
             fi
-            rm -rf -- "${REPLACE_PATHS[@]}"
+            if ! rm -rf -- "${REPLACE_PATHS[@]}"; then
+                printf 'Rollback cannot remove replacement; backup retained: %s\n' "$ROLLBACK_ROOT" >&2
+                return 1
+            fi
         fi
         for path in "${MOVED_PATHS[@]}"; do
             backup="$ROLLBACK_ROOT/${path##*/}"
@@ -693,6 +696,7 @@ main() {
     prepare_persistent_state
     install_python_environment
     initialize_users_file
+    apply_permissions
     install_frontend
     apply_permissions
     verify_installation

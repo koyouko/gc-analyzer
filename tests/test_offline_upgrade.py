@@ -25,6 +25,32 @@ def test_main_stops_services_before_migrating_live_state():
 
     assert main.index("capture_service_state") < main.index("stop_existing_services")
     assert main.index("stop_existing_services") < main.index("migrate_legacy_state")
+    assert main.index("apply_permissions") < main.index("install_frontend")
+    assert main.rindex("apply_permissions") > main.index("install_frontend")
+
+
+def test_failed_removal_during_rollback_retains_original_backup(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "web").mkdir()
+    (app / "web/version").write_text("original")
+    result = run_bash(f'''
+source {shlex.quote(str(INSTALLER))}
+APP_ROOT={shlex.quote(str(app))}
+ROLLBACK_PARENT={shlex.quote(str(tmp_path))}
+SYSTEMD_UNIT_ROOT={shlex.quote(str(tmp_path / "units"))}
+CONTAINER_TEST=1
+backup_application_payload
+mkdir "$APP_ROOT/web"
+printf replacement > "$APP_ROOT/web/version"
+rm() {{ return 42; }}
+rollback_failed_install || true
+''')
+    assert result.returncode == 0
+    backups = list(tmp_path.glob(".gc-analyzer-rollback.*/web/version"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "original"
+    assert (app / "web/version").read_text() == "replacement"
 
 
 def test_fresh_install_captures_inactive_services_without_aborting():
