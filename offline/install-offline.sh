@@ -21,6 +21,14 @@ PYTHON_ROOT="$APP_ROOT/.venv"
 CURRENT_STAGE="startup"
 CONTAINER_TEST=0
 BUNDLE_ROOT=""
+BACKEND_WAS_ACTIVE=0
+FRONTEND_WAS_ACTIVE=0
+ROLLBACK_ARMED=0
+ROLLBACK_ROOT=""
+ROLLBACK_PARENT=""
+BACKUP_COMPLETE=0
+MOVED_PATHS=()
+SYSTEMD_UNIT_ROOT="/etc/systemd/system"
 
 fail() {
     printf 'ERROR [%s]: %s\n' "$CURRENT_STAGE" "$1" >&2
@@ -63,7 +71,7 @@ preflight() {
     [[ "$(uname -m)" == "x86_64" ]] \
         || fail "architecture must be exactly $EXPECTED_ARCH"
 
-    for command in awk cmp cut df dnf find grep id mkdir mktemp readlink \
+    for command in awk cut df dnf find grep id mkdir mktemp readlink \
         sed sha256sum sort stat tr uname wc; do
         require_command "$command"
     done
@@ -171,9 +179,11 @@ verify_shell_inventory() {
     else
         : > "$temporary/MANIFEST.symlinks"
     fi
-    cmp -s MANIFEST.paths "$temporary/MANIFEST.paths" \
+    [[ "$(sha256sum MANIFEST.paths | awk '{print $1}')" == \
+        "$(sha256sum "$temporary/MANIFEST.paths" | awk '{print $1}')" ]] \
         || fail "MANIFEST.paths does not match the extracted payload"
-    cmp -s MANIFEST.symlinks "$temporary/MANIFEST.symlinks" \
+    [[ "$(sha256sum MANIFEST.symlinks | awk '{print $1}')" == \
+        "$(sha256sum "$temporary/MANIFEST.symlinks" | awk '{print $1}')" ]] \
         || fail "MANIFEST.symlinks does not match the extracted payload"
 
     rm -rf -- "$temporary"
@@ -284,11 +294,21 @@ stop_existing_services() {
     fi
 }
 
-replace_application_payload() {
-    local replace_paths
-    CURRENT_STAGE="application payload installation"
-    mkdir -p "$APP_ROOT"
-    replace_paths=(
+capture_service_state() {
+    BACKEND_WAS_ACTIVE=0
+    FRONTEND_WAS_ACTIVE=0
+    if [[ "$CONTAINER_TEST" == "0" ]] && command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet gc-analyzer-backend.service; then
+            BACKEND_WAS_ACTIVE=1
+        fi
+        if systemctl is-active --quiet gc-analyzer-frontend.service; then
+            FRONTEND_WAS_ACTIVE=1
+        fi
+    fi
+}
+
+application_payload_paths() {
+    REPLACE_PATHS=(
         "$APP_ROOT/frontend"
         "$APP_ROOT/gcanalyzer"
         "$APP_ROOT/seed"
@@ -300,8 +320,92 @@ replace_application_payload() {
         "$APP_ROOT/manage-app.sh"
         "$APP_ROOT/README.md"
         "$APP_ROOT/architecture_and_user_guide.html"
+        "$SYSTEMD_UNIT_ROOT/gc-analyzer-backend.service"
+        "$SYSTEMD_UNIT_ROOT/gc-analyzer-frontend.service"
     )
-    rm -rf -- "${replace_paths[@]}"
+}
+
+backup_application_payload() {
+    local path
+    application_payload_paths
+    ROLLBACK_PARENT=${ROLLBACK_PARENT:-"$(dirname "$APP_ROOT")"}
+    ROLLBACK_ROOT=$(mktemp -d "$ROLLBACK_PARENT/.gc-analyzer-rollback.XXXXXX")
+    BACKUP_COMPLETE=0
+    MOVED_PATHS=()
+    ROLLBACK_ARMED=1
+    for path in "${REPLACE_PATHS[@]}"; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            mv -- "$path" "$ROLLBACK_ROOT/${path##*/}"
+            MOVED_PATHS+=("$path")
+        fi
+    done
+    BACKUP_COMPLETE=1
+}
+
+restore_previously_active_services() {
+    if [[ "$BACKEND_WAS_ACTIVE" == "1" ]]; then
+        systemctl start gc-analyzer-backend.service
+    fi
+    if [[ "$FRONTEND_WAS_ACTIVE" == "1" ]]; then
+        systemctl start gc-analyzer-frontend.service
+    fi
+}
+
+rollback_failed_install() {
+    local path backup
+    if [[ "$ROLLBACK_ARMED" == "1" ]]; then
+        application_payload_paths
+        if [[ "$BACKUP_COMPLETE" == "1" ]]; then
+            if [[ "$CONTAINER_TEST" == "0" ]]; then
+                systemctl stop gc-analyzer-frontend.service \
+                    gc-analyzer-backend.service >/dev/null 2>&1 || true
+            fi
+            rm -rf -- "${REPLACE_PATHS[@]}"
+        fi
+        for path in "${MOVED_PATHS[@]}"; do
+            backup="$ROLLBACK_ROOT/${path##*/}"
+            if [[ -e "$backup" || -L "$backup" ]]; then
+                if ! mv -- "$backup" "$path"; then
+                    printf 'Rollback needs manual recovery; backup retained: %s\n' "$ROLLBACK_ROOT" >&2
+                    return 1
+                fi
+            fi
+        done
+        rm -rf -- "$ROLLBACK_ROOT"
+        if [[ "$CONTAINER_TEST" == "0" ]]; then
+            systemctl daemon-reload || true
+        fi
+        ROLLBACK_ARMED=0
+        ROLLBACK_ROOT=""
+        BACKUP_COMPLETE=0
+        MOVED_PATHS=()
+    fi
+    restore_previously_active_services
+}
+
+installation_exit() {
+    local status=$?
+    trap - EXIT
+    if ((status != 0)); then
+        rollback_failed_install || true
+    fi
+    exit "$status"
+}
+
+complete_application_replacement() {
+    if [[ "$ROLLBACK_ARMED" == "1" ]]; then
+        rm -rf -- "$ROLLBACK_ROOT"
+        ROLLBACK_ARMED=0
+        ROLLBACK_ROOT=""
+        BACKUP_COMPLETE=0
+        MOVED_PATHS=()
+    fi
+    trap - EXIT
+}
+
+replace_application_payload() {
+    CURRENT_STAGE="application payload installation"
+    mkdir -p "$APP_ROOT"
     cp -a "$BUNDLE_ROOT/app/." "$APP_ROOT/"
     mkdir -p "$NODE_ROOT"
     cp -a "$BUNDLE_ROOT/node-runtime/." "$NODE_ROOT/"
@@ -356,9 +460,10 @@ prepare_persistent_state() {
     find "$CLUSTERS_ROOT" -type d -exec chmod 0750 {} +
     find "$CLUSTERS_ROOT" -type f -exec chmod 0640 {} +
     chmod 0750 "$CLUSTERS_ROOT"
-    chown root:"$SERVICE_GROUP" "$ENV_FILE" "$SESSION_SECRET_FILE" \
-        "$CONFIG_ROOT/config.json"
-    chmod 0640 "$ENV_FILE" "$SESSION_SECRET_FILE" "$CONFIG_ROOT/config.json"
+    chown root:"$SERVICE_GROUP" "$ENV_FILE" "$SESSION_SECRET_FILE"
+    chmod 0640 "$ENV_FILE" "$SESSION_SECRET_FILE"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_ROOT/config.json"
+    chmod 0640 "$CONFIG_ROOT/config.json"
     if [[ -e "$GC_USERS_FILE" ]]; then
         chown "$SERVICE_USER:$SERVICE_GROUP" "$GC_USERS_FILE"
         chmod 0600 "$GC_USERS_FILE"
@@ -389,19 +494,27 @@ from pathlib import Path
 import secrets
 from gcanalyzer import auth
 
-credentials = {
-    "admin": os.environ.get("GC_ADMIN_PASSWORD") or secrets.token_urlsafe(24),
-    "readonly": os.environ.get("GC_READONLY_PASSWORD") or secrets.token_urlsafe(24),
-}
+credentials = {}
+generated = {}
+for user, variable in (
+    ("admin", "GC_ADMIN_PASSWORD"),
+    ("readonly", "GC_READONLY_PASSWORD"),
+):
+    password = os.environ.get(variable)
+    if password is None:
+        password = secrets.token_urlsafe(24)
+        generated[user] = password
+    credentials[user] = password
 os.environ["GC_ADMIN_PASSWORD"] = credentials["admin"]
 os.environ["GC_READONLY_PASSWORD"] = credentials["readonly"]
-path = Path(os.environ["GC_USERS_FILE"]).with_name("bootstrap-credentials.json")
-with path.open("x") as output:
-    os.chmod(path, 0o600)
-    json.dump(credentials, output, indent=2)
-    output.write("\n")
+if generated:
+    path = Path(os.environ["GC_USERS_FILE"]).with_name("bootstrap-credentials.json")
+    with path.open("x") as output:
+        os.chmod(path, 0o600)
+        json.dump(generated, output, indent=2)
+        output.write("\n")
+    print(f"Generated initial passwords saved for root only: {path}")
 auth.load_users()
-print(f"Initial passwords saved for root only: {path}")
 PY
         )
         chown "$SERVICE_USER:$SERVICE_GROUP" "$GC_USERS_FILE"
@@ -444,7 +557,8 @@ apply_permissions() {
 write_service_files() {
     CURRENT_STAGE="systemd service installation"
     require_command systemctl
-    cat > /etc/systemd/system/gc-analyzer-backend.service <<'UNIT'
+    mkdir -p "$SYSTEMD_UNIT_ROOT"
+    cat > "$SYSTEMD_UNIT_ROOT/gc-analyzer-backend.service" <<'UNIT'
 [Unit]
 Description=GC Analyzer backend
 After=network.target
@@ -466,7 +580,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
-    cat > /etc/systemd/system/gc-analyzer-frontend.service <<'UNIT'
+    cat > "$SYSTEMD_UNIT_ROOT/gc-analyzer-frontend.service" <<'UNIT'
 [Unit]
 Description=GC Analyzer frontend
 After=network.target gc-analyzer-backend.service
@@ -527,9 +641,17 @@ case "${1:-status}" in
     *) printf 'usage: %s {start|stop|restart|status|logs|verify}\n' "$0" >&2; exit 2 ;;
 esac
 CONTROL
-    chmod 0644 /etc/systemd/system/gc-analyzer-backend.service \
-        /etc/systemd/system/gc-analyzer-frontend.service
+    chmod 0644 "$SYSTEMD_UNIT_ROOT/gc-analyzer-backend.service" \
+        "$SYSTEMD_UNIT_ROOT/gc-analyzer-frontend.service"
     chmod 0750 /usr/local/sbin/gc-analyzerctl
+}
+
+validate_service_files() {
+    CURRENT_STAGE="systemd service validation"
+    require_command systemd-analyze
+    systemd-analyze verify \
+        "$SYSTEMD_UNIT_ROOT/gc-analyzer-backend.service" \
+        "$SYSTEMD_UNIT_ROOT/gc-analyzer-frontend.service"
 }
 
 verify_installation() {
@@ -552,8 +674,11 @@ main() {
     install_local_rpms
     verify_python_inventory
     ensure_service_account
-    migrate_legacy_state
+    capture_service_state
     stop_existing_services
+    trap installation_exit EXIT
+    migrate_legacy_state
+    backup_application_payload
     replace_application_payload
     prepare_persistent_state
     install_python_environment
@@ -561,11 +686,14 @@ main() {
     install_frontend
     apply_permissions
     verify_installation
+    write_service_files
+    validate_service_files
     if [[ "$CONTAINER_TEST" == "1" ]]; then
+        complete_application_replacement
         printf 'Container-test installation and verification completed successfully.\n'
     else
-        write_service_files
         enable_services
+        complete_application_replacement
         printf 'GC Analyzer installed. Frontend: http://0.0.0.0:3000\n'
     fi
 }
