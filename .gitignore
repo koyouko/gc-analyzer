@@ -21,6 +21,13 @@ web/*.tsbuildinfo
 
 # Local env (use .env.example as template)
 .env
+/.session_secret
+/users.json
+
+# Private app-side Prometheus settings
+/prometheus.json
+/prometheus.json.lock
+/.prometheus-*.tmp
 
 # manage-app.sh runtime files
 gcanalyzer-*.log

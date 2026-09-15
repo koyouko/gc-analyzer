@@ -113,8 +113,7 @@ ensure_venv() {
     "$py" -m venv .venv
   fi
 
-  echo "Installing/updating Python dependencies..."
-  .venv/bin/python -m pip install --quiet --upgrade pip
+  echo "Installing Python dependencies..."
   .venv/bin/python -m pip install --quiet -r requirements.txt
 }
 
@@ -127,7 +126,7 @@ python_bin() {
 }
 
 seed_demo_history() {
-  ensure_venv
+  check_runtime
   local py db has_data
   py="$(python_bin)"
   db="${1:-${DB_PATH:-${GC_DB:-gc_history.db}}}"
@@ -153,6 +152,16 @@ PY
 
   echo "Seeding 30 days of demo history into $db..."
   "$py" -m seed.seed_history
+}
+
+check_runtime() {
+  local py
+  py="$(python_bin || true)"
+  if [ -z "$py" ] || ! "$py" -c 'import fastapi, uvicorn, paramiko, yaml' >/dev/null 2>&1; then
+    echo "ERROR: Python 3.10+ and application dependencies are required."
+    echo "Run ./manage-app.sh setup on a connected host, or install the approved offline bundle."
+    return 1
+  fi
 }
 
 get_pid() {
@@ -197,11 +206,12 @@ wait_for_health() {
     fi
     if "$py" - "$url" >/dev/null 2>&1 <<'PY'; then
 import sys
+import json
 import urllib.request
 
 url = sys.argv[1]
 with urllib.request.urlopen(url, timeout=1.0) as response:
-    if response.status != 200:
+    if response.status != 200 or json.load(response).get("ok") is not True:
         raise SystemExit(1)
 PY
       return 0
@@ -221,7 +231,7 @@ start_app() {
     return 0
   fi
 
-  seed_demo_history "${DB_PATH:-${GC_DB:-gc_history.db}}"
+  check_runtime
 
   local py new_pid
   py="$(python_bin)"
@@ -306,6 +316,7 @@ logs_app() {
 }
 
 deploy_app() {
+  ensure_venv
   stop_app
   start_app
 }

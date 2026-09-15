@@ -433,10 +433,10 @@
     <section id="intro" class="doc-section">
       <h2>System Overview</h2>
       <p>
-        The <strong>BSP Kafka GC Analyzer</strong> is a lightweight, real-time telemetry monitoring and diagnostic web application tailored to investigate JVM Garbage Collection behaviors inside Apache Kafka deployments. The tool automates log retrieval across multi-cluster environments, calculates key performance statistics, detects GC anomalies (such as memory leaks and GC storms), and suggests configuration remedies.
+        The <strong>BSP Kafka GC Analyzer</strong> is a self-hosted diagnostic web application for JVM garbage collection and host resource evidence across Kafka deployments. It retrieves configured logs, calculates statistics, and flags observed pressure or unusual patterns for investigation. Missing or stale evidence cannot establish current health, and a pattern is not proof of a memory leak or Kafka service impact.
       </p>
       <p>
-        By focusing specifically on GC metrics (rather than general VM metrics), it isolates issues related to long Stop-the-world (STW) pauses, throughput degradation, heap occupancy peaks, and allocation rates, allowing administrators to optimize JVM tunings.
+        GC logs reveal stop-the-world pauses, GC throughput, heap occupancy, and allocation behavior; SAR adds CPU, memory, disk, and network observations. Their association helps prioritize investigation, but Kafka workload, latency, replication health, and partition placement must be checked before prescribing scaling or configuration changes.
       </p>
     </section>
 
@@ -444,7 +444,7 @@
     <section id="control" class="doc-section">
       <h2>Application Control</h2>
       <p>
-        Operators should use <code>manage-app.sh</code> as the single control surface for local setup, deployment, startup, shutdown, status checks, and log access. It creates or repairs the Python virtual environment, installs dependencies, seeds demo/history data when the selected database is empty, starts the FastAPI server in the background, and waits for <code>/api/health</code> before reporting the app as started.
+        Use <code>manage-app.sh</code> for setup, deployment, startup, shutdown, status, and logs. Normal startup uses installed dependencies without contacting package repositories or adding demo data. Setup/deploy installs dependencies; seed is an explicit demo-only operation. Startup waits for a successful <code>/api/health</code> response.
       </p>
 
       <h3>Primary Commands</h3>
@@ -458,7 +458,7 @@
         <tbody>
           <tr>
             <td><code>./manage-app.sh deploy 8083</code></td>
-            <td>Prepare the environment, seed data if needed, stop any existing process on the port, and start a fresh app process.</td>
+            <td>Install dependencies, stop the tracked app process, and start it again. Use the offline installer instead on an air-gapped server.</td>
           </tr>
           <tr>
             <td><code>./manage-app.sh start 8083 --open</code></td>
@@ -474,14 +474,14 @@
           </tr>
           <tr>
             <td><code>./manage-app.sh restart 8083</code></td>
-            <td>Stop the tracked process, then start it again with the same setup and health-check behavior.</td>
+            <td>Stop the tracked process, then restart using installed dependencies and the health check. This does not reinstall packages or seed demo data.</td>
           </tr>
           <tr>
             <td><code>./manage-app.sh stop 8083</code></td>
             <td>Stop the tracked app process and remove the PID file.</td>
           </tr>
           <tr>
-            <td><code>./manage-app.sh seed gc_live.db</code></td>
+            <td><code>./manage-app.sh seed gc_demo.db</code></td>
             <td>Seed the selected SQLite database with the demo fleet history.</td>
           </tr>
         </tbody>
@@ -498,32 +498,36 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
           Older launcher files are kept only as compatibility wrappers; operational documentation and troubleshooting should refer to <code>manage-app.sh</code>.
         </p>
       </div>
+      <p>The primary dashboard is <code>frontend/index.html</code>, served by FastAPI on the same port as the API with local JavaScript/CSS assets. No Node.js, npm, frontend build, or external CDN is required. Chart.js and its license are bundled locally. The optional <code>web/</code> Next.js frontend is legacy and does not contain these dashboard updates.</p>
+      <p>For a frozen demo only, set <code>GC_DEMO_MODE=1</code> and <code>GC_SCHED_ENABLED=0</code> with a separate seeded database. Demo time anchors to the latest GC or SAR observation. Implicit LIVE time uses wall clock; explicit <code>now</code> remains supported for historical queries. <code>GC_CONFIG_DIR</code> can select a separate cluster configuration directory.</p>
     </section>
 
     <!-- 2. Ingestion Pipeline -->
     <section id="pipeline" class="doc-section">
       <h2>Ingestion Pipeline Architecture</h2>
       <p>
-        The analyzer utilizes a push/pull hybrid ingestion pipeline. It schedules periodic checks across all configured broker nodes, scrapes newly appended GC log bytes, parses events, and commits aggregated metrics.
+        Scheduled collection reads configured hosts and persists fleet history. GC uses consumed byte offsets; SAR uses timestamp-keyed sample identity and fixed 60-second rollups. One-time investigations are a separate bounded, in-memory path with no database writes.
       </p>
 
       <div class="diagram-container">
         <div class="diagram-row">
           <div class="diagram-box">Remote Kafka Hosts<br>(Unified GC Logs)</div>
           <div class="diagram-arrow">&rarr;</div>
-          <div class="diagram-box accent">collector.py<br>(SSH Tail / Local Read)</div>
+          <div class="diagram-box accent">collector.py<br>(Bounded SSH / Local Read)</div>
           <div class="diagram-arrow">&rarr;</div>
-          <div class="diagram-box">parser.py<br>(Regex Tokenizer)</div>
+          <div class="diagram-box">parser.py<br>(Verified UTC or Relative Time)</div>
         </div>
         <div class="diagram-arrow vertical">&rarr;</div>
         <div class="diagram-row">
-          <div class="diagram-box">analyzer.py<br>(Math &amp; Profiler)</div>
+          <div class="diagram-box">analyzer.py<br>(Observed Metrics / Unknown Health)</div>
           <div class="diagram-arrow">&rarr;</div>
-          <div class="diagram-box accent">store.py<br>(SQLite GROUP BY)</div>
+          <div class="diagram-box accent">store.py<br>(Transactions / Source Quality)</div>
           <div class="diagram-arrow">&rarr;</div>
-          <div class="diagram-box">FastAPI / Web App<br>(Vue-less SPA UI)</div>
+          <div class="diagram-box">FastAPI / frontend/index.html<br>(Primary Static UI / Local Assets)</div>
         </div>
       </div>
+      <p><strong>SAR path:</strong> configured host report &rarr; timezone-aware parser with null missing values &rarr; <code>sar_samples</code> identity merge &rarr; affected 60-second <code>host_metrics</code> recomputation &rarr; freshness-gated snapshots and advice. Counts, duration, weights, and peaks survive aggregation; the collector watermark records progress only.</p>
+      <p><strong>Investigation path:</strong> authenticated upload &rarr; <code>POST /api/investigations/analyze</code> &rarr; bounded in-memory parsing &rarr; dashboard results / standalone HTML report. Neither fleet history nor learning baselines are written.</p>
 
       <h3>Scraping Modes</h3>
       <p>The collection layer supports two scraper paradigms configured per-node:</p>
@@ -536,16 +540,17 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
           <pre><code>stat -c '%i %s' '/path/to/log' 2>/dev/null || stat -f '%i %z' '/path/to/log'</code></pre>
           If the remote file's inode matches the recorded state and its size is greater than or equal to the previous offset, the analyzer executes:
           <pre><code>tail -c +[OFFSET] '/path/to/log'</code></pre>
-          This fetches only the delta block since the last scrape tick, keeping bandwidth usage low.
+          This fetches the delta since the last consumed offset, subject to command timeouts and output bounds. Inode/size checks handle rotation or truncation; a failed read must not consume its offset.
         </li>
       </ul>
+      <p>Metrics and consumed offsets commit transactionally. Incomplete trailing GC records remain retryable on a later pass. Complete malformed records are reported as skipped with limited quality, not converted into valid observations. Missing or malformed-only evidence is unknown, not a refreshed healthy observation; durable malformed-record quarantine is pending. Uptime-only GC records stay relative unless a verified JVM start anchor establishes absolute time. File dates and collection time are not invented as event timestamps.</p>
     </section>
 
     <!-- 3. Storage Layer -->
     <section id="storage" class="doc-section">
       <h2>Storage Layer</h2>
       <p>
-        The system relies on an embedded SQLite database (<code>gc_history.db</code> or <code>gc_live.db</code>) to track cluster topology metadata, hourly performance metrics, and incremental collector states.
+        The system uses embedded SQLite (<code>gc_history.db</code> or <code>gc_live.db</code>) for instance inventory, GC metrics, normalized SAR samples, fixed-minute host rollups, and collector states. Host data remains linked to each JVM instance; there is no separate host-topology redesign.
       </p>
 
       <h3>Schema Design</h3>
@@ -575,28 +580,41 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
             <td><strong><code>collector_state</code></strong></td>
             <td><code>(instance_id, file_path)</code></td>
             <td><code>inode</code>, <code>offset</code>, <code>updated_ts</code></td>
-            <td>Remembers the byte offset and inode of local or remote GC logs. Prevents duplicate scraping.</td>
+            <td>Tracks committed consumed bytes and inode for GC collection. Incomplete trailing records remain retryable; failed transactions do not advance progress.</td>
+          </tr>
+          <tr>
+            <td><strong><code>gc_collection_quality</code></strong></td>
+            <td><code>(instance_id, ts)</code></td>
+            <td><code>state</code>, <code>malformed_count</code>, <code>unsupported_count</code></td>
+            <td>Records complete, partial, or unknown collection outcomes separately from metrics. Quality and consumed offsets commit together; incomplete evidence remains visible after a restart without inventing zero-valued measurements.</td>
           </tr>
           <tr>
             <td><strong><code>host_metrics</code></strong></td>
             <td><code>(instance_id, ts)</code></td>
             <td><code>cpu_busy_pct</code>, <code>cpu_iowait_pct</code>, <code>load1</code>, <code>mem_used_pct</code>, <code>swap_used_pct</code>, <code>disk_util_pct_max</code>, <code>disk_await_ms_max</code>, <code>net_util_pct_max</code>, <code>net_tx_kbs</code>, <code>top_disks_json</code>, <code>top_nics_json</code>, &hellip;</td>
-            <td>OS-level (SAR) metrics for the host each instance runs on. Same <code>(instance_id, ts)</code> shape as <code>metrics</code> so the two join directly for correlation.</td>
+            <td>Fixed 60-second SAR rollups with <code>sample_count</code>, <code>duration_seconds</code>, observed-time bounds, and per-metric statistics. GC and host rows share instance identity and a UTC basis, but are rebucketed to an hourly grid for correlation.</td>
+          </tr>
+          <tr>
+            <td><strong><code>sar_samples</code></strong></td>
+            <td><code>(instance_id, ts)</code></td>
+            <td><code>sample_json</code></td>
+            <td>One sparse normalized observation per timestamp, not repeated full-report blobs. Repeated/late samples are idempotent; corrections and complementary fields merge, then only affected rollups are recomputed.</td>
           </tr>
           <tr>
             <td><strong><code>sar_collector_state</code></strong></td>
             <td><code>instance_id</code></td>
             <td><code>last_ts</code>, <code>updated_ts</code></td>
-            <td>Newest SAR sample timestamp already recorded per instance. <code>sar</code>/<code>sadf</code> reports are re-queryable (not append-only files), so incremental collection dedups by timestamp instead of a byte offset.</td>
+            <td>Newest observed SAR timestamp for progress reporting only. It never discards an unseen late sample; deduplication uses <code>sar_samples</code> identity, not a watermark cutoff.</td>
           </tr>
         </tbody>
       </table>
 
-      <h3>Aggregations Optimization</h3>
+      <p>Missing measurements remain <code>null</code> through parsing, storage, charts, and analysis. Additive migrations preserve legacy rows, but old parser-defaulted zeroes and peaks already averaged away cannot be recovered without reimporting source reports. No migration guesses which old zeroes were real observations.</p>
+      <h3>Query Aggregation</h3>
       <div class="callout">
-        <div class="callout-title">Database-Side Query Performance</div>
+        <div class="callout-title">Preserve Counts, Duration, Peaks, and Missing Values</div>
         <p class="callout-body">
-          To display 30-day historical charts, the application aggregates metric records to a daily resolution. Previously calculated in Python memory, this query is now executed on the SQLite side using a mathematical grouping:
+          GC daily trends use SQLite grouping. SAR trend/range queries combine stored per-metric weights and peaks in Python, using duration weights when known and sample weights otherwise. Empty measurement lists remain unavailable, not zero. Only query-boundary SAR buckets need sample-level rereads to exclude observations outside an explicit time range.
         </p>
         <pre style="margin: 10px 0 0 0;"><code>SELECT (ts / 86400) * 86400 AS day, AVG(heap_used_mb) AS heap_used_avg, MAX(heap_used_mb) ... GROUP BY day</code></pre>
       </div>
@@ -624,12 +642,12 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
 
       <h3>4. Log Parser (<code>gcanalyzer/parser.py</code>)</h3>
       <p>
-        Tokenizes unified GC logs (e.g., standard JDK 11+ `-Xlog:gc*` formatting) line-by-line using regular expressions to capture timestamps, garbage collection phases, heap transitions (occupied vs limit), and pause times.
+        Parses unified and legacy GC records, including pause-only observations, heap transitions, collector identity, and event time. Absolute timestamps require source evidence or a verified JVM start anchor; uptime-only logs stay relative. Missing heap or rate evidence can limit health grading without erasing observed pauses.
       </p>
 
       <h3>5. Fleet Health Analyzer (<code>gcanalyzer/analyzer.py</code>)</h3>
       <p>
-        Scores metrics and assigns an academic grade (A-F) based on thresholds for GC throughput, time-in-GC percentage, pause averages, and Full GC occurrences. Also generates tuning advice (e.g., advising G1 upgrades, GCTimeRatio modifications, or Metaspace limits).
+        Scores usable GC evidence on the A-F scale using throughput, pause, Full GC, and heap-pressure thresholds. Inadequate evidence returns <code>?</code> / unknown with a null score. Findings explain observed risks and investigation steps; they do not prove Kafka service impact or justify a configuration change by themselves.
       </p>
       <p>
         The grade is a deterministic report-card summary of the node's GC risk: A = healthy, B = good, C = watch, D = at risk, and F = critical. The score starts at 100 and subtracts risk points for low throughput, long stop-the-world pauses, Full GCs, and high post-GC heap pressure.
@@ -637,35 +655,38 @@ PYTHON=python3.14 ./manage-app.sh setup</code></pre>
 
       <h3>6. SAR Collector &amp; Parser (<code>gcanalyzer/collector.py</code>, <code>sar_parser.py</code>)</h3>
       <p>
-        Over the same SSH session used for GC logs, runs <code>TZ=UTC LC_ALL=C sadf -j -- -A</code> (structured JSON, sysstat &ge;11.x) and falls back to <code>TZ=UTC LC_ALL=C sar -A</code> (the classic columnar text report, the same format tools like <a href="https://github.com/vlsi/ksar" target="_blank" rel="noopener">kSar</a> parse) when JSON isn't available. <code>TZ=UTC</code> matters because sar stores samples as UTC internally and renders them in the reporting command's TZ &mdash; forcing UTC makes host samples directly comparable to GC metrics without knowing each host's local timezone. Both formats normalize into the same <code>SarSample</code> shape.
+        In an independent pass using the configured SSH access, runs <code>TZ=UTC LC_ALL=C sadf -j -- -A</code> and falls back to <code>TZ=UTC LC_ALL=C sar -A</code> when JSON is unavailable. Both formats normalize into <code>SarSample</code>, preserving null missing fields. Text AM/PM times and ISO or slash-format dates are supported. A report's timezone converts host observations to UTC; only GC events with verified absolute time can be aligned with them.
       </p>
 
       <h3>7. Host Health Analyzer (<code>gcanalyzer/sar_analyzer.py</code>)</h3>
       <p>
-        Rolls <code>SarSample</code> series into the same metrics/health/findings shape <code>analyzer.py</code> produces for GC &mdash; CPU busy/iowait, memory/swap, disk util/await, NIC util &mdash; with its own A&ndash;F grade and Kafka-aware recommendations (disable swap, spread log dirs across disks, add NICs, etc).
+        Aggregates CPU busy/iowait, memory/swap, disk util/await, and NIC observations. Complete usable evidence receives an A&ndash;F host grade. Missing evidence is unknown; partial evidence has grade <code>?</code>, status <code>partial</code>, and a null score, while observed pressure can still be reported. Unobserved resources are not described as healthy zero-activity resources.
       </p>
 
       <h3>8. Correlation Engine (<code>gcanalyzer/correlate.py</code>)</h3>
       <p>
-        Joins GC and host metrics per instance on an hourly grid and computes Pearson correlation between GC pressure signals (time-in-GC, pause tail, Full GC count) and host signals (CPU, iowait, memory, swap, disk, network). Also computes a "storm co-occurrence" read &mdash; of the hours this node was in a GC storm, what fraction also showed host pressure &mdash; and produces a <code>gc_bound</code> / <code>host_bound</code> / <code>mixed</code> verdict.
+        Re-buckets overlapping GC and host evidence per instance to hourly observations, then computes Pearson correlation and GC-storm co-occurrence where each metric pair has usable values. It distinguishes <code>gc_bound</code>, <code>host_bound</code>, <code>mixed</code>, <code>healthy</code>, and <code>insufficient_data</code>. Missing values are not zero-filled. Association is not causality, and lack of correlation does not prove a JVM-only cause.
       </p>
 
       <h3>9. Scaling Advisor (<code>gcanalyzer/scaling_advisor.py</code>)</h3>
       <p>
-        Classifies each broker's dominant bottleneck and measures cross-node skew (coefficient of variation on CPU busy and network egress). Uniform saturation across nodes recommends <strong>horizontal</strong> scaling; one or two hot outliers among calm peers recommends a <strong>rebalance</strong> first; JVM heap-bound nodes with calm hosts underneath recommend <strong>vertical</strong> (heap/RAM) scaling. Every verdict ships with its evidence, deterministic and explainable like the GC findings engine.
+        Identifies observed broker pressure and cross-node skew in CPU busy and network egress, with source-quality gates. Pressure leads to <code>investigate</code>, not a prescription for more brokers, larger heaps, or partition movement. Uniform pressure and isolated hot brokers need different follow-up evidence, but neither establishes a scaling direction without Kafka workload, latency, replication, and partition-placement observations.
       </p>
 
       <h3>10. ML Tech Preview (<code>gcanalyzer/ml_insights.py</code>)</h3>
       <p>
-        Advisory-only anomaly scoring over the combined GC+host feature vector. A dependency-free robust z-score (median/MAD) baseline always runs; an <code>IsolationForest</code> (scikit-learn, optional) joins in automatically when installed, scoring the joined hourly feature vector for unusual <em>combinations</em> that no single threshold would catch. Deterministic rules remain the source of truth for grades and scaling verdicts.
+        Dependency-free robust z-score (median/MAD) scoring needs at least <strong>10 observed baseline hours per feature</strong> and usable recent evidence. Noise floors limit flat-baseline false alarms. Optional <code>IsolationForest</code> requires scikit-learn and sufficient complete feature vectors; it is fitted <strong>request-local only</strong>, with no persistent model or continuous learning. Output identifies actual method use, readiness, and unavailable/error states. Deterministic rules remain the source of truth for grades; anomaly scores are advisory, not diagnoses.
       </p>
+      <h3>11. Capacity Forecast (<code>gcanalyzer/forecast.py</code>)</h3>
+      <p>Each signal requires <strong>at least 14 observed days</strong>, <strong>80% calendar coverage</strong> from its first observation through the query date, <strong>no gap greater than two days between observed days</strong>, <strong>five observed days in the last seven</strong>, and a <strong>latest observation within 24 hours</strong>. Missing, stale, or partial source quality can block predictions sooner; source freshness defaults to <strong>two hours</strong>.</p>
+      <p>Theil-Sen supplies a robust linear projection, not a validated Kafka capacity model. There is <strong>no seasonality model, backtesting, or calibrated uncertainty</strong>. Confidence is <strong>low or medium, never high</strong>; future breach dates require medium confidence and a consistent rising trend. Cluster risks lead to <code>investigate</code> with caveats, not scaling prescriptions.</p>
     </section>
 
     <!-- SAR / Scaling -->
     <section id="sar" class="doc-section">
       <h2>Server Health (SAR), Correlation &amp; Scaling Advisor</h2>
       <p>
-        Beyond GC logs, the analyzer SSHes into the same hosts and pulls OS-level activity via <strong>sysstat</strong> (<code>sar</code>/<code>sadf</code>), then lines it up against GC pressure to answer: is this node's GC problem a JVM tuning question, or is the host underneath it starved? And at the cluster level: scale vertically, horizontally, or just rebalance?
+        The analyzer collects host activity via <strong>sysstat</strong> (<code>sar</code>/<code>sadf</code>) and compares it with GC pressure where timestamps overlap. At cluster level it highlights resource pressure or peer skew to investigate. Kafka-native evidence is required before selecting capacity, heap, or partition-placement changes.
       </p>
 
       <h3>Prerequisite</h3>
@@ -675,7 +696,7 @@ sudo systemctl enable --now sysstat
 
 sudo yum install -y sysstat       # RHEL/CentOS/Amazon Linux
 sudo systemctl enable --now sysstat</code></pre>
-      <p>No agent to deploy &mdash; collection reuses the existing GC-log SSH session.</p>
+      <p>No analyzer agent is deployed on the host. SAR uses configured host access in a separate collection pass; sysstat must already be recording the required observations.</p>
 
       <h3>Configuration</h3>
       <p>Add a <code>sar:</code> block to a cluster's node defaults (opt-out, not opt-in):</p>
@@ -690,19 +711,23 @@ sudo systemctl enable --now sysstat</code></pre>
       <table>
         <thead><tr><th>Method</th><th>Path</th><th>Returns</th></tr></thead>
         <tbody>
-          <tr><td>GET</td><td><code>/api/instance/{id}/sar</code></td><td>Current host snapshot: health, findings</td></tr>
+          <tr><td>GET</td><td><code>/api/instance/{id}/sar</code></td><td>Host snapshot: instance, latest, metrics, health, findings, quality</td></tr>
           <tr><td>GET</td><td><code>/api/instance/{id}/sar/trends?days=30</code></td><td>Daily-aggregated host trend series</td></tr>
           <tr><td>GET</td><td><code>/api/instance/{id}/sar/series?range=24h</code></td><td>Selectable-range host trend series</td></tr>
           <tr><td>GET</td><td><code>/api/instance/{id}/correlation?days=30</code></td><td>GC&lt;-&gt;host correlation: verdict, r-values, findings</td></tr>
           <tr><td>GET</td><td><code>/api/instance/{id}/anomalies</code></td><td>ML Tech Preview anomaly score (advisory)</td></tr>
-          <tr><td>GET</td><td><code>/api/cluster/{cluster}/scaling?role=broker</code></td><td>Vertical / horizontal / rebalance recommendation</td></tr>
+          <tr><td>GET</td><td><code>/api/cluster/{cluster}/scaling?role=broker</code></td><td>Evidence-gated pressure/skew investigation guidance</td></tr>
+          <tr><td>GET</td><td><code>/api/instance/{id}/forecast?days=90&amp;horizon=90</code></td><td>Coverage-gated advisory per-signal projections and limitations</td></tr>
+          <tr><td>GET</td><td><code>/api/cluster/{cluster}/forecast?role=broker</code></td><td>Cluster trend risks to investigate, not a scaling plan</td></tr>
+          <tr><td>POST</td><td><code>/api/instance/{id}/sar/upload</code></td><td>Admin-only persistent SAR import, idempotent by sample identity</td></tr>
+          <tr><td>POST</td><td><code>/api/investigations/analyze</code></td><td>Both authenticated roles: bounded one-time GC/optional SAR analysis, no database writes</td></tr>
         </tbody>
       </table>
 
       <div class="callout">
         <div class="callout-title">Independent Collection, Independent Failure</div>
         <p class="callout-body">
-          SAR collection runs as its own pass in the scheduler tick, separate from GC log collection. A host with SAR unreachable (or disabled) never blocks GC log collection for that node, and vice versa &mdash; the dashboard simply shows "no host metrics yet" for that one section.
+          SAR collection runs as its own pass, separate from GC collection. A SAR failure does not invalidate usable GC evidence, or vice versa. The dashboard shows each source's fresh/partial/stale/missing state. Retained historical rows do not establish current healthy status; a daily SAR upload alone does not maintain freshness under the two-hour default.
         </p>
       </div>
     </section>
@@ -777,10 +802,11 @@ nodes:
           <strong>Instance Detail</strong>: Shows current health scores, recommendations, active alerts, recent charts, and 30-day trend lines.
         </li>
         <li>
-          <strong>ML Tech Preview</strong>: Opens a separate technology preview for future adaptive baselines, anomaly scoring, and forecast risk. No trained model is running yet; deterministic GC rules remain the source of truth.
+          <strong>ML Tech Preview</strong>: Shows actual method use and readiness. Robust scoring requires 10 observed baseline hours per feature; optional Isolation Forest is request-local only and needs sufficient complete vectors. Unavailable evidence is not scored. Deterministic GC and host rules remain the source of truth.
         </li>
       </ul>
 
+      <p>The header theme toggle switches light/dark presentation and remembers the choice locally. Theme changes do not alter health grades, source quality, or diagnostic logic.</p>
       <h3>Health Grade Legend</h3>
       <table>
         <thead>
@@ -824,6 +850,22 @@ nodes:
           </tr>
         </tbody>
       </table>
+      <h3>Data Quality and Diagnostic Summary</h3>
+      <p><strong>? = unknown</strong>: missing or stale data cannot establish current health. Missing CPU, memory, disk, or GC values are shown as unavailable, not zero. Source freshness and coverage appear separately from the grade. Historical evidence may still be available when current health is unknown.</p>
+      <p>A GC collection containing only malformed or unsupported complete records also marks current health unknown. Confirmed recent GC alerts remain visible; a later usable collection can restore current health. Collection quality is stored separately from observed metrics.</p>
+      <p>Snapshot <code>quality</code> contains <code>state</code>, <code>last_observed_at</code>, <code>age_seconds</code>, <code>available_metrics</code>, and <code>missing_metrics</code>. GC snapshots retain <code>instance</code>, <code>latest</code>, <code>metrics</code>, <code>health</code>, <code>alerts</code>, and <code>findings</code>; host snapshots omit <code>alerts</code>. Missing/stale sources return empty current metrics/advice and health <code>{grade: "?", status: "unknown", score: null}</code>, while <code>latest</code> can expose retained historical values. Freshness defaults to two hours via <code>GC_SOURCE_MAX_AGE_S</code> and <code>SAR_SOURCE_MAX_AGE_S</code>.</p>
+      <p>Results use <strong>Analysis complete</strong>, followed by <strong>What we found</strong>, <strong>Why it matters</strong>, and <strong>Next step</strong>. GC and host events occurring together suggest a possible contributor, not a confirmed cause. Kafka service impact remains unconfirmed until Kafka metrics are connected.</p>
+      <h3>Analyze Logs: One-Time Investigations</h3>
+      <p>Open <strong>Analyze logs</strong> to upload GC text or gzip files. Files are separate investigations unless you select <strong>Files are rotations from the same JVM</strong>. Never group logs from different JVMs. Optional SAR JSON/text must come from the same host; comparison accepts one JVM group at a time.</p>
+      <p>Uptime-only GC logs stay relative. Supply a verified JVM start time with timezone, such as <code>2026-09-12T00:00:00Z</code>, to establish UTC; the parser never invents a date. Export SAR using <code>TZ=UTC LC_ALL=C sadf -j -- -A</code>; binary SAR files must be exported first. Optional <code>report_date</code> anchors SAR text, not JVM uptime. The editable <code>report_timezone</code> defaults to <code>UTC</code>; choose the report's IANA timezone, such as <code>America/Toronto</code>, for local exports. Embedded SAR JSON UTC/offset information takes precedence, and ambiguous/nonexistent daylight-saving wall times are rejected. Only overlapping observed timestamps are compared; gaps are not zero-filled.</p>
+      <p>Call <code>POST /api/investigations/analyze</code> as either an authenticated admin or read-only user. Limits are <strong>12 GC files</strong>, <strong>4 MiB expanded per file</strong>, <strong>8 MiB expanded total including SAR</strong>, a <strong>12 MiB request body</strong>, and <strong>two concurrent investigations per process</strong>. Analysis runs in memory with <strong>no database writes</strong>; fleet history and learning baselines are untouched. This differs from the admin-only persistent SAR upload endpoint. <strong>Download report</strong> produces a standalone HTML summary.</p>
+      <h3>Prometheus Settings</h3>
+      <p>As an <strong>admin</strong>, open <strong>Settings &rarr; Prometheus</strong>. Enter the server base URL, choose <strong>Save settings</strong>, then <strong>Test connection</strong>. HTTP and HTTPS with no authentication are supported. Test connection uses the saved address only; save any edits first. A successful test confirms query API access, not Kafka metric availability. The result is the <strong>last test</strong>, not continuous monitoring, and is cleared when the app restarts.</p>
+      <p>The screen shows the full path to <code>prometheus.json</code>, stored at the project root by default and excluded from Git. To move it, set <code>GC_PROMETHEUS_CONFIG=/etc/gcanalyzer/prometheus.json</code> and restart the app. The parent directory must exist and be writable by the app user. Saved files use <code>0600</code> permissions. Direct JSON edits take effect when Settings is reloaded; the app need not restart for content changes. The generic schema is in <code>prometheus.example.json</code>.</p>
+      <p>Selection fields preserve raw <code>job</code>, <code>region</code>, <code>tier</code>, <code>infra</code>, <code>az</code>, <code>service</code>, and full <code>instance</code> values, including exporter ports. Empty lists have no selection restriction. Tiers include DEV, UAT, PROD, sandbox, and stage. Infrastructure includes <code>icp</code> and <code>phy</code>. Service aliases map Kafka to broker and registry to schema-registry. The expected scrape interval is <strong>60 seconds</strong>.</p>
+      <p><strong>Settings and connection testing are available; metric ingestion is not yet enabled.</strong> Saved filters and service aliases are reserved for that integration. This app does not change the external <code>prometheus.yml</code> or its scraping interval. Admin-only APIs: <code>GET</code>/<code>PUT /api/settings/prometheus</code> and <code>POST /api/settings/prometheus/test</code>.</p>
+      <p>The Excel mapping can be added later for cluster-specific analysis. A job named <code>bvp-region-env</code> can contain multiple Kafka clusters and is not itself a cluster identity. Cross-region ZooKeeper tiebreakers are intentional: preserve their actual region and verified logical cluster membership. A region differing from the job name is not, by itself, an error. Keep environment baselines distinct and never infer cluster membership solely from job, region, or AZ.</p>
+      <p>Capacity guidance and forecasts remain advisory. Missing, stale, or sparse evidence withholds predictions or reduces confidence. Confirm Kafka workload, replication health, latency, and partition placement before changing capacity.</p>
     </section>
 
     <!-- 7. Alerting & Diagnostics -->
@@ -848,31 +890,31 @@ nodes:
             <td><strong style="color: var(--critical)">Full GC</strong></td>
             <td>Critical</td>
             <td><code>full_gc_count &gt; 0</code></td>
-            <td>A Full Stop-The-World GC took place. Indicates heap exhaustion.</td>
+            <td>A Full stop-the-world GC was observed. Check its cause and surrounding heap evidence; this alone does not prove heap exhaustion.</td>
           </tr>
           <tr>
             <td><strong style="color: var(--critical)">Long Pause</strong></td>
             <td>Critical</td>
             <td><code>pause_max_ms &gt; 500ms</code></td>
-            <td>A single STW pause exceeded 500ms. Likely to cause Kafka broker timeout drops.</td>
+            <td>An observed STW pause exceeded the threshold. Compare Kafka latency, timeouts, and replication health to establish service impact.</td>
           </tr>
           <tr>
             <td><strong style="color: var(--watch)">Heap Pressure</strong></td>
             <td>Warning</td>
             <td><code>heap_after_pct &gt; 85%</code></td>
-            <td>Live set after collection occupies more than 85% of total heap. High risk of OOM.</td>
+            <td>The observed post-GC live set has limited heap headroom. Investigate trends and allocation demand; this is not an OOM prediction.</td>
           </tr>
           <tr>
             <td><strong style="color: var(--watch)">GC Storm</strong></td>
             <td>Warning</td>
             <td><code>time_in_gc_pct &gt; max(5%, 3x baseline)</code></td>
-            <td>The JVM is spending significant CPU resources running GC cycles.</td>
+            <td>The observed fraction of time in GC exceeds its threshold. This is not a direct host CPU-utilization measurement.</td>
           </tr>
           <tr>
             <td><strong style="color: var(--watch)">GC Frequency</strong></td>
             <td>Warning</td>
             <td><code>gc_per_min &gt; max(20, 2x baseline)</code></td>
-            <td>High allocation rates causing rapid GC cycles. Degrades application throughput.</td>
+            <td>GC cycles are unusually frequent. Check allocation behavior and application latency before attributing Kafka throughput loss.</td>
           </tr>
         </tbody>
       </table>
@@ -903,6 +945,12 @@ nodes:
         You can force a single scraping pass to run outside of the FastAPI runtime. Execute the following command from the project root directory:
       </p>
       <pre><code>.venv/bin/python -m gcanalyzer.scheduler --db gc_live.db --once</code></pre>
+      <h3>Verification Coverage</h3>
+      <p>Use explicit demo mode for seeded-history tests; live-clock tests disable it and explicit fixed-<code>now</code> cases remain deterministic. The suite covers GC relative time and retryable offsets, SAR nulls and AM/PM/timezones, fixed-grid late/repeated/corrected samples, transactional rollback, weighted rollups, migrations, stale snapshots, and nullable queries.</p>
+      <p>Advice tests distinguish healthy/unknown/pressure states and assert <code>investigate</code> rather than unsupported scaling prescriptions. Forecast tests check calendar coverage and withheld projections; ML tests check per-feature baseline readiness and actual model status. Investigation tests cover authorization, upload limits, timestamp alignment, and no history writes. Static checks protect theme behavior, health-grade legends, escaping, and control commands.</p>
+      <pre><code>GC_DEMO_MODE=1 .venv/bin/python -m pytest -q</code></pre>
+      <p>In the shared macOS workspace, pytest is supplied outside the virtual environment:</p>
+      <pre><code>GC_DEMO_MODE=1 .venv/bin/python -c "import sys; sys.path.append('/opt/homebrew/lib/python3.14/site-packages'); import pytest; raise SystemExit(pytest.main(['-q']))"</code></pre>
     </section>
   </main>
 

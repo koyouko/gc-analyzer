@@ -17,7 +17,7 @@ import json
 import os
 import re
 
-from gcanalyzer import store, fleet
+from gcanalyzer import store, fleet, correlate, scaling_advisor, forecast, ml_insights
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -48,32 +48,44 @@ def build(out: str, chartjs: str | None = None) -> None:
         now = store.now_ts(c)
         f = fleet.build_fleet(c)
         instances, series, clusters = {}, {}, {}
+        routes = {}
         for inst in store.list_instances(c):
             iid = inst["id"]
             instances[iid] = store.current_snapshot(c, iid)
+            routes[f"/api/instance/{iid}/sar"] = store.current_host_snapshot(c, iid, now)
+            routes[f"/api/instance/{iid}/correlation"] = correlate.correlate_instance(c, iid, now=now)
+            routes[f"/api/instance/{iid}/anomalies"] = ml_insights.analyze_anomalies(c, iid, now=now)
+            routes[f"/api/instance/{iid}/forecast"] = forecast.forecast_instance(c, iid, now=now)
             by_range = {}
             for range_key, window in _RANGES.items():
                 s = store.range_series(c, iid, now - window, now, _bucket_for(window))
                 s["range"] = range_key
                 by_range[range_key] = s
+                routes[f"/api/instance/{iid}/sar/series?range={range_key}"] = store.host_range_series(
+                    c, iid, now - window, now, _bucket_for(window))
             series[iid] = by_range
             clusters.setdefault(inst["cluster"], None)
         for cl in list(clusters):
             clusters[cl] = fleet.build_cluster(c, cl)
+            routes[f"/api/cluster/{cl}/scaling"] = scaling_advisor.analyze_cluster_scaling(c, cl, now=now)
+            routes[f"/api/cluster/{cl}/forecast"] = forecast.forecast_cluster(c, cl, now=now)
         cluster_names = sorted(clusters)
 
     data = {
         "fleet": f, "instances": instances, "series": series,
-        "clusters": clusters, "cluster_names": cluster_names,
+        "clusters": clusters, "cluster_names": cluster_names, "routes": routes,
     }
     html = open(os.path.join(HERE, "frontend", "index.html")).read()
 
     # Inline data + shim api() and fetch() for every /api/* path, and auto-login.
     inject = (
-        "<script>window.__STATIC__=" + json.dumps(data) + ";</script>\n<script>\n"
+        "<script>window.__STATIC__=" + json.dumps(data, allow_nan=False).replace("<", "\\u003c") + ";</script>\n<script>\n"
         "function __route(p){\n"
         "  const path=p.split('?')[0];\n"
-        "  if(path==='/api/me') return {user:'admin',role:'admin'};\n"
+        "  const decoded=decodeURIComponent(p);\n"
+        "  if(window.__STATIC__.routes[decoded]) return window.__STATIC__.routes[decoded];\n"
+        "  if(window.__STATIC__.routes[decodeURIComponent(path)]) return window.__STATIC__.routes[decodeURIComponent(path)];\n"
+        "  if(path==='/api/me') return {user:'readonly',role:'readonly'};\n"
         "  if(path==='/api/health') return {ok:true};\n"
         "  if(path==='/api/fleet') return window.__STATIC__.fleet;\n"
         "  if(path==='/api/clusters') return {clusters:window.__STATIC__.cluster_names};\n"
@@ -118,10 +130,26 @@ def build(out: str, chartjs: str | None = None) -> None:
     html = re.sub(r"async function api\(p\)\{[^\n]*\}", "/* api() replaced by static shim */", html, count=1)
     html = html.replace("<script>\nconst SC=", inject + "const SC=")
 
-    # Optionally swap the Chart.js CDN (Cowork artifact sandbox only allows jsdelivr).
-    if chartjs:
-        html = re.sub(r'<script src="https://cdnjs\.cloudflare\.com/ajax/libs/Chart\.js/[^"]+"></script>',
-                      chartjs, html, count=1)
+    # Bundle only known frontend assets; reports must not depend on the live server.
+    def inline_script(match):
+        path = match.group(1)
+        if path == "investigations.js":
+            return '<script>function openInvestigation(){alert("Log analysis requires the running app.");}</script>'
+        if path == "vendor/chart.umd.js" and chartjs:
+            return chartjs
+        if path not in ("vendor/chart.umd.js", "dashboard.js", "prometheus-settings.js"):
+            raise ValueError(f"Unrecognized export asset: {path}")
+        with open(os.path.join(HERE, "frontend", path)) as asset:
+            return "<script>" + asset.read().replace("</script", "<\\/script") + "</script>"
+
+    html = re.sub(r'<script src="/assets/([^"]+)"[^>]*></script>', inline_script, html)
+    def inline_style(match):
+        path = match.group(1)
+        if path not in ("dashboard.css", "investigations.css", "prometheus-settings.css"):
+            raise ValueError(f"Unrecognized export stylesheet: {path}")
+        with open(os.path.join(HERE, "frontend", path)) as asset:
+            return "<style>" + asset.read() + "</style>"
+    html = re.sub(r'<link rel="stylesheet" href="/assets/([^"]+)"[^>]*>', inline_style, html)
 
     with open(out, "w") as fh:
         fh.write(html)

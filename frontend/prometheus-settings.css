@@ -1,0 +1,63 @@
+#prometheus-settings {
+  min-width: 0;
+  margin-top: 28px;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+  color: var(--txt);
+  letter-spacing: 0;
+}
+#prometheus-settings h2 { margin: 0 0 8px; font-size: 18px; text-transform: none; letter-spacing: 0; }
+#prometheus-settings h3 { margin: 0; font-size: 13px; }
+#prometheus-settings p { margin: 6px 0 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.prom-path { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); }
+.prom-path code { color: var(--txt); overflow-wrap: anywhere; }
+.prom-state-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px 24px; margin: 20px 0; }
+.prom-state-grid dt { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.prom-state-grid dd { margin: 0; font-size: 15px; font-weight: 650; }
+.prom-state-grid .connected { color: var(--ok); }
+.prom-state-grid .failed, #prometheus-settings .prom-error { color: var(--crit); }
+#prometheus-settings .prom-error { border-left: 3px solid var(--crit); padding-left: 12px; }
+#prometheus-settings fieldset { border: 0; padding: 0; margin: 20px 0 0; min-width: 0; }
+.prom-connection-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; max-width: 900px; }
+#prometheus-settings label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 600; min-width: 0; }
+#prometheus-settings input, #prometheus-settings textarea, #prometheus-settings select {
+  width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+  background: var(--panel); color: var(--txt); border: 1px solid var(--border);
+  border-radius: 4px; padding: 9px 10px; font: inherit; font-size: 13px; font-weight: 400; letter-spacing: 0;
+}
+#prometheus-settings input, #prometheus-settings select { min-height: 38px; }
+#prometheus-settings input[type="number"] { max-width: 160px; }
+#prometheus-settings input:focus-visible, #prometheus-settings textarea:focus-visible, #prometheus-settings select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#prometheus-settings input::placeholder, #prometheus-settings textarea::placeholder { color: var(--muted); opacity: 1; }
+#prometheus-settings textarea { resize: vertical; min-height: 64px; line-height: 1.45; }
+.prom-auth { display: flex; flex-direction: column; gap: 12px; font-size: 12px; }
+.prom-auth strong { font-size: 13px; font-weight: 400; }
+.prom-scope-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px 20px; flex-wrap: wrap; margin: 24px 0 12px; }
+.prom-filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.prom-filter-grid label > span { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.prom-filter-grid small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.prom-instances { grid-column: 1 / -1; }
+.prom-role-table { width: 100%; max-width: 900px; table-layout: fixed; border-collapse: collapse; }
+.prom-role-table th, .prom-role-table td { padding: 8px 8px 8px 0; text-align: left; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.prom-role-table th { color: var(--muted); font-size: 12px; font-weight: 600; }
+.prom-role-table th:last-child, .prom-role-table td:last-child { width: 44px; padding-right: 0; text-align: right; }
+#prometheus-settings .prom-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: none; padding: 0; font-size: 20px; border: 1px solid var(--border); }
+#prom-add-role { margin-top: 10px; }
+#prometheus-settings .prom-scope-note { margin-top: 18px; }
+.prom-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 16px; margin-top: 20px; }
+.prom-actions .btn { min-height: 36px; }
+.prom-actions .muted { flex: 1 1 240px; line-height: 1.5; }
+#prometheus-settings .btn:disabled { cursor: default; }
+#prometheus-settings [hidden] { display: none !important; }
+.prom-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 1050px) { .prom-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) {
+  .prom-connection-fields, .prom-state-grid, .prom-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .prom-connection-fields { gap: 16px; }
+  .prom-auth { flex-direction: row; gap: 16px; }
+  #prometheus-settings input[type="number"] { max-width: 100%; }
+  .prom-scope-heading { align-items: flex-start; }
+  .prom-role-table th, .prom-role-table td { padding-left: 0; padding-right: 6px; }
+  #prometheus-settings .prom-role-table select { padding-left: 4px; padding-right: 0; font-size: 12px; }
+  .prom-actions .muted { flex-basis: 100%; }
+}

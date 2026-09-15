@@ -14,24 +14,17 @@ Method — deliberately simple, robust, and explainable (matching the project's
      (default 90 days) from the same `metrics` / `host_metrics` tables the
      rest of the dashboard reads. Averaging signals use the daily mean,
      saturation signals (disk/NIC util, swap) use the daily max.
-  2. Fit a Theil-Sen trend (median of all pairwise slopes). Unlike ordinary
-     least squares, one incident day — a GC storm, a backfill, a noisy
-     neighbor — cannot drag the slope, so the projection reflects the
-     *sustained* growth rate, not the worst day.
+  2. Fit a Theil-Sen trend (median of all pairwise slopes) only with fresh,
+     sufficiently dense calendar history spanning at least two weekly cycles.
+     This is robust to isolated outliers but does not model seasonality.
   3. Project days-until-breach for the warning and critical thresholds
      already used by sar_analyzer.py / the GC alerting rules, from the
      current level (median of the last 7 daily points).
-  4. Trend consistency (what fraction of pairwise slopes agree in sign with
-     the median slope) plus history length become a low/medium/high
-     confidence label — a jittery signal that happens to slope upward is
-     reported, but at low confidence.
+  4. Trend consistency qualifies the fit, not predictive accuracy. Weak fits
+     have no breach date. No forecast here is backtested or calibrated.
 
-Cluster rollup maps the breaching resource onto a *proactive* scaling
-direction consistent with scaling_advisor.py's reactive verdicts: uniform
-CPU/disk/network growth -> plan horizontal; memory/swap growth -> plan
-vertical (RAM); JVM heap growth -> plan vertical (heap); time-in-GC growth ->
-tune GC first; a single hot node trending up while peers are flat -> watch /
-rebalance that node before buying hardware.
+Cluster rollups recommend investigation, not a scaling direction. Kafka-native
+evidence and workload ownership are needed before choosing a capacity change.
 
 Advisory only, like everything else in this project: it recommends a planning
 horizon, it never acts.
@@ -43,10 +36,15 @@ import statistics
 from datetime import datetime, timezone
 
 from . import sar_analyzer, store
+from .correlate import _finite_number
 
 DAY_S = 86400
 
-MIN_DAYS = 7                 # fewer daily points than this -> insufficient_data
+MIN_DAYS = 14                # minimum two weekly cycles; not a seasonal model
+MIN_CALENDAR_COVERAGE = 0.80
+MAX_GAP_DAYS = 2
+MAX_AGE_SECONDS = DAY_S
+MIN_RECENT_DAYS = 5
 CURRENT_WINDOW_DAYS = 7      # "current level" = median of the last N daily points
 MAX_MEANINGFUL_ETA_DAYS = 730  # beyond the 2-year retention window, an ETA is noise
 IMMINENT_DAYS = 30           # critical breach inside this window -> act now
@@ -90,13 +88,6 @@ SIGNALS: list[dict] = [
      "label": "Time in GC", "unit": "%", "warn": TIME_IN_GC_WARN_PCT,
      "crit": TIME_IN_GC_CRIT_PCT, "group": "gc"},
 ]
-
-_GROUP_DIRECTION = {
-    "compute": "plan_horizontal",
-    "memory": "plan_vertical_memory",
-    "heap": "plan_vertical_heap",
-    "gc": "plan_tune_gc",
-}
 
 _GROUP_LABEL = {
     "compute": "CPU/disk/network",
@@ -142,7 +133,7 @@ def _daily_series(rows: list[dict], column: str, agg: str) -> list[tuple[int, fl
     buckets: dict[int, list[float]] = {}
     for r in rows:
         v = r.get(column)
-        if v is None:
+        if not _finite_number(v) or not _finite_number(r.get("ts")):
             continue
         day = (r["ts"] // DAY_S) * DAY_S
         buckets.setdefault(day, []).append(float(v))
@@ -154,11 +145,30 @@ def _daily_series(rows: list[dict], column: str, agg: str) -> list[tuple[int, fl
 
 
 def _confidence(n_days: int, consistency: float) -> str:
-    if n_days >= 21 and consistency >= 0.70:
-        return "high"
-    if n_days >= 14 and consistency >= 0.55:
+    if n_days >= MIN_DAYS and consistency >= 0.70:
         return "medium"
     return "low"
+
+
+def _coverage(daily: list[tuple[int, float]], last: int | None, now: int) -> dict:
+    today = now // DAY_S * DAY_S
+    span = (today - daily[0][0]) // DAY_S + 1 if daily else 0
+    coverage = len(daily) / span if span > 0 else 0.0
+    recent = sum(day >= today - (CURRENT_WINDOW_DAYS - 1) * DAY_S for day, _ in daily)
+    gaps = [(b[0] - a[0]) / DAY_S for a, b in zip(daily, daily[1:])]
+    age = now - last if last is not None else None
+    reason = None
+    if not daily:
+        reason = "missing_history"
+    elif age is None or age < 0 or age > MAX_AGE_SECONDS:
+        reason = "stale_history"
+    elif len(daily) < MIN_DAYS:
+        reason = "insufficient_calendar_history"
+    elif coverage < MIN_CALENDAR_COVERAGE or max(gaps, default=0) > MAX_GAP_DAYS or recent < MIN_RECENT_DAYS:
+        reason = "sparse_calendar_history"
+    return {"calendar_span_days": span, "coverage_ratio": round(coverage, 3),
+            "recent_observed_days": recent, "max_gap_days": max(gaps, default=0),
+            "last_observed_at": last, "age_seconds": age, "withheld_reason": reason}
 
 
 def _eta_days(current: float, threshold: float, slope: float | None) -> float | None:
@@ -199,9 +209,9 @@ _STATUS_RISK = {
     "already_critical": "critical", "breach_imminent": "critical",
     "already_warning": "warning", "breach_projected": "warning",
     "watch": "watch",
-    "improving": "ok", "stable": "ok", "insufficient_data": "ok",
+    "improving": "ok", "stable": "ok", "insufficient_data": "no_data", "trend_only": "no_data",
 }
-_RISK_RANK = {"critical": 3, "warning": 2, "watch": 1, "ok": 0}
+_RISK_RANK = {"critical": 3, "warning": 2, "watch": 1, "ok": 0, "no_data": -1}
 
 
 # --------------------------------------------------------------------------- #
@@ -209,44 +219,63 @@ _RISK_RANK = {"critical": 3, "warning": 2, "watch": 1, "ok": 0}
 # --------------------------------------------------------------------------- #
 def forecast_instance(c, instance_id: str, days: int = 90,
                       horizon_days: int = DEFAULT_HORIZON_DAYS, now: int = None) -> dict:
-    now = now or store.now_ts(c)
+    now = store.now_ts(c) if now is None else now
     since = now - days * DAY_S
     gc_rows = store.window_rows(c, instance_id, since, now)
     host_rows = store.host_window_rows(c, instance_id, since, now)
+    source_quality = {
+        "gc": (store.current_snapshot(c, instance_id, now) or {}).get("quality") or {},
+        "host": (store.current_host_snapshot(c, instance_id, now) or {}).get("quality") or {},
+    }
 
     signals = []
     for spec in SIGNALS:
         rows = host_rows if spec["table"] == "host" else gc_rows
+        rows = [r for r in rows if _finite_number(r.get("ts")) and since <= r["ts"] <= now
+                and _finite_number(r.get(spec["column"]))]
         daily = _daily_series(rows, spec["column"], spec["agg"])
         n_days = len(daily)
+        coverage = _coverage(daily, max((r["ts"] for r in rows), default=None), now)
+        quality = source_quality[spec["table"]]
+        if quality and quality.get("state") not in ("fresh", "partial"):
+            coverage["withheld_reason"] = "source_" + str(quality.get("state", "unknown"))
         base = {
             "signal": spec["signal"], "label": spec["label"], "unit": spec["unit"],
             "kind": spec["table"], "group": spec["group"],
             "warn_threshold": spec["warn"], "crit_threshold": spec["crit"],
             "n_days": n_days,
+            "method": "theil_sen", "validated": False, "source_quality": quality,
+            **coverage,
         }
-        if n_days < MIN_DAYS:
+        if coverage["withheld_reason"]:
             signals.append({**base, "current": round(daily[-1][1], 2) if daily else None,
                             "slope_per_day": None, "consistency": 0.0, "confidence": "low",
                             "days_to_warn": None, "days_to_crit": None,
                             "warn_date": None, "crit_date": None,
-                            "status": "insufficient_data", "risk": "ok"})
+                            "status": "insufficient_data", "risk": "no_data", "prediction_ready": False})
             continue
 
         first_day = daily[0][0]
         pts = [((day - first_day) / DAY_S, val) for day, val in daily]
         slope, consistency = theil_sen(pts)
-        current = statistics.median(v for _, v in daily[-CURRENT_WINDOW_DAYS:])
-        days_to_warn = _eta_days(current, spec["warn"], slope)
-        days_to_crit = _eta_days(current, spec["crit"], slope)
+        recent_start = (now // DAY_S - CURRENT_WINDOW_DAYS + 1) * DAY_S
+        current = statistics.median(v for day, v in daily if day >= recent_start)
+        confidence = _confidence(n_days, consistency)
+        days_to_warn = _eta_days(current, spec["warn"], slope) if confidence == "medium" else None
+        days_to_crit = _eta_days(current, spec["crit"], slope) if confidence == "medium" else None
         status = _signal_status(current, spec["warn"], spec["crit"],
                                 days_to_warn, days_to_crit, slope, horizon_days)
+        weak_trend = confidence == "low" and slope is not None and abs(slope) >= FLAT_SLOPE_EPS
+        if weak_trend and current < spec["warn"]:
+            status = "trend_only"
         signals.append({
             **base,
             "current": round(current, 2),
             "slope_per_day": round(slope, 4) if slope is not None else None,
             "consistency": consistency,
-            "confidence": _confidence(n_days, consistency),
+            "confidence": confidence,
+            "prediction_ready": confidence == "medium",
+            "withheld_reason": "weak_trend_consistency" if weak_trend else None,
             "days_to_warn": days_to_warn,
             "days_to_crit": days_to_crit,
             "warn_date": _iso_date(now, days_to_warn) if days_to_warn is not None else None,
@@ -257,25 +286,31 @@ def forecast_instance(c, instance_id: str, days: int = 90,
 
     signals.sort(key=lambda s: (-_RISK_RANK[s["risk"]],
                                 s["days_to_crit"] if s["days_to_crit"] is not None else 1e9))
-    risk = signals[0]["risk"] if signals else "ok"
-    if not gc_rows and not host_rows:
+    risk = signals[0]["risk"] if signals else "no_data"
+    if risk == "ok" and any(s["risk"] == "no_data" for s in signals):
         risk = "no_data"
     return {
         "instance_id": instance_id, "now": now, "days": days,
         "horizon_days": horizon_days, "risk": risk,
         "headline": _headline(signals, horizon_days),
         "signals": signals,
+        "quality": {"state": "missing" if all(s["risk"] == "no_data" for s in signals)
+                    else "partial" if any(s["risk"] == "no_data" for s in signals) else "fresh"},
+        "method": "theil_sen", "validated": False,
+        "notice": "Advisory linear trend estimates, not validated capacity predictions. Dates have no calibrated uncertainty interval; seasonality and configuration changes are not modeled.",
     }
 
 
 def _headline(signals: list[dict], horizon_days: int) -> str:
     worst = next((s for s in signals if s["risk"] in ("critical", "warning", "watch")), None)
     if worst is None:
-        fitted = [s for s in signals if s["status"] != "insufficient_data"]
+        fitted = [s for s in signals if s["risk"] != "no_data"]
         if not fitted:
-            return "Not enough daily history yet to project capacity trends (need >= 7 days)."
+            return f"Not enough fresh, dense calendar history or consistent trend evidence (need >= {MIN_DAYS} observed days)."
+        if len(fitted) < len(signals):
+            return "No breach indicated in the usable signals; other resources lack reliable forecast evidence."
         return (f"No capacity breach projected inside the next {horizon_days} days — "
-                f"all tracked resources are flat, improving, or growing too slowly to matter.")
+                "the usable linear trends do not cross the tracked thresholds. This is not a capacity guarantee.")
     cur = f"{worst['current']}{worst['unit']}"
     if worst["status"] == "already_critical":
         return f"{worst['label']} is already past its critical threshold ({cur} >= {worst['crit_threshold']}{worst['unit']})."
@@ -295,7 +330,7 @@ def _headline(signals: list[dict], horizon_days: int) -> str:
 # --------------------------------------------------------------------------- #
 def forecast_cluster(c, cluster: str, role: str = "broker", days: int = 90,
                      horizon_days: int = DEFAULT_HORIZON_DAYS, now: int = None) -> dict:
-    now = now or store.now_ts(c)
+    now = store.now_ts(c) if now is None else now
     instances = [i for i in store.list_instances(c) if i["cluster"] == cluster and i["role"] == role]
     if not instances:
         return {
@@ -314,6 +349,7 @@ def forecast_cluster(c, cluster: str, role: str = "broker", days: int = 90,
         nodes.append({
             "instance_id": inst["id"],
             "risk": fc["risk"],
+            "quality": fc["quality"],
             "headline": fc["headline"],
             "top_signal": top["signal"] if top else None,
             "top_label": top["label"] if top else None,
@@ -350,12 +386,14 @@ def _decide_cluster(nodes: list[dict], horizon_days: int):
                 [], [])
 
     at_risk_nodes = [n for n in with_data if n["at_risk_signals"]]
+    complete = len(with_data) == total and all(n.get("quality", {}).get("state") == "fresh" for n in nodes)
     if not at_risk_nodes:
-        return ("none", "high" if len(with_data) == total else "medium",
+        if not complete:
+            return ("insufficient_data", "low", "Some nodes or resources lack reliable forecast evidence.", [], [])
+        return ("none", "medium",
                 f"No capacity breach projected on any of the {len(with_data)} node(s) with history "
                 f"inside the next {horizon_days} days.",
-                [f"All tracked resources on {len(with_data)}/{total} node(s) are flat, improving, "
-                 f"or growing too slowly to breach within {horizon_days} days."],
+                ["No breach indicated by the usable linear trends; this is not a capacity guarantee."],
                 [])
 
     # Which resource groups are driving the risk, and on how many nodes each?
@@ -389,42 +427,25 @@ def _decide_cluster(nodes: list[dict], horizon_days: int):
     evidence = []
     label = _GROUP_LABEL[dominant_group]
     confs = [s["confidence"] for n in dominant for s in n["at_risk_signals"] if s["group"] == dominant_group]
-    high_conf = sum(1 for cf in confs if cf == "high")
-    confidence = "high" if high_conf >= max(1, len(confs) // 2) and len(dominant) >= 2 else \
-                 ("medium" if confs else "low")
+    confidence = "medium" if complete and confs and all(cf == "medium" for cf in confs) else "low"
+    if not complete:
+        evidence.append("Some nodes or resources lack reliable history; cluster-wide headroom is unknown.")
 
     if earliest:
         evidence.append(f"Earliest projected critical breach: {earliest[1]['label']} on "
                         f"{earliest[0]} in ~{earliest[2]:.0f} days (~{earliest[1]['crit_date']}).")
     evidence.append(f"{len(dominant)}/{total} node(s) show {label} trending toward or past its "
                     f"threshold within the {horizon_days}-day planning window.")
+    evidence.append("These are unvalidated linear trends, not a Kafka capacity model. Check Kafka request rates, "
+                    "latency, replication and leader distribution before changing broker count, hardware or heap.")
 
     if len(dominant) == 1 and len(with_data) >= 2:
         n = dominant[0]
-        evidence.append(f"Only {n['instance_id']} is trending up while its peers are flat — this looks "
-                        f"like uneven load (partition/leader skew), not cluster-wide growth.")
-        return ("watch_hot_node", confidence,
-                f"One node ({n['instance_id']}) is trending toward a {label} ceiling while peers have "
-                f"headroom — rebalance partitions/leaders onto quieter brokers (and re-check the "
-                f"forecast) before planning a cluster-wide scale.",
+        return ("investigate", confidence,
+                f"Review {label} evidence on {n['instance_id']} and compare workload distribution with peers; "
+                "host trends alone do not establish leader skew or a need to rebalance.",
                 evidence, warnings)
 
-    verdict = _GROUP_DIRECTION[dominant_group]
-    summaries = {
-        "plan_horizontal":
-            f"Plan a horizontal scale-out: {label} is growing across {len(dominant)}/{total} node(s). "
-            f"Adding broker(s) and spreading partitions is the durable fix for cluster-wide "
-            f"compute/IO/network growth.",
-        "plan_vertical_memory":
-            f"Plan a vertical (RAM) upgrade: host {label} is growing across {len(dominant)}/{total} "
-            f"node(s). More memory per box (and swap kept off) addresses this more directly than "
-            f"more brokers.",
-        "plan_vertical_heap":
-            f"Plan a JVM heap (-Xmx) increase: heap live set is growing across {len(dominant)}/{total} "
-            f"node(s) while hosts have room — size the heap up before Full GCs start.",
-        "plan_tune_gc":
-            f"Time-in-GC is trending up across {len(dominant)}/{total} node(s) — tune GC (region size, "
-            f"pause target, young gen) and re-check; if heap live set is also climbing, treat it as a "
-            f"heap-sizing problem instead.",
-    }
-    return verdict, confidence, summaries[verdict], evidence, warnings
+    return ("investigate", confidence,
+            f"Investigate {label} trends on {len(dominant)}/{total} node(s) before choosing a capacity change.",
+            evidence, warnings)

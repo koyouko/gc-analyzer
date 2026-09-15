@@ -33,6 +33,11 @@ def setup_module():
     seed_history.main(_TMP)
 
 
+@pytest.fixture(autouse=True)
+def historical_demo_clock(monkeypatch):
+    monkeypatch.setenv("GC_DEMO_MODE", "1")
+
+
 def test_inventory_shape():
     with store.connect(_TMP) as c:
         insts = store.list_instances(c)

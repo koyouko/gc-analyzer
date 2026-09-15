@@ -22,10 +22,11 @@ Endpoints:
     GET  /api/instance/{id}/sar/series?range=24h -> selectable-range host series
     GET  /api/instance/{id}/correlation?days=30 -> GC<->host correlation + findings
     GET  /api/instance/{id}/anomalies?days=30&recent_hours=24 -> ML Tech Preview anomaly scoring
-    GET  /api/cluster/{cluster}/scaling?role=broker -> vertical/horizontal/rebalance recommendation
+    GET  /api/cluster/{cluster}/scaling?role=broker -> evidence-gated resource pressure investigation
     GET  /api/instance/{id}/forecast?days=90&horizon=90 -> capacity forecast: per-signal trend + days-to-breach
-    GET  /api/cluster/{cluster}/forecast?role=broker -> proactive scaling plan (when to scale, which direction)
+    GET  /api/cluster/{cluster}/forecast?role=broker -> advisory cluster trend risks, not a scaling prescription
     POST /api/instance/{id}/sar/upload   -> (admin) ingest a pasted `sadf -j`/`sar -A` export, no SSH needed
+    POST /api/investigations/analyze    -> authenticated, stateless GC/optional SAR upload analysis
     GET  /api/health                     -> liveness probe
 """
 
@@ -37,6 +38,8 @@ import time
 import uuid
 
 import asyncio
+import json
+from contextlib import asynccontextmanager, suppress
 
 from .env import load_dotenv
 
@@ -44,18 +47,36 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request, Response, Cookie
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from . import (
     store, fleet, ingest as ingest_mod, config as config_mod, auth, scheduler,
     sar_ingest, correlate, scaling_advisor, ml_insights, forecast as forecast_mod,
+    investigations, prometheus_settings,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(os.path.dirname(HERE), "frontend")
-CLUSTERS_DIR = os.path.join(os.path.dirname(HERE), "clusters")
+CLUSTERS_DIR = os.environ.get("GC_CONFIG_DIR", os.path.join(os.path.dirname(HERE), "clusters"))
 
-app = FastAPI(title="BSP Kafka GC Analyzer", version="2.3.0")
+@asynccontextmanager
+async def lifespan(app):
+    store.init_db()
+    task = await _start_scheduler()
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(title="BSP Kafka GC Analyzer", version="2.3.0", lifespan=lifespan)
+app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
+_INVESTIGATION_LOCK = asyncio.Semaphore(2)
 
 # Endpoints reachable without a session. Everything else under /api requires one;
 # /api/clusters mutations (POST/DELETE) additionally require the 'admin' role.
@@ -78,13 +99,64 @@ async def _auth_guard(request: Request, call_next):
         ) or (
             request.method == "POST" and path.endswith("/sar/upload")
         )
-        if admin_write and sess["role"] != "admin":
+        if (admin_write or path.startswith("/api/settings/prometheus")) and sess["role"] != "admin":
             return JSONResponse({"detail": "admin role required"}, status_code=403)
         request.state.user = sess
     return await call_next(request)
 
 
-@app.on_event("startup")
+def _prometheus_error(exc):
+    code = 409 if isinstance(exc, prometheus_settings.ConflictError) else 429 if isinstance(exc, prometheus_settings.BusyError) else 400
+    if isinstance(exc, prometheus_settings.StorageError):
+        code = 503
+    return HTTPException(code, str(exc))
+
+
+async def _prometheus_body(request):
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > prometheus_settings.MAX_CONFIG_BYTES:
+            raise HTTPException(413, "Prometheus settings request exceeds 64 KiB.")
+    try:
+        value = json.loads(body)
+        if not isinstance(value, dict) or not isinstance(value.get("revision"), str):
+            raise ValueError()
+        return value
+    except (ValueError, UnicodeError, RecursionError):
+        raise HTTPException(400, "Provide a JSON object with the saved settings revision.") from None
+
+
+@app.get("/api/settings/prometheus")
+def get_prometheus_settings():
+    try:
+        return prometheus_settings.describe()
+    except ValueError as exc:
+        raise _prometheus_error(exc) from exc
+
+
+@app.put("/api/settings/prometheus")
+async def save_prometheus_settings(request: Request):
+    body = await _prometheus_body(request)
+    if set(body) != {"config", "revision"}:
+        raise HTTPException(400, "Provide only config and revision.")
+    try:
+        return await run_in_threadpool(prometheus_settings.save, body["config"], body["revision"])
+    except ValueError as exc:
+        raise _prometheus_error(exc) from exc
+
+
+@app.post("/api/settings/prometheus/test")
+async def test_prometheus_connection(request: Request):
+    body = await _prometheus_body(request)
+    if set(body) != {"revision"}:
+        raise HTTPException(400, "Test the saved revision without additional settings.")
+    try:
+        return await run_in_threadpool(prometheus_settings.test_connection, body["revision"])
+    except ValueError as exc:
+        raise _prometheus_error(exc) from exc
+
+
 async def _start_scheduler():
     _sync_cluster_inventory_from_configs()
     if os.environ.get("GC_SCHED_ENABLED", "1") != "0":
@@ -168,7 +240,7 @@ async def _start_scheduler():
                 JOBS[job_id]["node_logs"] = {"_general": []}
             JOBS[job_id]["node_logs"]["_general"].append(f"[{time.strftime('%H:%M:%S')}] Completed. Summary: {summary}")
 
-        asyncio.create_task(
+        return asyncio.create_task(
             scheduler.scheduler_loop(
                 store.DB_PATH,
                 interval,
@@ -193,15 +265,33 @@ def health() -> dict:
             n = len(store.list_instances(c))
         return {"ok": True, "instances": n}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
+        return JSONResponse({"ok": False, "error": "History store is unavailable."}, status_code=503)
 
 
 @app.get("/api/fleet")
 def get_fleet() -> dict:
     with store.connect() as c:
-        if not store.list_instances(c):
-            raise HTTPException(503, "History store is empty. Run: python -m seed.seed_history")
         return fleet.build_fleet(c)
+
+
+@app.post("/api/investigations/analyze")
+async def analyze_investigation(request: Request) -> dict:
+    """Session-protected and stateless; enforce limits before parsing JSON or gzip."""
+    if _INVESTIGATION_LOCK.locked():
+        raise HTTPException(429, "Two analyses are already running. Please try again shortly.")
+    async with _INVESTIGATION_LOCK:
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > investigations.MAX_REQUEST_BYTES:
+                raise HTTPException(413, "Upload exceeds the 12 MiB request limit.")
+            body.extend(chunk)
+        try:
+            data = json.loads(body)
+            return await run_in_threadpool(investigations.analyze_upload, data)
+        except RecursionError as exc:
+            raise HTTPException(400, "Upload nesting is too deep.") from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/cluster/{cluster}")

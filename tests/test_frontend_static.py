@@ -50,8 +50,9 @@ def test_dashboard_includes_ml_tech_preview_with_guardrails():
 
     assert "openMlPreview()" in html
     assert "ML Tech Preview" in html
-    assert "Adaptive baseline" in html
-    assert "Anomaly scoring" in html
-    assert "Forecast risk" in html
-    assert "No trained model is running yet" in html
+    assert "refreshLearningPreview" in html
+    assert "No persistent or continuous learning" in html
+    assert "No trained model is running yet" not in html
+    assert "not training yet" not in html
+    assert "design candidate" not in html
     assert "Deterministic rules remain the source of truth" in html

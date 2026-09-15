@@ -221,29 +221,37 @@ def record_analysis_metrics(
     incremental: bool = False,
     new_offsets: dict | None = None,
 ) -> int:
-    """Persist metrics: full log backfill on first collect, one row per incremental tick."""
+    """Persist metrics and offsets; complete bad records may yield zero metric rows."""
+    stw = [e for e in parsed.events if e.is_stw and e.pause_ms > 0]
+    malformed = parsed.record_counts.get("malformed", 0)
+    unsupported = parsed.record_counts.get("unsupported", 0)
+    if parsed.record_counts.get("incomplete", 0):
+        raise ValueError("Incomplete GC records; offsets retained for retry")
+    if not stw and not ((malformed or unsupported) and new_offsets):
+        raise ValueError("No usable GC events; offsets retained for retry")
+    if any(e.timestamp is None for e in stw):
+        raise ValueError("GC history requires wall-clock timestamps or a verified JVM-start anchor; relative logs were not recorded")
     ts = ts if ts is not None else (int(time.time()) // 60) * 60
     metrics = analysis["metrics"]
-    if incremental:
-        store.record_metric(conn, inst_id, ts, metrics_to_row(metrics))
-        if new_offsets:
-            for fp, stt in new_offsets.items():
-                store.set_offset(conn, inst_id, fp, stt["inode"], stt["offset"], ts)
-        return 1
-
-    buckets = analyzer.bucket_metrics(parsed)
-    written = 0
-    if buckets:
+    buckets = ([(ts, metrics)] if incremental else analyzer.bucket_metrics(parsed)) if stw else []
+    if stw and not buckets:
+        raise ValueError("No anchored GC buckets; offsets retained for retry")
+    # A caller may catch a node failure and commit other nodes. A savepoint
+    # ensures partially written rows/offsets cannot escape that failure.
+    conn.execute("SAVEPOINT gc_ingest")
+    try:
         for bts, m in buckets:
             store.record_metric(conn, inst_id, bts, metrics_to_row(m))
-            written += 1
-    else:
-        store.record_metric(conn, inst_id, ts, metrics_to_row(metrics))
-        written = 1
-    if new_offsets:
-        for fp, stt in new_offsets.items():
+        for fp, stt in (new_offsets or {}).items():
             store.set_offset(conn, inst_id, fp, stt["inode"], stt["offset"], ts)
-    return written
+        state = "unknown" if not stw else "partial" if malformed or unsupported else "complete"
+        store.record_gc_collection_quality(conn, inst_id, ts, state, malformed, unsupported)
+    except BaseException:
+        conn.execute("ROLLBACK TO SAVEPOINT gc_ingest")
+        conn.execute("RELEASE SAVEPOINT gc_ingest")
+        raise
+    conn.execute("RELEASE SAVEPOINT gc_ingest")
+    return len(buckets)
 
 
 @dataclass(frozen=True)
@@ -278,10 +286,13 @@ def _collect_log_text(node: NodeConfig, ctx: _CollectCtx, log_callback=None) -> 
 
     if log_callback:
         log_callback(f"Full GC log fetch for '{node.id}'...")
-    logs = collect(node, log_callback=log_callback)
-    if not logs:
-        return "", None, False
-    return "\n".join(log.text for log in logs), None, False
+    # Full backfill uses the same complete-record reader so its first successful
+    # write also establishes offsets for the next scheduler/incremental pass.
+    if node.source == "local":
+        text, new_offsets = read_increment_local(node, {})
+    else:
+        text, new_offsets = collect_ssh_incremental(node, {}, log_callback=log_callback)
+    return text, new_offsets, False
 
 
 def _analyze_node(node: NodeConfig, ctx: _CollectCtx, log_callback=None) -> dict | None:
@@ -299,6 +310,8 @@ def _analyze_node(node: NodeConfig, ctx: _CollectCtx, log_callback=None) -> dict
         log_callback(f"Parsing {len(text)} bytes of GC logs for node '{node.id}'...")
     parsed = parser.parse(text, node_id=node.id)
     if log_callback:
+        for warning in parsed.warnings:
+            log_callback(f"GC parse warning for '{node.id}': {warning}")
         log_callback(f"Analyzing parsed GC data for node '{node.id}'...")
     result = analyzer.analyze(parsed)
     result["_parsed"] = parsed
@@ -450,7 +463,8 @@ def ingest_nodes(
             heap_max = _heap_max_for_instance(conn, node.role, metrics["heap_max_mb"], cluster, iid)
             inst = build_instance(node, region, env, cluster, index, heap_max, instance_id=iid)
 
-            if metrics["stw_count"] <= 0:
+            skipped = sum(parsed.record_counts.get(kind, 0) for kind in ("malformed", "unsupported")) if parsed else 0
+            if metrics["stw_count"] <= 0 and not skipped:
                 store.upsert_instance(conn, inst, collector=analysis["collector"])
                 if log_callback:
                     try:
@@ -461,19 +475,33 @@ def ingest_nodes(
                 continue
 
             store.upsert_instance(conn, inst, collector=analysis["collector"])
-            if parsed:
-                record_analysis_metrics(
-                    conn, inst.id, parsed, analysis, ts=ts,
-                    incremental=analysis.get("_incremental", False),
-                    new_offsets=analysis.get("_new_offsets"),
-                )
-            else:
-                store.record_metric(conn, inst.id, ts, metrics_to_row(metrics))
+            try:
+                if parsed:
+                    written = record_analysis_metrics(
+                        conn, inst.id, parsed, analysis, ts=ts,
+                        incremental=analysis.get("_incremental", False),
+                        new_offsets=analysis.get("_new_offsets"),
+                    )
+                else:
+                    raise ValueError("No parsed GC evidence available for persistence")
+            except Exception as exc:
+                if log_callback:
+                    log_callback(f"GC metrics for '{node.id}' were not recorded: {exc}")
+                _append_result(NodeResult(node.id, inst.id, node.role, False, str(exc)))
+                continue
+            if written == 0:
+                _append_result(NodeResult(node.id, inst.id, node.role, False,
+                    f"skipped {skipped} complete malformed or unsupported GC records; no metric rows written (unknown quality)"))
+                continue
+            throughput = metrics["throughput_pct"]
+            throughput_label = f"{throughput:.2f}%" if throughput is not None else "unknown (limited data)"
             detail = (
                 f"{analysis['collector']} | {metrics['stw_count']} GCs "
                 f"| p99 {metrics['p99_pause_ms']:.0f}ms | max {metrics['max_pause_ms']:.0f}ms "
-                f"| full {metrics['full_count']} | thr {metrics['throughput_pct']:.2f}%"
+                f"| full {metrics['full_count']} | thr {throughput_label}"
             )
+            if skipped:
+                detail += f" | limited quality: skipped {skipped} complete malformed or unsupported records"
             if log_callback:
                 try:
                     log_callback(f"Successfully recorded metrics for node '{node.id}': {detail}", node_id=node.id)

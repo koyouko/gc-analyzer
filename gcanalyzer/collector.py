@@ -30,8 +30,109 @@ from __future__ import annotations
 
 import glob
 import os
+import re
+import shlex
+import stat
+import time
 from dataclasses import dataclass, field
 from typing import Optional
+
+from .parser import MAX_LOG_BYTES, complete_prefix, read_log_text
+
+SSH_COMMAND_TIMEOUT_S = 30.0
+MAX_SAR_BYTES = 16 * 1024 * 1024
+MAX_LIST_BYTES = 1024 * 1024
+MAX_LOG_FILES = 128
+
+
+class SSHCommandError(RuntimeError):
+    """Command failure with bounded stdout/stderr evidence, never partial success."""
+
+    def __init__(self, message, stdout=b"", stderr=b""):
+        super().__init__(message)
+        self.stdout, self.stderr = stdout, stderr
+
+
+def _run_ssh_command(client, command: str, *, timeout: float = SSH_COMMAND_TIMEOUT_S,
+                     max_bytes: int = MAX_LOG_BYTES, check: bool = True) -> tuple[bytes, bytes, int]:
+    """Drain both channel streams under one wall-clock deadline and byte budget."""
+    if timeout <= 0 or max_bytes <= 0:
+        raise ValueError("SSH timeout and output limit must be positive")
+    deadline = time.monotonic() + timeout
+    streams = ()
+    channel = None
+    out, err = bytearray(), bytearray()
+    try:
+        streams = client.exec_command(command, timeout=timeout)
+        channel = streams[1].channel
+        channel.settimeout(timeout)
+        streams[0].close()
+        while True:
+            if time.monotonic() >= deadline:
+                raise SSHCommandError("SSH command deadline exceeded", bytes(out), bytes(err))
+            received = False
+            for ready, recv, target in ((channel.recv_ready, channel.recv, out),
+                                        (channel.recv_stderr_ready, channel.recv_stderr, err)):
+                if ready():
+                    remaining = max_bytes - len(out) - len(err)
+                    chunk = recv(min(65536, remaining + 1))
+                    target.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        raise SSHCommandError("SSH captured output exceeds byte limit", bytes(out), bytes(err))
+                    received = received or bool(chunk)
+            if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                status = channel.recv_exit_status()
+                if check and status != 0:
+                    detail = bytes(err[:4096]).decode(errors="replace")
+                    raise SSHCommandError(f"SSH command exited {status}: {detail}", bytes(out), bytes(err))
+                return bytes(out), bytes(err), status
+            if not received:
+                time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+    except SSHCommandError:
+        raise
+    except Exception as exc:
+        raise SSHCommandError(f"SSH command failed: {exc}", bytes(out), bytes(err)) from exc
+    finally:
+        if channel is not None:
+            channel.close()
+        for stream in streams:
+            stream.close()
+
+
+def _quote_glob(pattern: str) -> str:
+    # Expand only the requested wildcard characters, never shell syntax.
+    return "".join(part if part in ("*", "?") else shlex.quote(part)
+                   for part in re.split(r"([*?])", pattern) if part)
+
+
+def _remote_files(client, node, log_callback=None) -> list[str]:
+    def listing(pattern):
+        out, err, _ = _run_ssh_command(client, f"ls -1d -- {_quote_glob(pattern)}",
+                                      max_bytes=MAX_LIST_BYTES, check=False)
+        if err and log_callback:
+            log_callback(f"SSH listing: {err[:4096].decode(errors='replace').strip()}")
+        return [line for line in out.decode(errors="strict").splitlines() if line]
+
+    files = []
+    for pattern in node.effective_globs():
+        files.extend(listing(pattern))
+        if len(files) > MAX_LOG_FILES:
+            raise ValueError("GC file count exceeds limit")
+    if not files:
+        for directory in FALLBACK_DIRS:
+            files.extend(listing(f"{directory}/*gc*.log*"))
+    files = list(dict.fromkeys(files))
+    if len(files) > MAX_LOG_FILES:
+        raise ValueError("GC file count exceeds limit")
+    return files
+
+
+def _previous_offset(prev: dict, path: str, inode: int, size: int) -> int:
+    same_inode = [entry for entry in prev.values() if entry["inode"] == inode]
+    seen = prev.get(path)
+    if seen and seen["inode"] == inode:
+        same_inode.append(seen)
+    return max((entry["offset"] for entry in same_inode if 0 <= entry["offset"] <= size), default=0)
 
 
 # Default GC-log glob patterns by node role, relative to the resolved Kafka home.
@@ -92,19 +193,26 @@ def collect_local(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
     patterns = node.local_paths or node.effective_globs()
     for pat in patterns:
         paths.extend(sorted(glob.glob(pat)))
+    paths = list(dict.fromkeys(paths))
+    if len(paths) > MAX_LOG_FILES:
+        raise ValueError("GC file count exceeds limit")
     if log_callback:
         log_callback(f"Found {len(paths)} local file(s) matching patterns: {patterns}")
     out = []
+    total_bytes = 0
     for p in paths:
         try:
             if log_callback:
                 log_callback(f"Reading local file: {p}")
-            with open(p, "r", errors="replace") as fh:
-                out.append(CollectedLog(node.id, node.role, p, fh.read()))
+            text = read_log_text(p)
+            total_bytes += len(text.encode("utf-8"))
+            if total_bytes > MAX_LOG_BYTES:
+                raise ValueError("GC collection exceeds byte limit")
+            out.append(CollectedLog(node.id, node.role, p, text))
         except OSError as exc:
             if log_callback:
                 log_callback(f"Error reading file {p}: {exc}")
-            out.append(CollectedLog(node.id, node.role, p, f"# READ ERROR: {exc}"))
+            raise
     return out
 
 
@@ -131,6 +239,9 @@ def collect_ssh(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
         "port": node.port,
         "username": node.user,
         "timeout": 15,
+        "banner_timeout": 15,
+        "auth_timeout": 15,
+        "channel_timeout": SSH_COMMAND_TIMEOUT_S,
     }
     if node.key_path:
         connect_kwargs["key_filename"] = os.path.expanduser(node.key_path)
@@ -142,49 +253,19 @@ def collect_ssh(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
         client.connect(**connect_kwargs)
         if log_callback:
             log_callback(f"SSH: Connected successfully. Checking log paths...")
-        # Expand globs remotely (sh -c so wildcards resolve on the broker).
-        for pattern in node.effective_globs():
-            cmd = f"ls -1 {pattern}"
+        total_bytes = 0
+        for remote_path in _remote_files(client, node, log_callback):
             if log_callback:
-                log_callback(f"SSH: Listing files matching '{pattern}'...")
-            _in, _stdout, _err = client.exec_command(cmd)
-            files = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
-            stderr_text = _err.read().decode().strip()
-            if stderr_text and log_callback:
-                log_callback(f"SSH (stderr): {stderr_text}")
-            for remote_path in files:
-                if log_callback:
-                    log_callback(f"SSH: Fetching file '{remote_path}'...")
-                _in, _stdout, _err = client.exec_command(f"cat {remote_path}")
-                text = _stdout.read().decode(errors="replace")
-                cat_stderr = _err.read().decode().strip()
-                if cat_stderr and log_callback:
-                    log_callback(f"SSH (stderr from cat): {cat_stderr}")
-                out.append(
-                    CollectedLog(node.id, node.role, f"{node.host}:{remote_path}", text)
-                )
-        # Fallback common directories if nothing matched yet.
-        if not out:
-            if log_callback:
-                log_callback(f"SSH: No files matched globs. Checking fallback directories: {FALLBACK_DIRS}")
-            for d in FALLBACK_DIRS:
-                cmd = f"ls -1 {d}/*gc*.log*"
-                _in, _stdout, _err = client.exec_command(cmd)
-                files = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
-                stderr_text = _err.read().decode().strip()
-                if stderr_text and log_callback:
-                    log_callback(f"SSH (stderr): {stderr_text}")
-                for remote_path in files:
-                    if log_callback:
-                        log_callback(f"SSH: Fetching fallback file '{remote_path}'...")
-                    _in, _stdout, _err = client.exec_command(f"cat {remote_path}")
-                    text = _stdout.read().decode(errors="replace")
-                    cat_stderr = _err.read().decode().strip()
-                    if cat_stderr and log_callback:
-                        log_callback(f"SSH (stderr from cat): {cat_stderr}")
-                    out.append(
-                        CollectedLog(node.id, node.role, f"{node.host}:{remote_path}", text)
-                    )
+                log_callback(f"SSH: Fetching file '{remote_path}'...")
+            if remote_path.endswith(".gz"):
+                raise ValueError("SSH gzip collection is unsupported; use local bounded gzip parsing")
+            data, err, _ = _run_ssh_command(client, f"cat -- {shlex.quote(remote_path)}")
+            total_bytes += len(data)
+            if total_bytes > MAX_LOG_BYTES:
+                raise ValueError("GC collection exceeds byte limit")
+            if err and log_callback:
+                log_callback(f"SSH stderr: {err[:4096].decode(errors='replace')}")
+            out.append(CollectedLog(node.id, node.role, f"{node.host}:{remote_path}", data.decode(errors="replace")))
         if log_callback:
             log_callback(f"SSH: Completed collection for node. Collected {len(out)} files.")
     except Exception as e:
@@ -202,22 +283,33 @@ def read_increment_local(node: NodeConfig, prev: dict) -> tuple[str, dict]:
     patterns = node.local_paths or node.effective_globs()
     parts: list[str] = []
     new_offsets: dict[str, dict] = {}
-    for pat in patterns:
-        for path in sorted(glob.glob(pat)):
-            try:
-                st = os.stat(path)
-            except OSError:
+    paths = list(dict.fromkeys(path for pat in patterns for path in sorted(glob.glob(pat))))
+    if len(paths) > MAX_LOG_FILES:
+        raise ValueError("GC file count exceeds limit")
+    total_bytes = 0
+    seen_inodes = set()
+    for path in paths:
+        if path.endswith(".gz"):
+            raise ValueError("Incremental gzip collection is unsupported; use bounded full-file parsing")
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as fh:
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError("GC input must be a regular file")
+            if (st.st_dev, st.st_ino) in seen_inodes:
                 continue
+            seen_inodes.add((st.st_dev, st.st_ino))
             inode, size = st.st_ino, st.st_size
-            seen = prev.get(path)
-            start = seen["offset"] if (seen and seen["inode"] == inode and seen["offset"] <= size) else 0
-            try:
-                with open(path, "r", errors="replace") as fh:
-                    fh.seek(start)
-                    parts.append(fh.read())
-            except OSError:
-                continue
-            new_offsets[path] = {"inode": inode, "offset": size}
+            start = _previous_offset(prev, path, inode, size)
+            fh.seek(start)
+            data = fh.read(min(size - start, MAX_LOG_BYTES - total_bytes + 1))
+            total_bytes += len(data)
+            if total_bytes > MAX_LOG_BYTES:
+                raise ValueError("GC incremental collection exceeds byte limit")
+            complete = complete_prefix(data)
+            if complete:
+                parts.append(complete.decode("utf-8", errors="replace"))
+            new_offsets[path] = {"inode": inode, "offset": start + len(complete)}
     return "\n".join(parts), new_offsets
 
 def collect(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
@@ -246,6 +338,9 @@ def collect_ssh_incremental(
         "port": node.port,
         "username": node.user,
         "timeout": 15,
+        "banner_timeout": 15,
+        "auth_timeout": 15,
+        "channel_timeout": SSH_COMMAND_TIMEOUT_S,
     }
     if node.key_path:
         connect_kwargs["key_filename"] = os.path.expanduser(node.key_path)
@@ -262,55 +357,45 @@ def collect_ssh_incremental(
         if log_callback:
             log_callback(f"SSH (inc): Connected successfully. Expanding paths...")
 
-        files = []
-        for pattern in node.effective_globs():
-            cmd = f"ls -1 {pattern}"
-            _in, _stdout, _err = client.exec_command(cmd)
-            lines = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
-            files.extend(lines)
-            stderr_text = _err.read().decode().strip()
-            if stderr_text and not lines and log_callback:
-                log_callback(f"SSH (inc stderr) for '{pattern}': {stderr_text}")
-
-        if not files:
-            if log_callback:
-                log_callback(f"SSH (inc): No files matched globs. Checking fallback directories...")
-            for d in FALLBACK_DIRS:
-                cmd = f"ls -1 {d}/*gc*.log*"
-                _in, _stdout, _err = client.exec_command(cmd)
-                lines = [ln.strip() for ln in _stdout.read().decode().splitlines() if ln.strip()]
-                files.extend(lines)
-                stderr_text = _err.read().decode().strip()
-                if stderr_text and not lines and log_callback:
-                    log_callback(f"SSH (inc stderr) for '{d}': {stderr_text}")
-
-        for remote_path in files:
-            stat_cmd = f"stat -c '%i %s' '{remote_path}' 2>/dev/null || stat -f '%i %z' '{remote_path}'"
-            _in, _stdout, _err = client.exec_command(stat_cmd)
-            stat_out = _stdout.read().decode().strip()
-            if not stat_out:
-                continue
+        total_bytes = 0
+        seen_inodes = set()
+        for remote_path in _remote_files(client, node, log_callback):
+            if remote_path.endswith(".gz"):
+                raise ValueError("Incremental gzip collection is unsupported; use bounded full-file parsing")
+            quoted = shlex.quote(remote_path)
+            stat_cmd = f"stat -c '%i %s' -- {quoted} 2>/dev/null || stat -f '%i %z' -- {quoted}"
+            stat_out, _, _ = _run_ssh_command(client, stat_cmd, max_bytes=MAX_LIST_BYTES)
             try:
                 inode, size = map(int, stat_out.split())
-            except ValueError:
-                inode, size = 0, 0
-
-            seen = prev.get(remote_path)
-            start = seen["offset"] if (seen and seen["inode"] == inode and seen["offset"] <= size) else 0
+            except ValueError as exc:
+                raise ValueError("Invalid remote GC file stat output") from exc
+            if inode <= 0 or size < 0:
+                raise ValueError("Invalid remote GC file inode/size")
+            if inode in seen_inodes:
+                continue
+            seen_inodes.add(inode)
+            start = _previous_offset(prev, remote_path, inode, size)
 
             if log_callback:
                 log_callback(f"SSH (inc): Reading '{remote_path}' from offset {start} (inode {inode}, size {size})...")
 
-            if start > 0:
-                read_cmd = f"tail -c +{start + 1} '{remote_path}'"
-            else:
-                read_cmd = f"cat '{remote_path}'"
-
-            _in, _stdout, _err = client.exec_command(read_cmd)
-            text = _stdout.read().decode(errors="replace")
-            parts.append(text)
-
-            new_offsets[remote_path] = {"inode": inode, "offset": size}
+            if size - start > MAX_LOG_BYTES - total_bytes:
+                raise ValueError("GC incremental collection exceeds byte limit")
+            # Bounded capture also handles a growing file. Check stat again so a
+            # rotation between stat and read cannot acknowledge the wrong inode.
+            read_cmd = f"tail -c +{start + 1} -- {quoted}"
+            data, _, _ = _run_ssh_command(client, read_cmd)
+            total_bytes += len(data)
+            if total_bytes > MAX_LOG_BYTES:
+                raise ValueError("GC incremental collection exceeds byte limit")
+            after, _, _ = _run_ssh_command(client, stat_cmd, max_bytes=MAX_LIST_BYTES)
+            after_inode, after_size = map(int, after.split())
+            if after_inode != inode or after_size < size or len(data) < size - start:
+                raise RuntimeError("GC file changed during incremental read; offsets retained")
+            complete = complete_prefix(data[:size - start])
+            if complete:
+                parts.append(complete.decode(errors="replace"))
+            new_offsets[remote_path] = {"inode": inode, "offset": start + len(complete)}
 
         if log_callback:
             log_callback(f"SSH (inc): Completed. Read {len(parts)} file delta(s).")
@@ -344,13 +429,12 @@ def collect_sar_local(node: NodeConfig, log_callback=None) -> CollectedSar:
         return CollectedSar(node.id, "-", "", None, None, error="no sar_local_path configured")
     path = node.sar_local_path
     try:
-        with open(path, "r", errors="replace") as fh:
-            text = fh.read()
+        text = read_log_text(path, max_bytes=MAX_SAR_BYTES)
         fmt_hint = "json" if path.endswith(".json") else "text"
         if log_callback:
             log_callback(f"SAR: read local file '{path}' ({len(text)} bytes)")
         return CollectedSar(node.id, path, text, fmt_hint, None)
-    except OSError as exc:
+    except (OSError, EOFError, ValueError) as exc:
         if log_callback:
             log_callback(f"SAR: error reading '{path}': {exc}")
         return CollectedSar(node.id, path, "", None, None, error=str(exc))
@@ -374,6 +458,9 @@ def collect_sar_ssh(node: NodeConfig, log_callback=None) -> CollectedSar:
         "port": node.port,
         "username": node.user,
         "timeout": 15,
+        "banner_timeout": 15,
+        "auth_timeout": 15,
+        "channel_timeout": SSH_COMMAND_TIMEOUT_S,
     }
     if node.key_path:
         connect_kwargs["key_filename"] = os.path.expanduser(node.key_path)
@@ -388,28 +475,28 @@ def collect_sar_ssh(node: NodeConfig, log_callback=None) -> CollectedSar:
 
         # Remote UTC date, independent of sar's own date formatting, used as a
         # reliable fallback for the text parser if the report banner is missing.
-        _in, _out, _err = client.exec_command("date -u +%m/%d/%Y")
-        report_date = _out.read().decode().strip() or None
+        date_out, _, _ = _run_ssh_command(client, "date -u +%m/%d/%Y", max_bytes=MAX_LIST_BYTES)
+        report_date = date_out.decode().strip() or None
 
         # Prefer JSON (sysstat >= 11.x): structured, no column-alignment guessing.
-        json_cmd = f"TZ=UTC LC_ALL=C {node.sadf_bin} -j -- -A 2>/dev/null"
+        json_cmd = f"TZ=UTC LC_ALL=C {shlex.quote(node.sadf_bin)} -j -- -A"
         if log_callback:
             log_callback(f"SAR: trying '{json_cmd}'...")
-        _in, _out, _err = client.exec_command(json_cmd)
-        text = _out.read().decode(errors="replace")
-        if text.strip().startswith("{"):
+        data, _, status = _run_ssh_command(client, json_cmd, max_bytes=MAX_SAR_BYTES, check=False)
+        text = data.decode(errors="replace")
+        if status == 0 and text.strip().startswith("{"):
             if log_callback:
                 log_callback(f"SAR: got sadf JSON ({len(text)} bytes)")
             return CollectedSar(node.id, detail, text, "json", report_date)
 
         # Fallback: classic `sar -A` text report (works on essentially every
         # sysstat version, including ones too old to support `-j`).
-        text_cmd = f"TZ=UTC LC_ALL=C {node.sar_bin} -A 2>/dev/null"
+        text_cmd = f"TZ=UTC LC_ALL=C {shlex.quote(node.sar_bin)} -A"
         if log_callback:
             log_callback(f"SAR: sadf JSON unavailable, trying '{text_cmd}'...")
-        _in, _out, _err = client.exec_command(text_cmd)
-        text = _out.read().decode(errors="replace")
-        stderr_text = _err.read().decode().strip()
+        data, err, _ = _run_ssh_command(client, text_cmd, max_bytes=MAX_SAR_BYTES)
+        text = data.decode(errors="replace")
+        stderr_text = err[:4096].decode(errors="replace").strip()
         if not text.strip():
             msg = stderr_text or "sar produced no output (is sysstat installed and collecting? see /etc/cron.d/sysstat)"
             if log_callback:

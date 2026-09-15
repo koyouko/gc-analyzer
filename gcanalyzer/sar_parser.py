@@ -31,9 +31,11 @@ timezone — without needing to know or guess that timezone.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 
 @dataclass
@@ -42,55 +44,56 @@ class SarSample:
 
     ts: int  # epoch seconds, UTC
 
-    cpu_user_pct: float = 0.0
-    cpu_nice_pct: float = 0.0
-    cpu_system_pct: float = 0.0
-    cpu_iowait_pct: float = 0.0
-    cpu_steal_pct: float = 0.0
-    cpu_idle_pct: float = 100.0
+    cpu_user_pct: float | None = None
+    cpu_nice_pct: float | None = None
+    cpu_system_pct: float | None = None
+    cpu_iowait_pct: float | None = None
+    cpu_steal_pct: float | None = None
+    cpu_idle_pct: float | None = None
 
-    load1: float = 0.0
-    load5: float = 0.0
-    load15: float = 0.0
-    runq_sz: float = 0.0
-    plist_sz: float = 0.0
-    blocked: float = 0.0
+    load1: float | None = None
+    load5: float | None = None
+    load15: float | None = None
+    runq_sz: float | None = None
+    plist_sz: float | None = None
+    blocked: float | None = None
 
-    proc_per_s: float = 0.0
-    cswch_per_s: float = 0.0
+    proc_per_s: float | None = None
+    cswch_per_s: float | None = None
 
-    mem_free_mb: float = 0.0
-    mem_avail_mb: float = 0.0
-    mem_used_mb: float = 0.0
-    mem_used_pct: float = 0.0
-    mem_buffers_mb: float = 0.0
-    mem_cached_mb: float = 0.0
-    mem_commit_pct: float = 0.0
+    mem_free_mb: float | None = None
+    mem_avail_mb: float | None = None
+    mem_used_mb: float | None = None
+    mem_used_pct: float | None = None
+    mem_buffers_mb: float | None = None
+    mem_cached_mb: float | None = None
+    mem_commit_pct: float | None = None
 
-    swap_used_mb: float = 0.0
-    swap_used_pct: float = 0.0
+    swap_used_mb: float | None = None
+    swap_used_pct: float | None = None
 
     # Paging activity (`sar -B`) — kB paged in/out from disk per second and
     # fault rates. On a Kafka broker, sustained majflt/pgpgin is the page
     # cache being cold or memory being reclaimed — an early-warning signal
     # the plain memory-used% number hides. Present on RHEL 8/9 sysstat
     # (11.7.x / 12.5.x) in both `sar -A` text and `sadf -j` JSON.
-    pgpgin_kbs: float = 0.0
-    pgpgout_kbs: float = 0.0
-    fault_per_s: float = 0.0
-    majflt_per_s: float = 0.0
+    pgpgin_kbs: float | None = None
+    pgpgout_kbs: float | None = None
+    fault_per_s: float | None = None
+    majflt_per_s: float | None = None
 
     # Swapping activity (`sar -W`) — pages swapped in/out per second. Distinct
     # from swap *occupancy* (%swpused above): occupancy says swap was ever
     # touched, activity says the box is actively thrashing right now.
-    pswpin_per_s: float = 0.0
-    pswpout_per_s: float = 0.0
+    pswpin_per_s: float | None = None
+    pswpout_per_s: float | None = None
 
     # Per-device breakdown for the busiest devices in this sample (kept small
     # — the analyzer rolls these into "max busiest device" aggregates, and the
     # dashboard only needs the top few for drill-down, not every block device).
     disks: list = field(default_factory=list)   # [{dev, tps, rd_kbs, wr_kbs, util_pct, await_ms}]
     nics: list = field(default_factory=list)    # [{iface, rx_kbs, tx_kbs, rx_pck_s, tx_pck_s, util_pct}]
+    interval_seconds: float | None = None
 
 
 @dataclass
@@ -105,42 +108,84 @@ class ParsedSar:
 # --------------------------------------------------------------------------- #
 # sadf JSON path
 # --------------------------------------------------------------------------- #
-def _f(d: dict, *keys, default=0.0) -> float:
+def _f(d: dict, *keys, default=None) -> float | None:
     """First present numeric value across a list of key aliases."""
+    if not isinstance(d, dict):
+        return default
     for k in keys:
         if k in d and d[k] is not None:
             try:
-                return float(d[k])
+                value = float(d[k])
+                if math.isfinite(value):
+                    return value
             except (TypeError, ValueError):
                 continue
     return default
 
 
-def _parse_json_timestamp(ts_obj: dict, file_date: str | None) -> int | None:
-    try:
-        date_s = ts_obj.get("date") or file_date
-        time_s = ts_obj.get("time")
-        if not date_s or not time_s:
-            return None
-        # sadf JSON dates are typically MM/DD/YYYY; tolerate YYYY-MM-DD too.
-        for fmt in ("%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-            try:
-                dt = datetime.strptime(f"{date_s} {time_s}", fmt).replace(tzinfo=timezone.utc)
-                return int(dt.timestamp())
-            except ValueError:
-                continue
-    except Exception:
-        pass
-    return None
+def _mb(d: dict, *keys) -> float | None:
+    value = _f(d, *keys)
+    return value / 1024.0 if value is not None else None
 
 
-def _sample_from_json_stat(stat: dict, file_date: str | None) -> SarSample | None:
+def _timezone(name: str | None):
+    if not name or name in ("UTC", "Z"):
+        return timezone.utc
+    offset = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", name)
+    if offset:
+        sign, hours, minutes = offset.groups()
+        if int(hours) > 23 or int(minutes) > 59:
+            raise ValueError("invalid timezone offset")
+        delta = timedelta(hours=int(hours), minutes=int(minutes))
+        return timezone(delta if sign == "+" else -delta)
+    return ZoneInfo(name)
+
+
+def _date(date_s: str):
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(date_s, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"invalid SAR report date: {date_s}")
+
+
+def _localize(dt: datetime, zone):
+    early, late = dt.replace(tzinfo=zone, fold=0), dt.replace(tzinfo=zone, fold=1)
+    # A wall time in a DST gap/fold cannot identify an observation uniquely.
+    if early.utcoffset() != late.utcoffset():
+        raise ValueError("ambiguous/nonexistent local SAR time; provide a numeric UTC offset")
+    if datetime.fromtimestamp(early.timestamp(), zone).replace(tzinfo=None) != dt:
+        raise ValueError("nonexistent local SAR time")
+    return early
+
+
+def _parse_json_timestamp(ts_obj: dict, file_date: str | None, report_timezone=None) -> int | None:
+    date_s = ts_obj.get("date") or file_date
+    time_s = ts_obj.get("time")
+    if not date_s or not time_s:
+        raise ValueError("missing SAR timestamp date/time")
+    dt = datetime.fromisoformat(f"{_date(date_s).isoformat()}T{time_s}")
+    if dt.tzinfo is None:
+        utc = ts_obj.get("utc")
+        zone = ts_obj.get("timezone") or report_timezone
+        if utc in (True, 1, "1"):
+            zone = "UTC"
+        elif utc in (False, 0, "0") and not zone:
+            raise ValueError("local SAR timestamp requires report_timezone or a UTC offset")
+        dt = _localize(dt, _timezone(zone))
+    return int(dt.timestamp())
+
+
+def _sample_from_json_stat(stat: dict, file_date: str | None, report_timezone=None) -> SarSample | None:
     ts_obj = stat.get("timestamp") or {}
-    ts = _parse_json_timestamp(ts_obj, file_date)
+    ts = _parse_json_timestamp(ts_obj, file_date, report_timezone)
     if ts is None:
         return None
 
     s = SarSample(ts=ts)
+    interval = _f(ts_obj, "interval")
+    s.interval_seconds = interval if interval is not None and interval > 0 else None
 
     for cpu in stat.get("cpu-load") or stat.get("cpu-load-all") or []:
         if str(cpu.get("cpu", "all")).lower() != "all":
@@ -150,7 +195,7 @@ def _sample_from_json_stat(stat: dict, file_date: str | None) -> SarSample | Non
         s.cpu_system_pct = _f(cpu, "sys", "system")
         s.cpu_iowait_pct = _f(cpu, "iowait")
         s.cpu_steal_pct = _f(cpu, "steal")
-        s.cpu_idle_pct = _f(cpu, "idle", default=100.0)
+        s.cpu_idle_pct = _f(cpu, "idle")
         break
 
     q = stat.get("queue") or {}
@@ -166,16 +211,16 @@ def _sample_from_json_stat(stat: dict, file_date: str | None) -> SarSample | Non
     s.cswch_per_s = _f(pcsw, "cswch")
 
     mem = stat.get("memory") or {}
-    s.mem_free_mb = _f(mem, "memfree") / 1024.0
-    s.mem_avail_mb = _f(mem, "avail", "memavail") / 1024.0
-    s.mem_used_mb = _f(mem, "memused") / 1024.0
+    s.mem_free_mb = _mb(mem, "memfree")
+    s.mem_avail_mb = _mb(mem, "avail", "memavail")
+    s.mem_used_mb = _mb(mem, "memused")
     s.mem_used_pct = _f(mem, "memused-percent", "memused_percent")
-    s.mem_buffers_mb = _f(mem, "buffers") / 1024.0
-    s.mem_cached_mb = _f(mem, "cached") / 1024.0
+    s.mem_buffers_mb = _mb(mem, "buffers")
+    s.mem_cached_mb = _mb(mem, "cached")
     s.mem_commit_pct = _f(mem, "commit-percent", "commit_percent")
 
     swap = stat.get("swap") or {}
-    s.swap_used_mb = _f(swap, "swpused") / 1024.0
+    s.swap_used_mb = _mb(swap, "swpused")
     s.swap_used_pct = _f(swap, "swpused-percent", "swpused_percent")
 
     paging = stat.get("paging") or {}
@@ -217,24 +262,31 @@ def _sample_from_json_stat(stat: dict, file_date: str | None) -> SarSample | Non
     return s
 
 
-def parse_sadf_json(text: str, node_id: str) -> ParsedSar:
+def parse_sadf_json(text: str, node_id: str, report_date=None, report_timezone=None) -> ParsedSar:
     warnings: list[str] = []
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         return ParsedSar(node_id, "sadf-json", [], warnings=[f"invalid JSON: {exc}"])
 
-    hosts = (((data or {}).get("sysstat") or {}).get("hosts")) or []
-    if not hosts:
+    sysstat = data.get("sysstat") if isinstance(data, dict) else None
+    hosts = sysstat.get("hosts") if isinstance(sysstat, dict) else None
+    if not isinstance(hosts, list) or not hosts or not isinstance(hosts[0], dict):
         return ParsedSar(node_id, "sadf-json", [], warnings=["no 'sysstat.hosts' in sadf JSON"])
 
     host = hosts[0]
     hostname = host.get("nodename", "")
-    file_date = host.get("file-date")
+    file_date = host.get("file-date") or report_date
     samples: list[SarSample] = []
-    for stat in host.get("statistics") or []:
+    if len(hosts) > 1:
+        warnings.append("multiple SAR hosts: only the first host is used for this instance")
+    entries = host.get("statistics") or []
+    if not isinstance(entries, list):
+        return ParsedSar(node_id, "sadf-json", [], warnings=["invalid SAR statistics list"])
+    for stat in entries:
         try:
-            s = _sample_from_json_stat(stat, file_date)
+            stat = _validated_sections(stat, warnings)
+            s = _sample_from_json_stat(stat, file_date, report_timezone or host.get("timezone"))
             if s is not None:
                 samples.append(s)
         except Exception as exc:  # one bad section must not drop the whole sample
@@ -244,11 +296,42 @@ def parse_sadf_json(text: str, node_id: str) -> ParsedSar:
     return ParsedSar(node_id, "sadf-json", samples, warnings=warnings, hostname=hostname)
 
 
+def _validated_sections(stat: dict, warnings: list) -> dict:
+    if not isinstance(stat, dict):
+        raise ValueError("statistics entry must be an object")
+    stat = dict(stat)
+    list_sections = {"cpu-load", "cpu-load-all", "disk"}
+    dict_sections = {"timestamp", "queue", "memory", "swap", "paging", "swap-pages", "swap_pages",
+                     "swap-activity", "process-and-context-switch", "process_and_context_switch", "network"}
+    for key in list_sections | dict_sections:
+        if key not in stat:
+            continue
+        expected = list if key in list_sections else dict
+        if not isinstance(stat[key], expected):
+            warnings.append(f"malformed SAR section: {key}")
+            stat[key] = expected()
+        elif expected is list:
+            valid = [item for item in stat[key] if isinstance(item, dict)]
+            if len(valid) != len(stat[key]):
+                warnings.append(f"malformed SAR device/CPU entry: {key}")
+            stat[key] = valid
+    network = dict(stat.get("network") or {})
+    for key in ("net-dev", "net_dev"):
+        if key in network:
+            value = network[key]
+            valid = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+            if valid != value:
+                warnings.append(f"malformed SAR network entries: {key}")
+            network[key] = valid
+    stat["network"] = network
+    return stat
+
+
 # --------------------------------------------------------------------------- #
 # Classic `sar -A` text path (kSar-style: header-driven generic column zip)
 # --------------------------------------------------------------------------- #
 _TIME_RE = re.compile(r"^\d{2}:\d{2}:\d{2}$")
-_DATE_RE = re.compile(r"(\d{2}/\d{2}/\d{4})")
+_DATE_RE = re.compile(r"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})")
 
 # Header keyword -> section kind. Matched against the *set* of header tokens
 # (after the leading fake-timestamp token), so column order/extra columns
@@ -289,7 +372,7 @@ def _parse_block(lines: list[str]) -> tuple[str | None, list[dict]]:
     header_tokens = lines[0].split()
     if not header_tokens or not (_TIME_RE.match(header_tokens[0]) or header_tokens[0].lower().startswith(("12:", "01:"))):
         return None, []
-    cols = header_tokens[1:]
+    _, cols = _time_columns(header_tokens)
     kind = _classify_header(cols)
     if kind is None:
         return None, []
@@ -301,8 +384,7 @@ def _parse_block(lines: list[str]) -> tuple[str | None, list[dict]]:
         toks = line.split()
         if not toks or not _TIME_RE.match(toks[0]):
             continue
-        time_s = toks[0]
-        vals = toks[1:]
+        time_s, vals = _time_columns(toks)
         row = {"_time": time_s}
         for c, v in zip(cols, vals):
             row[c] = _to_num(v)
@@ -310,15 +392,24 @@ def _parse_block(lines: list[str]) -> tuple[str | None, list[dict]]:
     return kind, rows
 
 
-def _epoch(date_s: str, time_s: str) -> int | None:
+def _time_columns(tokens: list[str]) -> tuple[str, list[str]]:
+    if len(tokens) > 1 and tokens[1].upper() in ("AM", "PM"):
+        dt = datetime.strptime(" ".join(tokens[:2]).upper(), "%I:%M:%S %p")
+        return dt.strftime("%H:%M:%S"), tokens[2:]
+    return tokens[0], tokens[1:]
+
+
+def _epoch(date_s: str, time_s: str, report_timezone=None) -> int | None:
     try:
-        dt = datetime.strptime(f"{date_s} {time_s}", "%m/%d/%Y %H:%M:%S").replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(f"{_date(date_s).isoformat()}T{time_s}")
+        dt = _localize(dt, _timezone(report_timezone))
         return int(dt.timestamp())
-    except ValueError:
+    except (ValueError, KeyError, TypeError):
         return None
 
 
-def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> ParsedSar:
+def parse_sar_text(text: str, node_id: str, report_date: str | None = None,
+                   report_timezone: str | None = None) -> ParsedSar:
     """Parse `sar -A` (or a concatenation of individual `sar -u/-r/-d/...`
     reports) into samples, keyed by wall-clock time within `report_date`
     (falls back to the date embedded in the report's banner line, then to
@@ -326,40 +417,76 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
     warnings: list[str] = []
     date_s = report_date
     if not date_s:
-        m = _DATE_RE.search(text.splitlines()[0]) if text.splitlines() else None
+        m = _DATE_RE.search(text)
         date_s = m.group(1) if m else None
     if not date_s:
         warnings.append("could not determine report date; SAR samples discarded")
         return ParsedSar(node_id, "sar-text", [], warnings=warnings)
+    try:
+        _date(date_s)
+        _timezone(report_timezone)
+    except (ValueError, KeyError, TypeError) as exc:
+        return ParsedSar(node_id, "sar-text", [], warnings=[f"invalid SAR date/timezone: {exc}"])
 
-    blocks: list[list[str]] = []
+    blocks: list[tuple[str, list[str]]] = []
     current: list[str] = []
+    block_date = date_s
     for line in text.splitlines():
-        if line.strip() == "":
+        tokens = line.split()
+        banner_date = _DATE_RE.search(line) if line.lstrip().startswith("Linux") else None
+        try:
+            is_header = bool(tokens and _TIME_RE.match(tokens[0]) and
+                             _classify_header(_time_columns(tokens)[1]))
+        except ValueError:
+            warnings.append("invalid SAR time token")
+            continue
+        if not tokens or is_header or banner_date:
             if current:
-                blocks.append(current)
+                blocks.append((block_date, current))
             current = []
-        else:
+        if banner_date:
+            block_date = report_date or banner_date.group(1)
+            continue
+        if tokens:
             current.append(line)
     if current:
-        blocks.append(current)
+        blocks.append((block_date, current))
 
-    by_time: dict[str, dict] = {}
+    by_time: dict[int, dict] = {}
 
-    def bucket(time_s: str) -> dict:
-        return by_time.setdefault(time_s, {
+    def bucket(ts: int) -> dict:
+        return by_time.setdefault(ts, {
             "cpu": None, "queue": None, "pcsw": None, "mem": None, "swap": None,
             "paging": None, "pswap": None,
             "disks": [], "nics": [],
         })
 
-    for block in blocks:
-        kind, rows = _parse_block(block)
+    for date_s, block in blocks:
+        try:
+            _date(date_s)
+            kind, rows = _parse_block(block)
+        except ValueError as exc:
+            warnings.append(f"invalid SAR time: {exc}")
+            continue
         if kind is None:
             continue
+        previous_time, _ = _time_columns(block[0].split())
+        day_offset = 0
+        previous_ts = _epoch(date_s, previous_time, report_timezone)
         for row in rows:
             t = row["_time"]
-            b = bucket(t)
+            if t < previous_time:
+                day_offset += 1
+            row_date = (_date(date_s) + timedelta(days=day_offset)).isoformat()
+            ts = _epoch(row_date, t, report_timezone)
+            previous_time = t
+            if ts is None:
+                warnings.append("invalid SAR sample timestamp")
+                continue
+            b = bucket(ts)
+            if previous_ts is not None and ts > previous_ts:
+                b.setdefault("interval", ts - previous_ts)
+            previous_ts = ts
             if kind == "cpu":
                 cpu_id = row.get("CPU", "all")
                 if str(cpu_id).lower() != "all":
@@ -386,19 +513,15 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
                 b["nics"].append(row)
 
     samples: list[SarSample] = []
-    for time_s in sorted(by_time):
-        ts = _epoch(date_s, time_s)
-        if ts is None:
-            continue
-        b = by_time[time_s]
-        s = SarSample(ts=ts)
+    for ts, b in sorted(by_time.items()):
+        s = SarSample(ts=ts, interval_seconds=b.get("interval"))
         cpu = b["cpu"] or {}
         s.cpu_user_pct = _f(cpu, "%user", "%usr")
         s.cpu_nice_pct = _f(cpu, "%nice")
         s.cpu_system_pct = _f(cpu, "%system", "%sys")
         s.cpu_iowait_pct = _f(cpu, "%iowait")
         s.cpu_steal_pct = _f(cpu, "%steal")
-        s.cpu_idle_pct = _f(cpu, "%idle", default=100.0)
+        s.cpu_idle_pct = _f(cpu, "%idle")
 
         q = b["queue"] or {}
         s.runq_sz = _f(q, "runq-sz")
@@ -413,16 +536,16 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
         s.cswch_per_s = _f(pcsw, "cswch/s")
 
         mem = b["mem"] or {}
-        s.mem_free_mb = _f(mem, "kbmemfree") / 1024.0
-        s.mem_avail_mb = _f(mem, "kbavail") / 1024.0
-        s.mem_used_mb = _f(mem, "kbmemused") / 1024.0
+        s.mem_free_mb = _mb(mem, "kbmemfree")
+        s.mem_avail_mb = _mb(mem, "kbavail")
+        s.mem_used_mb = _mb(mem, "kbmemused")
         s.mem_used_pct = _f(mem, "%memused")
-        s.mem_buffers_mb = _f(mem, "kbbuffers") / 1024.0
-        s.mem_cached_mb = _f(mem, "kbcached") / 1024.0
+        s.mem_buffers_mb = _mb(mem, "kbbuffers")
+        s.mem_cached_mb = _mb(mem, "kbcached")
         s.mem_commit_pct = _f(mem, "%commit")
 
         swap = b["swap"] or {}
-        s.swap_used_mb = _f(swap, "kbswpused") / 1024.0
+        s.swap_used_mb = _mb(swap, "kbswpused")
         s.swap_used_pct = _f(swap, "%swpused")
 
         paging = b["paging"] or {}
@@ -461,19 +584,20 @@ def parse_sar_text(text: str, node_id: str, report_date: str | None = None) -> P
 # --------------------------------------------------------------------------- #
 # Dispatcher
 # --------------------------------------------------------------------------- #
-def parse(text: str, node_id: str, fmt_hint: str | None = None, report_date: str | None = None) -> ParsedSar:
+def parse(text: str, node_id: str, fmt_hint: str | None = None, report_date: str | None = None,
+          report_timezone: str | None = None) -> ParsedSar:
     """Best-effort parse: try JSON first (unless text obviously isn't JSON or
     fmt_hint says otherwise), fall back to the classic text format."""
     stripped = text.lstrip()
     looks_json = stripped.startswith("{")
     if fmt_hint == "json" or (fmt_hint is None and looks_json):
-        result = parse_sadf_json(text, node_id)
-        if result.samples:
+        result = parse_sadf_json(text, node_id, report_date, report_timezone)
+        if result.samples or looks_json:
             return result
         # fall through to text parsing in case this was actually text that
         # happened to start with '{' (extremely unlikely) or JSON we couldn't
         # read — better to try the universal fallback than return nothing.
-    return parse_sar_text(text, node_id, report_date=report_date)
+    return parse_sar_text(text, node_id, report_date=report_date, report_timezone=report_timezone)
 
 
 def parse_file(path: str, node_id: str, **kw) -> ParsedSar:

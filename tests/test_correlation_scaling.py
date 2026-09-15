@@ -135,7 +135,7 @@ def test_scaling_advisor_no_action_when_all_healthy():
     assert result["verdict"] == "no_action", result
 
 
-def test_scaling_advisor_horizontal_when_uniformly_saturated():
+def test_scaling_advisor_investigates_uniform_host_pressure():
     db = _tmp_db("scale_horizontal")
     with store.connect(db) as c:
         hot = {"cpu_busy_pct_avg": 94.0, "cpu_busy_pct_max": 97.0}
@@ -143,11 +143,11 @@ def test_scaling_advisor_horizontal_when_uniformly_saturated():
             "T--broker-1": ({}, hot), "T--broker-2": ({}, hot), "T--broker-3": ({}, hot),
         })
         result = scaling_advisor.analyze_cluster_scaling(c, "T", role="broker", now=NOW)
-    assert result["verdict"] == "horizontal", result
-    assert result["confidence"] in ("high", "medium")
+    assert result["verdict"] == "investigate", result
+    assert result["confidence"] in ("low", "medium")
 
 
-def test_scaling_advisor_rebalance_when_one_node_is_hot():
+def test_scaling_advisor_checks_distribution_when_one_node_is_hot():
     db = _tmp_db("scale_rebalance")
     with store.connect(db) as c:
         hot = {"cpu_busy_pct_avg": 95.0, "net_tx_kbs_avg": 40000.0}
@@ -156,11 +156,11 @@ def test_scaling_advisor_rebalance_when_one_node_is_hot():
             "T--broker-1": ({}, calm), "T--broker-2": ({}, calm), "T--broker-3": ({}, hot),
         })
         result = scaling_advisor.analyze_cluster_scaling(c, "T", role="broker", now=NOW)
-    assert result["verdict"] == "rebalance", result
+    assert result["verdict"] == "investigate", result
     assert "T--broker-3" in result["skew"]["hot_nodes"]
 
 
-def test_scaling_advisor_vertical_memory_when_heap_bound_and_host_calm():
+def test_scaling_advisor_investigates_heap_pressure_before_resizing():
     db = _tmp_db("scale_vertical_mem")
     with store.connect(db) as c:
         heap_pressure = {"full_gc_count": 2, "avg_heap_after_pct": 90.0}
@@ -170,7 +170,7 @@ def test_scaling_advisor_vertical_memory_when_heap_bound_and_host_calm():
             "T--broker-3": (heap_pressure, {}),
         })
         result = scaling_advisor.analyze_cluster_scaling(c, "T", role="broker", now=NOW)
-    assert result["verdict"] == "vertical_memory", result
+    assert result["verdict"] == "investigate", result
 
 
 def test_scaling_advisor_unknown_cluster():

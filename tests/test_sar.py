@@ -175,7 +175,7 @@ def test_sar_parses_rhel_paging_and_swap_activity():
 
 def test_store_migrates_legacy_host_metrics_schema():
     """A DB created before the RHEL full-metric columns must be migrated in
-    place by init_db, and old rows must read back as zeros, not None."""
+    place by init_db, preserving missing measurements as None."""
     db = _tmp_db("sar_migration_test")
     if os.path.exists(db):
         os.remove(db)
@@ -208,11 +208,11 @@ def test_store_migrates_legacy_host_metrics_schema():
         for col in store._HOST_METRIC_EXTRA_COLS:
             assert col in cols, f"migration missed column {col}"
         snap = store.current_host_snapshot(c, "T--b1", 1000)
-        assert snap["metrics"]["pgpgin_kbs_avg"] == 0.0   # legacy row -> zero, not None
+        assert snap["metrics"]["pgpgin_kbs_avg"] is None
         assert snap["metrics"]["cpu_busy_pct_avg"] == 15.0
         # legacy rows must not break the extended series either
         rng = store.host_range_series(c, "T--b1", 0, 2000, 3600)
-        assert rng["series"][0]["pgpgout_avg"] == 0.0
+        assert rng["series"][0]["pgpgout_avg"] is None
         assert rng["series"][0]["net_rx_avg"] > 0
 
 

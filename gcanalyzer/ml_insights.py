@@ -42,6 +42,14 @@ _FEATURES = [
     ("swap_used_pct", "host"), ("disk_util_pct_max", "host"), ("net_util_pct_max", "host"),
 ]
 
+# Minimum MAD scales in each metric's native units, not severity thresholds.
+_NOISE_FLOORS = {
+    "time_in_gc_pct": 0.1, "pause_p99_ms": 5.0, "pause_max_ms": 5.0,
+    "full_gc_count": 0.25, "heap_after_pct": 1.0,
+    "cpu_busy_pct": 1.0, "cpu_iowait_pct": 0.5, "mem_used_pct": 1.0,
+    "swap_used_pct": 0.5, "disk_util_pct_max": 1.0, "net_util_pct_max": 1.0,
+}
+
 
 def _mad(vals: list[float], median: float) -> float:
     deviations = [abs(v - median) for v in vals]
@@ -52,18 +60,11 @@ MAX_DISPLAY_Z = 50.0  # cap so a near-zero MAD (e.g. an always-0 baseline like
                        # full_gc_count) can't blow the score up into the millions
 
 
-def _modified_zscores(baseline: list[float], recent: list[float]) -> list[float]:
+def _modified_zscores(baseline: list[float], recent: list[float], noise_floor: float = 0.1) -> list[float]:
     if len(baseline) < 3:
         return [0.0] * len(recent)
     median = statistics.median(baseline)
-    mad = _mad(baseline, median)
-    if mad == 0:
-        # Flat baseline (e.g. full_gc_count is almost always 0): fall back to
-        # stdev if that has any spread, else any nonzero deviation is clamped
-        # to MAX_DISPLAY_Z below rather than producing a divide-by-near-zero
-        # blowup.
-        sd = statistics.pstdev(baseline)
-        mad = sd if sd > 0 else 1e-6
+    mad = max(_mad(baseline, median), noise_floor, 0.1)
     zs = [0.6745 * (x - median) / mad for x in recent]
     return [max(-MAX_DISPLAY_Z, min(MAX_DISPLAY_Z, z)) for z in zs]
 
@@ -102,54 +103,81 @@ def _joined_hourly(c, instance_id: str, since: int, now: int) -> dict[int, dict]
 
 
 def analyze_anomalies(c, instance_id: str, days: int = 30, recent_hours: int = 24, now: int = None) -> dict:
-    now = now or store.now_ts(c)
+    now = store.now_ts(c) if now is None else now
     since = now - days * 86400
     split = now - recent_hours * 3600
 
     joined = _joined_hourly(c, instance_id, since, now)
     baseline_hours = sorted(h for h in joined if h < split)
     recent_hours_list = sorted(h for h in joined if h >= split)
+    source_quality = {
+        "gc": (store.current_snapshot(c, instance_id, now) or {}).get("quality") or {},
+        "host": (store.current_host_snapshot(c, instance_id, now) or {}).get("quality") or {},
+    }
+    for name, src in _FEATURES:
+        quality = source_quality[src]
+        if quality and quality.get("state") not in ("fresh", "partial"):
+            for h in recent_hours_list:
+                joined[h][name] = None
+
+    empty = {
+        "instance_id": instance_id, "method": "none", "methods": [],
+        "readiness": "insufficient_data", "n_baseline": len(baseline_hours),
+        "n_recent": len(recent_hours_list), "overall_anomaly_score": None, "is_anomalous": False,
+        "features": [], "isolation_forest": None, "notice": _NOTICE,
+        "model_status": {"robust_zscore": "insufficient_data", "isolation_forest": "not_run",
+                         "persistent_model": False},
+        "source_quality": source_quality,
+    }
 
     if len(baseline_hours) < MIN_BASELINE_POINTS or not recent_hours_list:
         return {
-            "instance_id": instance_id, "method": "none", "n_baseline": len(baseline_hours),
-            "n_recent": len(recent_hours_list), "overall_anomaly_score": None, "is_anomalous": False,
-            "features": [], "notice": _NOTICE,
+            **empty,
             "message": f"Need >= {MIN_BASELINE_POINTS} baseline hours of data "
                        f"(have {len(baseline_hours)}) before anomaly scoring is meaningful.",
         }
-
-    method = "robust_zscore"
-    sklearn_scores = None
-    try:
-        sklearn_scores = _isolation_forest_scores(joined, baseline_hours, recent_hours_list)
-        if sklearn_scores is not None:
-            method = "isolation_forest"
-    except Exception:
-        sklearn_scores = None  # any environment/version issue -> quietly fall back
 
     feature_results = []
     for name, _src in _FEATURES:
         baseline_vals = [joined[h][name] for h in baseline_hours if joined[h].get(name) is not None]
         recent_vals = [joined[h].get(name) for h in recent_hours_list]
         recent_present = [(h, v) for h, v in zip(recent_hours_list, recent_vals) if v is not None]
-        if len(baseline_vals) < 3 or not recent_present:
+        if len(baseline_vals) < MIN_BASELINE_POINTS or not recent_present:
             continue
-        zs = _modified_zscores(baseline_vals, [v for _, v in recent_present])
+        zs = _modified_zscores(baseline_vals, [v for _, v in recent_present], _NOISE_FLOORS[name])
         worst_idx = max(range(len(zs)), key=lambda i: abs(zs[i]))
         feature_results.append({
             "feature": name,
+            "n_baseline": len(baseline_vals), "n_recent": len(recent_present),
+            "noise_floor": _NOISE_FLOORS[name],
             "baseline_median": round(statistics.median(baseline_vals), 3),
             "recent_max_abs_z": round(abs(zs[worst_idx]), 2),
             "recent_worst_value": round(recent_present[worst_idx][1], 3),
             "recent_worst_hour": recent_present[worst_idx][0],
             "anomalous": abs(zs[worst_idx]) >= ZSCORE_FLAG,
+            "direction": "up" if zs[worst_idx] > 0 else "down" if zs[worst_idx] < 0 else "unchanged",
         })
+
+    if not feature_results:
+        return {**empty, "message": "No feature has sufficient baseline and usable recent evidence for scoring."}
+
+    method = "robust_zscore"
+    sklearn_scores = None
+    try:
+        candidate = _isolation_forest_scores(joined, baseline_hours, recent_hours_list)
+        model_state = candidate.get("status", "used") if candidate is not None else "insufficient_data"
+        if model_state == "used":
+            sklearn_scores = candidate
+            method = "isolation_forest"
+    except ImportError:
+        model_state = "unavailable"
+    except Exception:
+        model_state = "error"
 
     feature_results.sort(key=lambda f: f["recent_max_abs_z"], reverse=True)
     top_z = feature_results[0]["recent_max_abs_z"] if feature_results else 0.0
     # Scale modified z-score onto a friendlier 0-100 "how unusual" dial; z=3.5 (flag
-    # threshold) lands at 70, z>=7 saturates at 100. Purely presentational.
+    # threshold) lands at 50, z>=7 saturates at 100. Purely presentational.
     overall = round(min(100.0, max(0.0, (top_z / 7.0) * 100.0)), 1)
     is_anomalous = any(f["anomalous"] for f in feature_results)
 
@@ -160,6 +188,12 @@ def analyze_anomalies(c, instance_id: str, days: int = 30, recent_hours: int = 2
     return {
         "instance_id": instance_id,
         "method": method,
+        "methods": ["robust_zscore"] + (["isolation_forest"] if sklearn_scores is not None else []),
+        "readiness": "ready" if len(feature_results) == len(_FEATURES) else "partial",
+        "model_status": {"robust_zscore": "used", "isolation_forest": model_state,
+                         "persistent_model": False,
+                         "training": "request_local" if sklearn_scores is not None else "none"},
+        "source_quality": source_quality,
         "n_baseline": len(baseline_hours),
         "n_recent": len(recent_hours_list),
         "overall_anomaly_score": overall,
@@ -177,7 +211,7 @@ def _isolation_forest_scores(joined: dict[int, dict], baseline_hours: list[int],
     try:
         from sklearn.ensemble import IsolationForest
     except ImportError:
-        return None
+        return {"status": "unavailable"}
 
     cols = [name for name, _ in _FEATURES]
 
@@ -191,7 +225,7 @@ def _isolation_forest_scores(joined: dict[int, dict], baseline_hours: list[int],
     baseline_matrix = [v for h in baseline_hours if (v := row_vec(h)) is not None]
     recent_matrix = [(h, v) for h in recent_hours_list if (v := row_vec(h)) is not None]
     if len(baseline_matrix) < MIN_BASELINE_POINTS or not recent_matrix:
-        return None
+        return {"status": "insufficient_data"}
 
     model = IsolationForest(n_estimators=100, contamination="auto", random_state=7)
     model.fit(baseline_matrix)
@@ -202,6 +236,7 @@ def _isolation_forest_scores(joined: dict[int, dict], baseline_hours: list[int],
     # decision_function is roughly in [-0.5, 0.5]; flip + scale to 0-100 for display.
     overall = round(min(100.0, max(0.0, float(0.5 - scores[worst_i]) / 0.7 * 100.0)), 1)
     return {
+        "status": "used",
         "is_anomalous": bool((preds == -1).any()),
         "overall_anomaly_score": float(overall),
         "worst_hour": int(recent_matrix[worst_i][0]),
@@ -211,8 +246,8 @@ def _isolation_forest_scores(joined: dict[int, dict], baseline_hours: list[int],
 
 
 _NOTICE = (
-    "ML Tech Preview: statistical anomaly scoring, advisory only. Deterministic "
-    "GC and host-resource rules (health grades, scaling verdicts) remain the "
-    "source of truth — this surfaces 'looks unusual for this node' patterns "
-    "worth a human look, not a diagnosis."
+    "ML Tech Preview: statistical unusualness, advisory only, not a probability, "
+    "calibrated severity or diagnosis. Scores do not change health grades. "
+    "Optional Isolation Forest is fitted per request; no persistent trained model "
+    "or continuous learning is running. Source quality and missing features limit readiness."
 )

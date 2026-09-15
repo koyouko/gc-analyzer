@@ -74,6 +74,9 @@ def _seed_trend(c, iid, days, host_fn=None, gc_fn=None, points_per_day=4):
             ts = NOW - (days - d) * DAY + p * (DAY // points_per_day)
             store.record_metric(c, iid, ts, _gc_row(**(gc_fn(d) if gc_fn else {})))
             store.record_host_metric(c, iid, ts, _host_row(**(host_fn(d) if host_fn else {})))
+    # These are live trend fixtures; keep the latest observation within freshness policy.
+    store.record_metric(c, iid, NOW - HOUR, _gc_row(**(gc_fn(days - 1) if gc_fn else {})))
+    store.record_host_metric(c, iid, NOW - HOUR, _host_row(**(host_fn(days - 1) if host_fn else {})))
 
 
 # --------------------------------------------------------------------------- #
@@ -104,7 +107,7 @@ def test_instance_insufficient_history():
         _seed_trend(c, "T--broker-1", days=3)
         fc = forecast.forecast_instance(c, "T--broker-1", now=NOW)
     assert all(s["status"] == "insufficient_data" for s in fc["signals"])
-    assert fc["risk"] == "ok"
+    assert fc["risk"] == "no_data"
     assert "Not enough" in fc["headline"] or "history" in fc["headline"]
 
 
@@ -188,7 +191,7 @@ def test_cluster_none_when_all_flat():
     assert not fc["warnings"]
 
 
-def test_cluster_plan_horizontal_on_uniform_cpu_growth():
+def test_cluster_investigates_uniform_cpu_growth():
     db = _tmp_db("fc_cluster_horizontal")
     with store.connect(db) as c:
         for i in (1, 2, 3):
@@ -196,12 +199,13 @@ def test_cluster_plan_horizontal_on_uniform_cpu_growth():
             _seed_trend(c, f"T--broker-{i}", days=30,
                         host_fn=lambda d: {"cpu_busy_pct_avg": 55.0 + 0.8 * d})
         fc = forecast.forecast_cluster(c, "T", role="broker", now=NOW)
-    assert fc["verdict"] == "plan_horizontal", fc
+    assert fc["verdict"] == "investigate", fc
+    assert fc["confidence"] != "high"
     assert fc["warnings"], "expected proactive warnings for projected breaches"
     assert any("Earliest projected critical breach" in e for e in fc["evidence"])
 
 
-def test_cluster_plan_vertical_heap_on_uniform_heap_growth():
+def test_cluster_investigates_uniform_heap_growth():
     db = _tmp_db("fc_cluster_heap")
     with store.connect(db) as c:
         for i in (1, 2, 3):
@@ -209,7 +213,7 @@ def test_cluster_plan_vertical_heap_on_uniform_heap_growth():
             _seed_trend(c, f"T--broker-{i}", days=30,
                         gc_fn=lambda d: {"heap_after_pct": 55.0 + 0.6 * d})
         fc = forecast.forecast_cluster(c, "T", role="broker", now=NOW)
-    assert fc["verdict"] == "plan_vertical_heap", fc
+    assert fc["verdict"] == "investigate", fc
 
 
 def test_cluster_watch_hot_node_when_one_node_grows():
@@ -222,7 +226,7 @@ def test_cluster_watch_hot_node_when_one_node_grows():
         _seed_trend(c, "T--broker-3", days=30,
                     host_fn=lambda d: {"cpu_busy_pct_avg": 55.0 + 0.8 * d})
         fc = forecast.forecast_cluster(c, "T", role="broker", now=NOW)
-    assert fc["verdict"] == "watch_hot_node", fc
+    assert fc["verdict"] == "investigate", fc
     assert "T--broker-3" in fc["summary"]
 
 
@@ -317,7 +321,7 @@ def test_upload_feeds_forecast():
     result = sar_ingest.ingest_sar_text(text, "T--broker-1", db, now=NOW)
     assert result["recorded"], result
     with store.connect(db) as c:
-        fc = forecast.forecast_instance(c, "T--broker-1", now=NOW)
+        fc = forecast.forecast_instance(c, "T--broker-1", now=NOW - 6 * HOUR)
     cpu = next(s for s in fc["signals"] if s["signal"] == "cpu_busy_pct")
     assert cpu["status"] != "insufficient_data", cpu
     assert cpu["n_days"] >= forecast.MIN_DAYS

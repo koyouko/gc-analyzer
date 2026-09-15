@@ -25,6 +25,7 @@ WARN_PAUSE_MS = 500.0           # pauses above this risk Kafka request timeouts 
 FULL_GC_IS_BAD = True           # any Full GC on a broker is a red flag
 HIGH_HEAP_USE_PCT = 80.0        # sustained post-GC occupancy above this = memory pressure
 HOTSPOT_BUCKET_S = 60           # 1-minute buckets for hotspot detection
+MIN_RATE_SPAN_S = 60.0         # Shorter event spans do not support stable rates.
 
 # Last-hour fleet alerts (see store.evaluate_alerts). Override at runtime via GC_ALERT_* env vars.
 ALERT_RECENT_WINDOW_S = 3600
@@ -49,11 +50,15 @@ def _pct(values: list[float], p: float) -> float:
 
 
 def _span_seconds(events: list[GCEvent]) -> float:
+    if len({e.jvm_id for e in events}) > 1:
+        return 0.0  # Do not include JVM downtime or join separate relative clocks.
     ts = [e.timestamp for e in events if e.timestamp is not None]
-    if len(ts) >= 2:
+    if len(ts) == len(events) and len(ts) >= 2:
         return max(ts) - min(ts)
+    if ts:
+        return 0.0
     up = [e.uptime for e in events if e.uptime is not None]
-    if len(up) >= 2:
+    if len(up) == len(events) and len(up) >= 2:
         return max(up) - min(up)
     return 0.0
 
@@ -63,6 +68,8 @@ def analyze(parsed: ParsedLog) -> dict:
     stw = [e for e in events if e.is_stw and e.pause_ms > 0]
     pauses = [e.pause_ms for e in stw]
     span = _span_seconds(events)
+    partial = bool(parsed.record_counts.get("malformed", 0) or parsed.record_counts.get("unsupported", 0))
+    rates_available = span >= MIN_RATE_SPAN_S and len(events) >= 2 and not partial
 
     young = [e for e in stw if e.phase == "young"]
     mixed = [e for e in stw if e.phase == "mixed"]
@@ -73,7 +80,7 @@ def analyze(parsed: ParsedLog) -> dict:
     total_pause_s = total_pause_ms / 1000.0
 
     # Throughput = fraction of wall-clock NOT spent in stop-the-world GC.
-    throughput = 100.0 if span <= 0 else max(0.0, (1 - total_pause_s / span) * 100.0)
+    throughput = max(0.0, (1 - total_pause_s / span) * 100.0) if rates_available else None
 
     # Heap utilisation: post-GC occupancy is the "real" live-set footprint.
     heap_max = parsed.heap_max_mb or (
@@ -85,6 +92,7 @@ def analyze(parsed: ParsedLog) -> dict:
     peak_after = max(after_vals) if after_vals else 0.0
     avg_after_pct = (avg_after / heap_max * 100.0) if heap_max else 0.0
     peak_after_pct = (peak_after / heap_max * 100.0) if heap_max else 0.0
+    heap_observed = bool(after_vals and heap_max)
 
     # Allocation rate: bytes reclaimed per second is a proxy for allocation
     # throughput in steady state (what came in must be collected).
@@ -93,7 +101,7 @@ def analyze(parsed: ParsedLog) -> dict:
         for e in stw
         if e.heap_before_mb is not None and e.heap_after_mb is not None
     )
-    alloc_rate_mb_s = (reclaimed_mb / span) if span > 0 else 0.0
+    alloc_rate_mb_s = (reclaimed_mb / span) if rates_available and before_vals else None
 
     # Promotion pressure proxy: how often the post-GC live set keeps climbing.
     promotion_climbs = 0
@@ -103,8 +111,8 @@ def analyze(parsed: ParsedLog) -> dict:
     promotion_trend = (promotion_climbs / max(1, len(after_vals) - 1)) * 100.0
 
     # GC frequency / pressure.
-    gc_per_min = (len(stw) / span * 60.0) if span > 0 else 0.0
-    pct_time_in_gc = (total_pause_s / span * 100.0) if span > 0 else 0.0
+    gc_per_min = (len(stw) / span * 60.0) if rates_available else None
+    pct_time_in_gc = (total_pause_s / span * 100.0) if rates_available else None
 
     metrics = {
         "event_count": len(events),
@@ -114,23 +122,26 @@ def analyze(parsed: ParsedLog) -> dict:
         "full_count": len(full),
         "concurrent_count": len(concurrent),
         "span_seconds": round(span, 1),
-        "throughput_pct": round(throughput, 3),
-        "pct_time_in_gc": round(pct_time_in_gc, 3),
+        "throughput_pct": round(throughput, 3) if throughput is not None else None,
+        "pct_time_in_gc": round(pct_time_in_gc, 3) if pct_time_in_gc is not None else None,
         "total_pause_ms": round(total_pause_ms, 1),
         "avg_pause_ms": round(statistics.fmean(pauses), 2) if pauses else 0.0,
         "max_pause_ms": round(max(pauses), 2) if pauses else 0.0,
         "p50_pause_ms": round(_pct(pauses, 50), 2),
         "p95_pause_ms": round(_pct(pauses, 95), 2),
         "p99_pause_ms": round(_pct(pauses, 99), 2),
-        "gc_per_min": round(gc_per_min, 2),
+        "gc_per_min": round(gc_per_min, 2) if gc_per_min is not None else None,
         "heap_max_mb": round(heap_max, 1),
         "avg_heap_after_mb": round(avg_after, 1),
         "peak_heap_after_mb": round(peak_after, 1),
         "avg_heap_after_pct": round(avg_after_pct, 1),
         "peak_heap_after_pct": round(peak_after_pct, 1),
-        "alloc_rate_mb_s": round(alloc_rate_mb_s, 1),
+        "alloc_rate_mb_s": round(alloc_rate_mb_s, 1) if alloc_rate_mb_s is not None else None,
         "promotion_trend_pct": round(promotion_trend, 1),
         "reclaimed_mb": round(reclaimed_mb, 1),
+        "rates_available": rates_available,
+        "heap_observed": heap_observed,
+        "rate_basis": "event_span_estimate" if rates_available else "incomplete_coverage" if partial else "insufficient_span",
     }
 
     hotspots = _find_hotspots(stw)
@@ -144,6 +155,16 @@ def analyze(parsed: ParsedLog) -> dict:
         "collector": parsed.collector,
         "java_hint": parsed.java_hint,
         "warnings": parsed.warnings,
+        "data_quality": {
+            "status": "unknown" if not events else "estimated" if rates_available and heap_observed else "limited",
+            "heap_observed": heap_observed,
+            "time_basis": parsed.time_basis,
+            "anchor_source": parsed.anchor_source,
+            "record_counts": parsed.record_counts,
+            "rate_basis": metrics["rate_basis"],
+            "minimum_rate_span_seconds": MIN_RATE_SPAN_S,
+            "coverage_note": "Event span is not a verified observation window; gaps and idle time are unknown.",
+        },
         "metrics": metrics,
         "health": health,
         "hotspots": hotspots,
@@ -167,12 +188,23 @@ def _timeline(stw: list[GCEvent]) -> list[dict]:
                 "before_mb": e.heap_before_mb,
                 "after_mb": e.heap_after_mb,
                 "phase": e.phase,
+                "jvm_id": e.jvm_id,
+                "time_basis": "absolute" if e.timestamp is not None else "relative",
             }
         )
-    # Cap to ~1500 points for the browser.
+    # Keep endpoints and each bucket's pause/heap peaks, plus its worst Full GC.
     if len(pts) > 1500:
-        step = len(pts) // 1500 + 1
-        pts = pts[::step]
+        selected = {0, len(pts) - 1}
+        bucket_count = (1500 - 2) // 4
+        for bucket in range(bucket_count):
+            lo = bucket * len(pts) // bucket_count
+            hi = (bucket + 1) * len(pts) // bucket_count
+            for metric in ("pause_ms", "before_mb", "after_mb"):
+                selected.add(max(range(lo, hi), key=lambda i: pts[i][metric] or 0))
+            full = [i for i in range(lo, hi) if pts[i]["phase"] == "full"]
+            if full:
+                selected.add(max(full, key=lambda i: pts[i]["pause_ms"]))
+        pts = [pts[i] for i in sorted(selected)]
     return pts
 
 
@@ -193,12 +225,12 @@ def _pause_histogram(pauses: list[float]) -> list[dict]:
 
 def _find_hotspots(stw: list[GCEvent]) -> list[dict]:
     """Bucket pauses into windows and flag windows with abnormal GC load."""
-    buckets: dict[int, list[GCEvent]] = {}
+    buckets: dict[tuple, list[GCEvent]] = {}
     for e in stw:
         t = e.timestamp if e.timestamp is not None else e.uptime
         if t is None:
             continue
-        key = int(t // HOTSPOT_BUCKET_S)
+        key = (e.jvm_id, e.timestamp is not None, int(t // HOTSPOT_BUCKET_S))
         buckets.setdefault(key, []).append(e)
 
     if not buckets:
@@ -209,7 +241,10 @@ def _find_hotspots(stw: list[GCEvent]) -> list[dict]:
         pause_sum = sum(e.pause_ms for e in evs)
         rows.append(
             {
-                "window_start": key * HOTSPOT_BUCKET_S,
+                "window_start": key[2] * HOTSPOT_BUCKET_S,
+                "jvm_id": key[0],
+                "time_basis": "absolute" if key[1] else "relative",
+                "coverage": "partial_bucket_estimate",
                 "gc_count": len(evs),
                 "pause_sum_ms": round(pause_sum, 1),
                 "max_pause_ms": round(max(e.pause_ms for e in evs), 1),
@@ -237,6 +272,14 @@ def _find_hotspots(stw: list[GCEvent]) -> list[dict]:
 
 def _health_score(m: dict) -> dict:
     """0-100 composite score with letter grade and component breakdown."""
+    if m.get("event_count") == 0 or not m:
+        return {"score": None, "grade": "?", "status": "unknown", "reasons": ["No usable GC events"]}
+    if m.get("throughput_pct") is None:
+        return {"score": None, "grade": "?", "status": "unknown", "reasons": ["Limited data: inadequate observation span for GC rates and health grading"]}
+    if m.get("heap_observed") is False or any(m.get(key) is None for key in (
+        "max_pause_ms", "p99_pause_ms", "full_count", "peak_heap_after_pct", "avg_heap_after_pct"
+    )):
+        return {"score": None, "grade": "?", "status": "unknown", "reasons": ["Limited data: required pause or heap observations are unavailable"]}
     score = 100.0
     reasons = []
 
@@ -287,6 +330,14 @@ def _health_score(m: dict) -> dict:
 def _findings(m: dict, parsed: ParsedLog) -> dict:
     """Pros, cons, and concrete recommendations."""
     pros, cons, recs = [], [], []
+    if _health_score(m)["score"] is None:
+        reason = "No usable GC events" if m.get("event_count") == 0 else "Limited data: rates and aggregate health are unknown."
+        cons.append(reason)
+        if m.get("max_pause_ms") is not None and m["max_pause_ms"] > WARN_PAUSE_MS:
+            cons.append(f"Observed worst pause: {m['max_pause_ms']:.0f}ms.")
+        if m.get("full_count", 0):
+            cons.append(f"Observed {m['full_count']} Full GC(s).")
+        return {"pros": [], "cons": cons, "recommendations": ["Collect a longer, complete GC observation window before drawing health or tuning conclusions."]}
 
     if m["throughput_pct"] >= TARGET_THROUGHPUT:
         pros.append(f"Excellent throughput ({m['throughput_pct']:.2f}%) — GC overhead is minimal.")
@@ -350,30 +401,12 @@ def _findings(m: dict, parsed: ParsedLog) -> dict:
 
 
 
-def _event_epoch(e: GCEvent, uptime_offset: float) -> float | None:
-    if e.timestamp is not None:
-        return float(e.timestamp)
-    if e.uptime is not None:
-        return float(e.uptime) + uptime_offset
-    return None
-
-
 def auto_bucket_s(parsed: ParsedLog) -> int:
     """Pick bucket width so trend charts get useful granularity."""
     stw = [e for e in parsed.events if e.is_stw and e.pause_ms > 0]
     if len(stw) < 2:
         return 3600
-    import time
-
-    has_epoch = any(e.timestamp is not None for e in stw)
-    if has_epoch:
-        offset = 0.0
-    else:
-        uptimes = [e.uptime for e in stw if e.uptime is not None]
-        if not uptimes:
-            return 3600
-        offset = time.time() - max(uptimes)
-    times = [t for e in stw if (t := _event_epoch(e, offset)) is not None]
+    times = [e.timestamp for e in stw if e.timestamp is not None]
     if len(times) < 2:
         return 3600
     span = max(times) - min(times)
@@ -391,30 +424,20 @@ def auto_bucket_s(parsed: ParsedLog) -> int:
 
 
 def bucket_metrics(parsed: ParsedLog, bucket_s: int | None = None) -> list[tuple[int, dict]]:
-    """Roll parsed GC events into time buckets for trend charts."""
+    """Roll anchored events into epoch buckets; relative logs cannot enter history."""
     stw = [e for e in parsed.events if e.is_stw and e.pause_ms > 0]
-    if not stw:
+    if not stw or any(e.timestamp is None for e in stw):
         return []
 
     if bucket_s is None:
         bucket_s = auto_bucket_s(parsed)
 
-    import time
-
-    has_epoch = any(e.timestamp is not None for e in stw)
-    if has_epoch:
-        uptime_offset = 0.0
-    else:
-        uptimes = [e.uptime for e in stw if e.uptime is not None]
-        if not uptimes:
-            return []
-        uptime_offset = time.time() - max(uptimes)
+    if bucket_s <= 0:
+        raise ValueError("bucket_s must be positive")
 
     buckets: dict[int, list[GCEvent]] = {}
     for e in stw:
-        t = _event_epoch(e, uptime_offset)
-        if t is None:
-            continue
+        t = e.timestamp
         b = int(t // bucket_s) * bucket_s
         buckets.setdefault(b, []).append(e)
 
@@ -429,7 +452,10 @@ def bucket_metrics(parsed: ParsedLog, bucket_s: int | None = None) -> list[tuple
             java_hint=parsed.java_hint,
             events=buckets[bts],
             heap_max_mb=parsed.heap_max_mb,
-            warnings=[],
+            warnings=list(parsed.warnings),
+            record_counts=dict(parsed.record_counts),
+            time_basis=parsed.time_basis,
+            anchor_source=parsed.anchor_source,
         )
         out.append((bts, analyze(sub)["metrics"]))
     return out

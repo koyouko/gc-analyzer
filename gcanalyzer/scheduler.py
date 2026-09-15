@@ -32,7 +32,7 @@ import json
 from . import analyzer, config, ingest, parser, store, sar_ingest
 from .collector import NodeConfig, collect_ssh, collect_ssh_incremental, read_increment_local
 
-CLUSTERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clusters")
+CLUSTERS_DIR = os.environ.get("GC_CONFIG_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clusters"))
 DEFAULT_INTERVAL_S = int(os.environ.get("GC_SCHED_INTERVAL", "300"))
 RETENTION_DAYS = int(os.environ.get("GC_RETENTION_DAYS", "730"))  # 2 years
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
@@ -173,9 +173,6 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                         on_node_result(cluster, f"Failed to scrape node '{node.id}': {res['error']}", False, node.id)
                     continue
                 
-                for fp, stt in res["new_offsets"].items():
-                    store.set_offset(conn, instance_id, fp, stt["inode"], stt["offset"], ts)
-                
                 text = res["text"]
                 if not text.strip():
                     if on_node_result:
@@ -184,23 +181,32 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                 
                 try:
                     parsed = parser.parse(text, node_id=node.id)
+                    if on_node_result:
+                        for warning in parsed.warnings:
+                            on_node_result(cluster, f"GC parse warning for '{node.id}': {warning}", False, node.id)
                     analysis = analyzer.analyze(parsed)
                     metrics = analysis["metrics"]
+                    skipped = sum(parsed.record_counts.get(kind, 0) for kind in ("malformed", "unsupported"))
                     
-                    if metrics["stw_count"] <= 0:
+                    if metrics["stw_count"] <= 0 and not skipped:
                         if on_node_result:
-                            on_node_result(cluster, f"Node '{node.id}' scraped but no new GC events parsed.", True, node.id)
+                            on_node_result(cluster, f"Node '{node.id}' had no usable GC events; offsets retained for retry.", False, node.id)
                         continue
                     
                     heap_max = ingest._heap_max_for_instance(conn, node.role, metrics["heap_max_mb"], cluster, instance_id)
                     inst = ingest.build_instance(node, region, env, cluster, index, heap_max, instance_id=instance_id)
                     store.upsert_instance(conn, inst, collector=analysis["collector"])
-                    ingest.record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts, incremental=True, new_offsets=res.get("new_offsets"))
+                    written = ingest.record_analysis_metrics(conn, inst.id, parsed, analysis, ts=ts, incremental=True, new_offsets=res.get("new_offsets"))
+                    if written == 0:
+                        if on_node_result:
+                            on_node_result(cluster, f"Node '{node.id}': skipped {skipped} complete malformed or unsupported GC records; no metric rows written (unknown quality).", False, node.id)
+                        continue
                     
                     cluster_collected += 1
                     collected += 1
                     if on_node_result:
-                        on_node_result(cluster, f"Successfully scraped node '{node.id}' ({metrics['stw_count']} GC events)", True, node.id)
+                        quality = f"; limited quality: skipped {skipped} complete malformed or unsupported records" if skipped else ""
+                        on_node_result(cluster, f"Successfully scraped node '{node.id}' ({metrics['stw_count']} GC events){quality}", True, node.id)
                 except Exception as exc:
                     if on_node_result:
                         on_node_result(cluster, f"Failed to parse/record node '{node.id}': {exc}", False, node.id)

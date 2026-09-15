@@ -58,9 +58,11 @@ class ClusterState:
                 })
                 continue
             m, h = a["metrics"], a["health"]
-            scores.append(h["score"])
-            total_full += m["full_count"]
-            worst_pause = max(worst_pause, m["max_pause_ms"])
+            if h["score"] is not None:
+                scores.append(h["score"])
+            total_full += m.get("full_count") or 0
+            if m.get("max_pause_ms") is not None:
+                worst_pause = max(worst_pause, m["max_pause_ms"])
             collectors.add(a["collector"])
             nodes.append({
                 "node_id": nid,
@@ -78,7 +80,7 @@ class ClusterState:
                 "gc_per_min": m["gc_per_min"],
                 "hotspot_count": sum(1 for w in a["hotspots"] if w.get("is_hotspot")),
             })
-        avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+        avg_score = round(sum(scores) / len(scores), 1) if scores else None
         return {
             "cluster_name": self.cluster_name,
             "last_run": self.last_run,

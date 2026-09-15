@@ -13,7 +13,8 @@ produces:
     storm, what fraction also showed host resource pressure? This is the
     number an operator actually wants — "GC storms coincide with CPU
     saturation 80% of the time" is more actionable than a bare r value.
-  * A verdict: gc_bound | host_bound | mixed | insufficient_data.
+  * A verdict: no_pressure | gc_bound | host_bound | mixed | insufficient_data.
+    The legacy *_bound labels describe possible contributions, not causes.
 
 Deterministic statistics only — no ML here (see ml_insights.py for the
 anomaly-scoring "ML Tech Preview" layer, which is explicitly advisory).
@@ -59,17 +60,26 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     return max(-1.0, min(1.0, r))
 
 
+def _finite_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def rebucket_hourly(rows: list[dict], value_cols: list[str]) -> dict[int, dict]:
     """Average rows into hourly buckets so GC ticks (every scheduler interval)
     and SAR ticks (driven by the host's own sar report cadence) join cleanly
     even when their raw timestamps don't line up exactly."""
     buckets: dict[int, list[dict]] = {}
     for r in rows:
+        if not _finite_number(r.get("ts")):
+            continue
         hour = (int(r["ts"]) // 3600) * 3600
         buckets.setdefault(hour, []).append(r)
     out = {}
     for hour, rs in buckets.items():
-        out[hour] = {col: statistics.fmean(r[col] for r in rs if r.get(col) is not None) for col in value_cols}
+        out[hour] = {}
+        for col in value_cols:
+            vals = [r[col] for r in rs if _finite_number(r.get(col))]
+            out[hour][col] = statistics.fmean(vals) if vals else None
     return out
 
 
@@ -83,7 +93,7 @@ def _strength(r: float) -> str:
 
 
 def correlate_instance(c, instance_id: str, days: int = 30, now: int = None) -> dict:
-    now = now or store.now_ts(c)
+    now = store.now_ts(c) if now is None else now
     since = now - days * 86400
 
     gc_rows = store.window_rows(c, instance_id, since, now)
@@ -129,28 +139,33 @@ def correlate_instance(c, instance_id: str, days: int = 30, now: int = None) -> 
 
     correlations = []
     for gc_col, host_col, label in _PAIRS:
-        xs = [gc_hourly[h][gc_col] for h in common_hours]
-        ys = [host_hourly[h][host_col] for h in common_hours]
+        pairs = [(gc_hourly[h][gc_col], host_hourly[h][host_col]) for h in common_hours
+                 if gc_hourly[h][gc_col] is not None and host_hourly[h][host_col] is not None]
+        if len(pairs) < MIN_POINTS_FOR_CORRELATION:
+            continue
+        xs, ys = zip(*pairs)
         r = _pearson(xs, ys)
         if r is None:
             continue
         correlations.append({
             "label": label, "gc_metric": gc_col, "host_metric": host_col,
-            "r": round(r, 3), "strength": _strength(r), "n": len(common_hours),
+            "r": round(r, 3), "strength": _strength(r), "n": len(pairs),
         })
     correlations.sort(key=lambda x: abs(x["r"]), reverse=True)
 
     # Storm co-occurrence: among hours with elevated time-in-GC, how often is
     # the host also under resource pressure? More intuitive than a bare r.
-    tig_vals = [gc_hourly[h]["time_in_gc_pct"] for h in common_hours]
+    tig_vals = [gc_hourly[h]["time_in_gc_pct"] for h in common_hours
+                if gc_hourly[h]["time_in_gc_pct"] is not None]
     storm_threshold = max(5.0, _percentile(tig_vals, 90))
-    storm_hours = [h for h in common_hours if gc_hourly[h]["time_in_gc_pct"] >= storm_threshold]
+    storm_hours = [h for h in common_hours if gc_hourly[h]["time_in_gc_pct"] is not None
+                   and gc_hourly[h]["time_in_gc_pct"] >= storm_threshold]
 
     cooccurrence = None
     if storm_hours:
-        def pct_pressured(host_col: str, threshold: float) -> float:
-            n_pressured = sum(1 for h in storm_hours if host_hourly[h][host_col] >= threshold)
-            return round(100.0 * n_pressured / len(storm_hours), 1)
+        def pct_pressured(host_col: str, threshold: float) -> float | None:
+            vals = [host_hourly[h][host_col] for h in storm_hours if host_hourly[h][host_col] is not None]
+            return round(100.0 * sum(v >= threshold for v in vals) / len(vals), 1) if vals else None
 
         cooccurrence = {
             "storm_hours": len(storm_hours),
@@ -161,15 +176,33 @@ def correlate_instance(c, instance_id: str, days: int = 30, now: int = None) -> 
             "pct_with_swap_activity": pct_pressured("swap_used_pct", sar_analyzer.SWAP_WARN_PCT),
             "pct_with_disk_pressure": pct_pressured("disk_util_pct_max", sar_analyzer.DISK_UTIL_WARN_PCT),
             "pct_with_net_pressure": pct_pressured("net_util_pct_max", sar_analyzer.NET_UTIL_WARN_PCT),
+            "observed_storm_hours": {col: sum(host_hourly[h][col] is not None for h in storm_hours)
+                                     for col in host_cols},
         }
+        # Retain the old key for clients; occupancy is not evidence of paging.
+        cooccurrence["pct_with_swap_usage"] = cooccurrence["pct_with_swap_activity"]
 
-    findings = _build_findings(correlations, cooccurrence)
-    verdict = _verdict(correlations, cooccurrence)
+    gc_thresholds = {"time_in_gc_pct": 5.0, "pause_p99_ms": store.P99_PAUSE_ALERT_MS,
+                     "pause_max_ms": store.PAUSE_ALERT_MS, "full_gc_count": 1.0}
+    host_thresholds = dict(zip(host_cols, [sar_analyzer.CPU_BUSY_WARN_PCT,
+        sar_analyzer.IOWAIT_WARN_PCT, sar_analyzer.MEM_WARN_PCT, sar_analyzer.SWAP_WARN_PCT,
+        sar_analyzer.DISK_UTIL_WARN_PCT, sar_analyzer.DISK_AWAIT_WARN_MS, sar_analyzer.NET_UTIL_WARN_PCT]))
+    gc_pressure = any(gc_hourly[h][col] is not None and gc_hourly[h][col] >= threshold
+                      for h in common_hours for col, threshold in gc_thresholds.items())
+    host_pressure = any(host_hourly[h][col] is not None and host_hourly[h][col] >= threshold
+                        for h in common_hours for col, threshold in host_thresholds.items())
+    complete_hours = sum(all(gc_hourly[h][col] is not None for col in gc_thresholds)
+                         and all(host_hourly[h][col] is not None for col in host_cols)
+                         for h in common_hours)
+    verdict = _verdict(correlations, cooccurrence, gc_pressure, host_pressure,
+                       complete_hours >= MIN_POINTS_FOR_CORRELATION)
+    findings = _build_findings(correlations, cooccurrence, verdict)
 
     return {
         "instance_id": instance_id,
         "days": days,
         "n_points": len(common_hours),
+        "n_complete_points": complete_hours,
         "verdict": verdict,
         "correlations": correlations,
         "storm_cooccurrence": cooccurrence,
@@ -186,7 +219,8 @@ def _percentile(vals: list[float], p: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
-def _build_findings(correlations: list[dict], cooccurrence: dict | None) -> list[str]:
+def _build_findings(correlations: list[dict], cooccurrence: dict | None,
+                    verdict: str = "insufficient_data") -> list[str]:
     findings = []
     for corr in correlations:
         if corr["strength"] == "weak":
@@ -197,55 +231,44 @@ def _build_findings(correlations: list[dict], cooccurrence: dict | None) -> list
             f"{corr['gc_metric']} {direction} {corr['host_metric']}."
         )
 
-    if cooccurrence:
-        c = cooccurrence
-        if c["pct_with_cpu_pressure"] >= 60:
-            findings.append(
-                f"During the {c['storm_hours']} GC-storm hour(s) in this window, host CPU was also under "
-                f"pressure (>={sar_analyzer.CPU_BUSY_WARN_PCT:.0f}% busy) {c['pct_with_cpu_pressure']:.0f}% "
-                "of the time — this looks more like host contention than a pure JVM-tuning issue."
-            )
-        if c["pct_with_iowait_pressure"] >= 50:
-            findings.append(
-                f"{c['pct_with_iowait_pressure']:.0f}% of GC-storm hours also showed elevated iowait — "
-                "disk I/O is a plausible contributor to GC pause length (allocation/compaction stalling on storage)."
-            )
-        if c["pct_with_swap_activity"] >= 30:
-            findings.append(
-                f"{c['pct_with_swap_activity']:.0f}% of GC-storm hours overlapped with swap activity — "
-                "swapped JVM pages are a strong, fixable cause of GC pause spikes."
-            )
-        if c["pct_with_mem_pressure"] >= 50:
-            findings.append(
-                f"{c['pct_with_mem_pressure']:.0f}% of GC-storm hours overlapped with host memory pressure — "
-                "the OS itself is short on RAM, which starves the page cache Kafka depends on."
-            )
-        if c["pct_with_disk_pressure"] >= 50:
-            findings.append(
-                f"{c['pct_with_disk_pressure']:.0f}% of GC-storm hours overlapped with disk saturation — "
-                "storage throughput may be gating recovery from GC pauses (slow segment flush/fsync)."
-            )
-        if c["pct_with_net_pressure"] >= 50:
-            findings.append(
-                f"{c['pct_with_net_pressure']:.0f}% of GC-storm hours overlapped with NIC saturation — "
-                "replication/produce/fetch traffic may be backing up during GC pauses, compounding them."
-            )
+    observations = [
+        ("pct_with_cpu_pressure", 60, "high host CPU", "Check process CPU and runnable tasks; GC can also drive CPU."),
+        ("pct_with_iowait_pressure", 50, "elevated iowait", "Check device latency, queueing and process I/O."),
+        ("pct_with_swap_activity", 30, "high swap usage", "Swap occupancy does not establish active paging; check swap-in/out rates."),
+        ("pct_with_mem_pressure", 50, "high host memory usage", "Check available memory, major faults and workload ownership."),
+        ("pct_with_disk_pressure", 50, "high disk utilization", "Utilization alone does not establish saturation; check log-device latency and queueing."),
+        ("pct_with_net_pressure", 50, "high NIC utilization", "Check Kafka traffic and replication metrics before attributing host traffic to Kafka."),
+    ]
+    for key, threshold, label, check in observations:
+        pct = (cooccurrence or {}).get(key)
+        if pct is not None and pct >= threshold:
+            findings.append(f"{pct:.0f}% of observed GC-storm hours with this host metric also showed {label}. {check}")
 
-    if not findings:
-        findings.append(
-            "No strong GC <-> host correlation detected in this window — GC pressure on this node looks "
-            "like a JVM/heap-tuning question more than a host-resource constraint."
-        )
+    descriptions = {
+        "no_pressure": "No significant pressure detected in the observed GC and host metrics.",
+        "gc_bound": "GC pressure was observed without concurrent host pressure in the measured signals. Check JVM evidence; this does not establish a tuning problem.",
+        "host_bound": "GC and host pressure coincided: possible host contribution, not a confirmed cause.",
+        "mixed": "GC or host pressure was observed, but the relationship is not established.",
+        "insufficient_data": "Not enough complete overlapping evidence to distinguish GC and host pressure.",
+    }
+    findings.insert(0, descriptions[verdict])
+    if correlations or cooccurrence:
+        findings.append("Association is not a confirmed cause. Hourly aggregates cannot establish event ordering or application impact.")
     return findings
 
 
-def _verdict(correlations: list[dict], cooccurrence: dict | None) -> str:
+def _verdict(correlations: list[dict], cooccurrence: dict | None,
+             gc_pressure: bool = False, host_pressure: bool = False, complete: bool = False) -> str:
+    if not complete:
+        return "insufficient_data"
+    if not gc_pressure:
+        return "mixed" if host_pressure else "no_pressure"
     strong = [c for c in correlations if c["strength"] in ("strong", "moderate")]
-    host_pressure = bool(cooccurrence) and max(
-        [cooccurrence[k] for k in cooccurrence if k.startswith("pct_with_")], default=0
+    concurrent_pressure = bool(cooccurrence) and max(
+        [v for k, v in cooccurrence.items() if k.startswith("pct_with_") and v is not None], default=0
     ) >= 60
-    if strong and host_pressure:
+    if strong and concurrent_pressure:
         return "host_bound"
-    if strong or host_pressure:
+    if host_pressure:
         return "mixed"
     return "gc_bound"

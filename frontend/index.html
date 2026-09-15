@@ -4,10 +4,10 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>BSP Kafka GC Analyzer</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="/assets/vendor/chart.umd.js"></script>
+<script src="/assets/dashboard.js"></script>
+<script src="/assets/investigations.js" defer></script>
+<script src="/assets/prometheus-settings.js" defer></script>
 <style>
   :root{
     /* Barclays light theme: light surfaces, navy text, signature Barclays cyan */
@@ -31,7 +31,7 @@
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--txt);
-       font-family:'Inter', -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px}
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px}
   
   /* Hide dashboard until authenticated */
   header, .layout {
@@ -46,7 +46,7 @@
   header{display:flex;align-items:center;justify-content:space-between;color:#fff;
          padding:12px 22px;border-bottom:3px solid var(--brand);
          background:linear-gradient(180deg,#0a2540 0%,#072036 100%);box-shadow:0 2px 8px rgba(10,37,64,.18)}
-  header h1{font-family:'Outfit',sans-serif;font-size:16px;margin:0;font-weight:700;letter-spacing:.01em;color:#fff;
+  header h1{font-family:inherit;font-size:16px;margin:0;font-weight:700;letter-spacing:.01em;color:#fff;
             display:flex;align-items:center;gap:10px;cursor:pointer}
   header h1::before{content:"";width:7px;height:22px;border-radius:2px;background:var(--brand);
             box-shadow:0 0 12px rgba(0,174,239,.6)}
@@ -246,7 +246,7 @@
     stroke-linejoin: round;
   }
   .login-title {
-    font-family: 'Outfit', sans-serif;
+    font-family: inherit;
     font-size: 20px;
     font-weight: 600;
     color: #fff;
@@ -426,7 +426,7 @@
     margin: 0;
     font-size: 14px;
     font-weight: 650;
-    font-family: 'Outfit', sans-serif;
+    font-family: inherit;
   }
   .close-btn {
     background: transparent;
@@ -568,6 +568,8 @@
     border-color: var(--accent);
   }
 </style>
+<link rel="stylesheet" href="/assets/dashboard.css">
+<link rel="stylesheet" href="/assets/prometheus-settings.css">
 </head>
 <body>
 <header>
@@ -576,6 +578,7 @@
     <div class="sub" id="sub">loading…</div>
   </div>
   <div class="right">
+    <button class="btn" id="analyzeLogsBtn" onclick="openInvestigation()">Analyze logs</button>
     <span class="muted" id="whoami" style="font-size:11px"></span>
     <span class="statuspill" id="fleetPill">—</span>
     <button class="btn ghost" id="mlPreviewBtn" onclick="openMlPreview()" title="ML Tech Preview" style="display:none">ML Preview</button>
@@ -712,8 +715,19 @@ function applyTheme(t, redraw){
   try{ localStorage.setItem('gcTheme', dark ? 'dark' : 'light'); }catch(e){}
   const b = document.getElementById('themeBtn'); if(b) b.textContent = dark ? 'Light' : 'Dark';
   // Redraw open charts so their axes/grid pick up the new theme colors.
-  if(redraw && typeof CURRENT_INSTANCE !== 'undefined' && CURRENT_INSTANCE){
-    try{ selectInstance(CURRENT_INSTANCE); }catch(e){}
+  if(redraw && typeof charts !== 'undefined'){
+    chartTheme();
+    [...Object.values(charts),...Object.values(nodeCharts)].forEach(c=>{
+      c.options.color=Chart.defaults.color;
+      Object.values(c.options.scales||{}).forEach(axis=>{
+        axis.ticks={...axis.ticks,color:Chart.defaults.color};
+        axis.grid={...axis.grid,color:Chart.defaults.borderColor};
+        axis.border={...axis.border,color:Chart.defaults.borderColor};
+        axis.title={...axis.title,color:Chart.defaults.color};
+      });
+      if(c.options.plugins?.legend?.labels) c.options.plugins.legend.labels.color=Chart.defaults.color;
+      c.update();
+    });
   }
 }
 function toggleTheme(){ applyTheme(document.body.classList.contains('theme-dark') ? 'light' : 'dark', true); }
@@ -722,7 +736,7 @@ const METRIC_HELP={
   'Throughput':'Percentage of wall-clock time the application ran instead of being paused by GC. Higher is better — aim for ≥ 99%.',
   'Time in GC':'Share of wall-clock time spent inside stop-the-world GC pauses. The inverse of throughput; lower is better.',
   'Avg pause':'Average duration of a stop-the-world GC pause over the window. Application threads are frozen during each pause.',
-  'p99 pause':'99th-percentile GC pause — 99% of pauses were shorter than this. Tail latency that directly affects Kafka request times.',
+  'p99 pause':'99th-percentile GC pause — 99% of pauses were shorter than this. May affect application request times; Kafka service impact requires request metrics.',
   'Max pause':'Longest single stop-the-world pause in the window (young, mixed, or full). A long pause does not always mean a Full GC — check the Full GC chart for Pause Full events only.',
   'GC freq':'Garbage collections per minute. Very high frequency points to a hot allocation path or an undersized young generation.',
   'Full GCs (24h)':'Count of JVM Pause Full events only (whole-heap compaction). Long young/mixed G1 pauses are not Full GCs but still raise max-pause alerts.',
@@ -769,7 +783,8 @@ function pauseBucketsFromSeries(series){
   const labels=['0–10','10–20','20–30','30–40','40–50','50–100','100–200','200–500','500+'];
   const counts=new Array(labels.length).fill(0);
   for(const pt of series||[]){
-    const p=pt.pause_max||0;
+    const p=Dashboard.number(pt.pause_max);
+    if(p===null) continue;
     for(let i=0;i<edges.length-1;i++){
       if(p>=edges[i]&&p<edges[i+1]){counts[i]++;break;}
     }
@@ -780,25 +795,25 @@ function pauseBucketsFromSeries(series){
 
 function diagCards(m, alerts){
   const cards=[];
-  const peakPct=m.peak_heap_after_pct||0;
-  cards.push({t:'Heap headroom',d:peakPct>85?`Live set peaked at ${peakPct}% — close to OOM.`:`Peak live set ${peakPct}% of ${m.heap_max_mb} MB heap.`,s:peakPct>85?'bad':peakPct>70?'warn':'ok'});
-  const full=m.full_count||0;
+  const peakPct=m.peak_heap_after_pct;
+  cards.push({t:'Heap headroom',d:peakPct>85?`Live set peaked at ${peakPct}% — limited heap headroom.`:`Peak live set ${peakPct}% of ${fmtMetric(m.heap_max_mb,' MB')} heap.`,s:peakPct>85?'bad':peakPct>70?'warn':'ok'});
+  const full=m.full_count;
   cards.push({t:'Full GC (24h)',d:full?`${full} Full GC event(s) — whole-heap stop-the-world.`:'No Full GCs in the last 24 hours.',s:full?'bad':'ok'});
-  const mp=m.max_pause_ms||0;
-  const pauseNote=mp>200&&!full?' (young/mixed STW — not a Full GC)':'';
-  cards.push({t:'Longest pause',d:mp>500?`Max pause ${mp} ms exceeds 500 ms Kafka tolerance.${pauseNote}`:mp>200?`Max pause ${mp} ms elevated.${pauseNote}`:`Max pause ${mp} ms within acceptable range.`,s:mp>500?'bad':mp>200?'warn':'ok'});
-  const prom=m.promotion_trend_pct||0;
+  const mp=m.max_pause_ms;
+  const pauseNote=mp>200&&full===0?' (no Full GC recorded)':'';
+  cards.push({t:'Longest pause',d:mp>500?`Max pause ${mp} ms exceeds the 500 ms GC advisory threshold.${pauseNote}`:mp>200?`Max pause ${mp} ms elevated.${pauseNote}`:`Max pause ${mp} ms below the GC advisory threshold.`,s:mp>500?'bad':mp>200?'warn':'ok'});
+  const prom=m.promotion_trend_pct;
   cards.push({t:'Live-set trend',d:prom>60?`Live set rose after ${prom}% of collections — check for leak.`:`Promotion trend ${prom}% — stable live set.`,s:prom>60?'warn':'ok'});
-  const tig=m.pct_time_in_gc||0;
-  cards.push({t:'GC overhead',d:`${tig}% of wall-clock in GC · throughput ${m.throughput_pct}%.`,s:tig>5?'warn':tig>10?'bad':'ok'});
+  const tig=m.pct_time_in_gc;
+  cards.push({t:'GC overhead',d:`${tig}% of wall-clock in GC · throughput ${fmtMetric(m.throughput_pct,'%')}.`,s:tig>10?'bad':tig>5?'warn':'ok'});
+  [peakPct,full,mp,prom,tig].forEach((value,i)=>{if(Dashboard.number(value)===null) cards[i]={...cards[i],d:'Not available in the collected evidence.',s:'unknown'};});
   const crit=alerts.some(a=>a.severity==='critical');
   if(crit) cards.unshift({t:'Active alerts',d:alerts.map(a=>a.msg).join(' · '),s:'bad'});
   return cards;
 }
 
 function fmtMetric(v, unit){
-  if(v===null||v===undefined||v===''||(typeof v==='number'&&Number.isNaN(v))) return '—';
-  return unit ? v + unit : String(v);
+  return Dashboard.metric(v, unit);
 }
 
 function explorerTabsHtml(){
@@ -810,40 +825,42 @@ function explorerTabsHtml(){
 }
 
 function renderNodeDeepDive(m, tr, s){
-  const peakMb=Math.round((m.heap_max_mb||0)*(m.peak_heap_after_pct||0)/100);
-  const avgMb=Math.round(m.avg_heap_after_mb||(m.heap_max_mb||0)*(m.avg_heap_after_pct||0)/100);
+  const peakMb=Dashboard.number(m.heap_max_mb)!==null&&Dashboard.number(m.peak_heap_after_pct)!==null?Math.round(m.heap_max_mb*m.peak_heap_after_pct/100):null;
+  const avgMb=Dashboard.number(m.avg_heap_after_mb)??(Dashboard.number(m.heap_max_mb)!==null&&Dashboard.number(m.avg_heap_after_pct)!==null?Math.round(m.heap_max_mb*m.avg_heap_after_pct/100):null);
   return `
     <h2>Node deep-dive</h2>
     <p class="muted" style="margin:-6px 0 10px">GC analytics for this JVM — summary from the last 24 hours.</p>
     <div class="kpi-strip">
-      <div class="kpi ${m.throughput_pct>=99?'good':m.throughput_pct>=95?'warn':'bad'}"><div class="kl">Throughput</div><div class="kv">${m.throughput_pct}%</div><div class="ks">app time vs GC</div></div>
-      <div class="kpi ${(m.max_pause_ms||0)<=200?'good':(m.max_pause_ms||0)<=500?'warn':'bad'}"><div class="kl">Avg pause</div><div class="kv">${fmtMetric(m.avg_pause_ms)}<span style="font-size:13px;font-weight:600"> ms</span></div><div class="ks">p99 ${fmtMetric(m.p99_pause_ms)} ms</div></div>
-      <div class="kpi"><div class="kl">GC frequency</div><div class="kv">${m.gc_per_min}</div><div class="ks">collections / min</div></div>
-      <div class="kpi ${m.full_count?'bad':'good'}"><div class="kl">Full GCs</div><div class="kv">${m.full_count}</div><div class="ks">last 24 hours</div></div>
+      <div class="kpi"><div class="kl">Throughput</div><div class="kv">${fmtMetric(m.throughput_pct,'%')}</div><div class="ks">app time vs GC</div></div>
+      <div class="kpi"><div class="kl">Avg pause</div><div class="kv">${fmtMetric(m.avg_pause_ms,' ms')}</div><div class="ks">p99 ${fmtMetric(m.p99_pause_ms,' ms')}</div></div>
+      <div class="kpi"><div class="kl">GC frequency</div><div class="kv">${fmtMetric(m.gc_per_min)}</div><div class="ks">collections / min</div></div>
+      <div class="kpi"><div class="kl">Full GCs</div><div class="kv">${fmtMetric(m.full_count)}</div><div class="ks">last 24 hours</div></div>
     </div>
     <div class="panels">
       <div class="panel">
         <h3>JVM memory — allocated vs peak live set</h3>
         <div class="mem-bar-wrap">
-          <div class="mem-bar-label"><span>Peak live set</span><span>${peakMb} / ${m.heap_max_mb} MB (${m.peak_heap_after_pct}%)</span></div>
-          <div class="mem-bar"><span class="alloc"></span><span class="peak" style="width:${Math.min(100,m.peak_heap_after_pct||0)}%"></span></div>
+          <div class="mem-bar-label"><span>Peak live set</span><span>${fmtMetric(peakMb,' MB')} / ${fmtMetric(m.heap_max_mb,' MB')} (${fmtMetric(m.peak_heap_after_pct,'%')})</span></div>
+          ${peakMb!==null?`<div class="mem-bar"><span class="alloc"></span><span class="peak" style="width:${Math.max(0,Math.min(100,m.peak_heap_after_pct))}%"></span></div>`:''}
         </div>
         <div class="mem-bar-wrap">
-          <div class="mem-bar-label"><span>Avg live set</span><span>${avgMb} MB (${m.avg_heap_after_pct}%)</span></div>
-          <div class="mem-bar"><span class="alloc"></span><span class="peak" style="width:${Math.min(100,m.avg_heap_after_pct||0)}%;background:linear-gradient(90deg,#0a85c2,#38c6ff)"></span></div>
+          <div class="mem-bar-label"><span>Avg live set</span><span>${fmtMetric(avgMb,' MB')} (${fmtMetric(m.avg_heap_after_pct,'%')})</span></div>
+          ${Dashboard.number(m.avg_heap_after_pct)!==null?`<div class="mem-bar"><span class="alloc"></span><span class="peak" style="width:${Math.max(0,Math.min(100,m.avg_heap_after_pct))}%;background:var(--accent)"></span></div>`:''}
         </div>
-        <div class="muted" style="font-size:10px;margin-top:8px">Allocated -Xmx: ${m.heap_max_mb} MB · promotion trend ${m.promotion_trend_pct}%</div>
+        <div class="muted" style="font-size:10px;margin-top:8px">Allocated -Xmx: ${fmtMetric(m.heap_max_mb,' MB')} · promotion trend ${fmtMetric(m.promotion_trend_pct,'%')}</div>
       </div>
       <div class="panel">
-        <h3>Pause duration distribution</h3>
+        <h3>Distribution of bucket maximum pauses</h3>
         <div class="chartbox compact"><canvas id="cHist"></canvas></div>
       </div>
     </div>`;
 }
 
 function renderGcEventMix(m){
-  const young=m.young_count||0, full=m.full_count||0;
-  const total=young+full||1;
+  const young=Dashboard.number(m.young_count), full=Dashboard.number(m.full_count);
+  if(young===null||full===null) return '<p class="muted">Not available: GC event counts are incomplete.</p>';
+  const total=young+full;
+  if(!total) return '<p class="muted">No GC events in the available data.</p>';
   const youngPct=Math.round(young/total*100);
   const fullPct=100-youngPct;
   return `
@@ -890,7 +907,7 @@ function renderNodeExplorerBoard(m, tr, s){
       </div>
       <div class="panel">
         <h3>Diagnostics</h3>
-        <div class="diag-grid">${cards.map(c=>`<div class="diag ${c.s}"><div class="dt">${c.t}</div><div class="dd">${c.d}</div></div>`).join('')}</div>
+        <div class="diag-grid">${cards.map(c=>`<div class="diag ${c.s}"><div class="dt">${esc(c.t)}</div><div class="dd">${esc(c.d)}</div></div>`).join('')}</div>
       </div>
     </div>`;
 }
@@ -905,12 +922,12 @@ function chartTheme(){
   const __dark=document.body.classList.contains('theme-dark');
   Chart.defaults.color=__dark?'#93acc4':'#5b7287';
   Chart.defaults.borderColor=__dark?'#1f405e':'#dde5ee';
-  Chart.defaults.font.family='Inter, sans-serif';
+  Chart.defaults.font.family='-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 }
 
 function seriesLabels(s){
   const span=s.length>1?s[s.length-1].t-s[0].t:0;
-  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toISOString().slice(11,16)):fmtDay;
   return {labels:s.map(p=>lab(p.t)), pr:s.length===1?4:0};
 }
 
@@ -954,8 +971,8 @@ function drawNodeAnalyticsCharts(tr, hist){
 
 let _lastMetrics=null;
 
-function fmtDay(ts){return new Date(ts*1000).toLocaleDateString([], {month:'short',day:'numeric'});}
-function fmtTime(ts){return new Date(ts*1000).toLocaleString();}
+function fmtDay(ts){return Dashboard.number(ts)===null?'Not available':new Date(ts*1000).toISOString().slice(0,10);}
+function fmtTime(ts){return Dashboard.number(ts)===null?'Not available':new Date(ts*1000).toISOString().replace('T',' ').slice(0,16)+' UTC';}
 
 /* ---------------- sidebar tree ---------------- */
 function dot(s){return `<span class="dot ${SC[s]||'unknown'}"></span>`;}
@@ -1019,13 +1036,23 @@ function autoExpand(){
 
 /* ---------------- fleet overview ---------------- */
 function renderFleet(){
+  destroy();
+  CURRENT_INSTANCE=null;
   const c=FLEET.counts;
+  if(!FLEET.total_instances){
+    document.getElementById('main').innerHTML=`<div class="breadcrumb">Fleet overview</div>
+      <section class="aligned-evidence"><h2>No clusters connected</h2><p class="muted">Live GC and host health are not available.</p>
+      <button class="btn" onclick="openInvestigation()" ${typeof __STATIC__!=='undefined'?'disabled title="Read-only export"':''}>Analyze logs</button>
+      ${CURRENT_ROLE==='admin'?'<button class="btn ghost" onclick="openSettings()">Cluster settings</button>':''}</section>`;
+    return;
+  }
   document.getElementById('main').innerHTML=`
     <div class="breadcrumb">Fleet overview · ${FLEET.total_instances} JVM components · snapshot ${fmtTime(FLEET.now)}</div>
     <div class="cards">
       <div class="card ok"><div class="l">Healthy</div><div class="v">${c.ok||0}</div></div>
       <div class="card watch"><div class="l">Watch</div><div class="v">${c.watch||0}</div></div>
       <div class="card crit"><div class="l">Critical</div><div class="v">${c.critical||0}</div></div>
+      <div class="card"><div class="l">Unknown</div><div class="v">${c.unknown||0}</div></div>
       <div class="card"><div class="l">Total components</div><div class="v">${FLEET.total_instances}</div></div>
       <div class="card"><div class="l">Active alerts (1h)</div><div class="v">${FLEET.active_alerts.length}</div></div>
     </div>
@@ -1039,9 +1066,7 @@ function renderFleet(){
         <span class="sev ${a.severity}">${a.severity}</span>
         <span class="where">${esc(a.instance_id)}</span>
         <span class="msg">${esc(a.msg)}</span>
-      </div>`).join(''):'<div class="muted">No GC issues detected across the fleet in the last hour.</div>'}</div>
-    <h2 style="margin-top:26px">Tip</h2>
-    <div class="muted">Pick any component in the left tree (or click an alert) to see its current health and 30-day JVM heap / GC trends.</div>
+      </div>`).join(''):'<div class="muted">No alerts in the available evidence. Missing or stale sources do not confirm healthy operation.</div>'}</div>
     <h2 style="margin-top:26px">Technology Preview</h2>
     <div class="alert warning" onclick="openMlPreview()">
       <span class="sev warning">preview</span>
@@ -1050,66 +1075,48 @@ function renderFleet(){
     </div>`;
 }
 
-function openMlPreview(){
+async function openMlPreview(){
   SELECTED='ml-preview';
   if(FLEET) renderTree();
-  renderMlPreview();
+  await refreshLearningPreview(CURRENT_INSTANCE);
 }
 
-function renderMlPreview(){
-  destroy();
-  const counts=(FLEET&&FLEET.counts)||{};
-  const alerts=(FLEET&&FLEET.active_alerts)||[];
-  const total=(FLEET&&FLEET.total_instances)||0;
-  const snapshot=FLEET?`snapshot ${fmtTime(FLEET.now)}`:'waiting for fleet snapshot';
-  const candidates=[
-    ['Instances observed', total],
-    ['Active rule alerts', alerts.length],
-    ['Critical nodes', counts.critical||0],
-    ['Watch nodes', counts.watch||0],
-  ];
-  const roadmap=[
-    ['Adaptive baseline', 'Learn normal pause, heap, GC-frequency, and live-set bands by JVM role and time window.', 'not training yet'],
-    ['Anomaly scoring', 'Compare each node against its own baseline and peer group before raising an explainable score.', 'design candidate'],
-    ['Forecast risk', 'Project heap pressure and full-GC risk from promotion, live-set, and pause trend direction.', 'design candidate'],
-  ];
-  const guardrails=[
-    'No trained model is running yet',
-    'Deterministic rules remain the source of truth',
-    'Local GC data stays local until a training path is approved',
-    'Every score must show the signals that produced it',
-  ];
+async function refreshLearningPreview(id){
+  CURRENT_INSTANCE=id||null;
+  if(!id){renderMlPreview(null);return;}
+  document.getElementById('main').innerHTML='<div class="empty">Loading model status...</div>';
+  const anomaly=await fetchOptional('/api/instance/'+encodeURIComponent(id)+'/anomalies');
+  if(SELECTED==='ml-preview'&&CURRENT_INSTANCE===id) renderMlPreview(anomaly);
+}
 
+function renderMlPreview(anomaly){
+  destroy();
+  const snapshot=FLEET?`snapshot ${fmtTime(FLEET.now)}`:'waiting for fleet snapshot';
+  const instances=(FLEET?.regions||[]).flatMap(r=>r.envs.flatMap(e=>e.clusters.flatMap(c=>c.groups.flatMap(g=>g.instances))));
+  if(CURRENT_INSTANCE&&!instances.some(i=>i.id===CURRENT_INSTANCE)) instances.push({id:CURRENT_INSTANCE});
+  const guardrails=[
+    'Deterministic rules remain the source of truth',
+    'No persistent or continuous learning is running',
+    'Scores describe unusual observations, not the probability of an incident',
+    'Capacity forecasts are separate advisory estimates',
+  ];
   document.getElementById('main').innerHTML=`
     <div class="breadcrumb">Technology Preview · ${snapshot}</div>
     <div class="ihdr">
       <span class="statuspill" style="background:var(--watch);color:var(--ink)">preview</span>
       <div style="font-size:18px;font-weight:700">ML Tech Preview</div>
-      <span class="muted">separate from production health grading</span>
+      <span class="muted">Actual model status</span>
     </div>
-    <div class="cards">${candidates.map(x=>`
-      <div class="card"><div class="l">${esc(x[0])}</div><div class="v">${esc(x[1])}</div></div>`).join('')}</div>
-
-    <div class="panels">
-      <div class="panel full"><h3>Preview status</h3>
-        <div class="alerts">
-          ${guardrails.map(g=>`
-            <div class="alert warning" style="cursor:default">
-              <span class="sev warning">guardrail</span>
-              <span class="msg">${esc(g)}</span>
-            </div>`).join('')}
-        </div>
-      </div>
-      ${roadmap.map(r=>`
-        <div class="panel"><h3>${esc(r[0])}</h3>
-          <div class="muted" style="line-height:1.5">${esc(r[1])}</div>
-          <div style="margin-top:12px"><span class="engine">${esc(r[2])}</span></div>
-        </div>`).join('')}
-    </div>`;
+    <div class="range-toolbar"><label for="learningInstance">Component</label><select id="learningInstance" class="inp" onchange="refreshLearningPreview(this.value)">
+      <option value="">No component selected</option>${instances.map(i=>`<option value="${esc(i.id)}"${i.id===CURRENT_INSTANCE?' selected':''}>${esc(i.id)}</option>`).join('')}
+    </select></div>
+    ${Dashboard.learningSummary(anomaly,false)}
+    <section class="aligned-evidence"><h2>Model scope</h2><ul class="list">${guardrails.map(g=>`<li>${esc(g)}</li>`).join('')}</ul></section>`;
 }
 
 /* ---------------- cluster overview ---------------- */
 async function selectCluster(cluster){
+  CURRENT_INSTANCE=null;
   SELECTED='cluster:'+cluster; renderTree();
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(cluster)+'…</div>';
   try{
@@ -1124,21 +1131,21 @@ async function selectCluster(cluster){
 
 function renderScalingAdvisor(sc){
   if(!sc || sc.verdict==='insufficient_data'){
-    return `<div class="panel full"><h3>Scaling advisor</h3><div class="muted">${esc((sc&&sc.summary)||'Not enough broker GC + host history yet to recommend a scaling direction.')}</div></div>`;
+    return `<div class="panel full"><h3>Scaling advisor <span class="preview-label">Advisory</span></h3><div class="muted">${esc((sc&&sc.summary)||'Not enough broker GC + host history yet to recommend a scaling direction.')}</div></div>`;
   }
   const verdictLabel={horizontal:'Scale horizontally (add brokers)',vertical_memory:'Scale vertically (heap / RAM)',
     rebalance:'Rebalance partitions/leaders',no_action:'No action needed',mixed:'Mixed — investigate per-node'}[sc.verdict]||sc.verdict;
   const nodeRows=(sc.nodes||[]).map(n=>`<tr>
       <td>${esc(instanceLabel(n.instance_id))}</td>
-      <td><span class="bnpill ${esc(n.dominant_bottleneck)}">${esc(n.dominant_bottleneck.replace('_',' '))}</span></td>
+      <td><span class="bnpill ${esc(n.dominant_bottleneck||'no_data')}">${esc((n.dominant_bottleneck||'Not available').replace(/_/g,' '))}</span></td>
       <td>${n.gc_grade?`<span class="minigrade ${n.gc_grade}">${n.gc_grade}</span>`:'—'}</td>
       <td>${n.host_grade?`<span class="minigrade ${n.host_grade}">${n.host_grade}</span>`:'—'}</td>
-      <td>${n.cpu_busy_pct_avg!=null?n.cpu_busy_pct_avg+'%':'—'}</td>
-      <td>${n.net_util_pct_max!=null?n.net_util_pct_max+'%':'—'}</td>
-      <td>${n.full_gc_24h!=null?n.full_gc_24h:'—'}</td>
+      <td>${fmtMetric(n.cpu_busy_pct_avg,'%')}</td>
+      <td>${fmtMetric(n.net_util_pct_max,'%')}</td>
+      <td>${fmtMetric(n.full_gc_24h)}</td>
     </tr>`).join('');
   const skewHtml=sc.skew?`<div class="muted" style="margin-top:8px;font-size:11px">Cross-node skew: CPU CV=${sc.skew.cpu_busy_cv ?? '—'}, net-egress CV=${sc.skew.net_tx_cv ?? '—'}${sc.skew.hot_nodes&&sc.skew.hot_nodes.length?` · hot: ${sc.skew.hot_nodes.map(esc).join(', ')}`:''}</div>`:'';
-  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">Scaling advisor (${esc(sc.role)}s)
+  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Scaling advisor (${esc(sc.role)}s) <span class="preview-label">Advisory</span>
       <span class="verdictpill ${esc(sc.verdict)}">${esc(verdictLabel)}</span>
       <span class="muted" style="font-size:11px;font-weight:400">confidence: ${esc(sc.confidence)}</span>
     </h3>
@@ -1153,23 +1160,24 @@ const FC_VERDICT_LABEL={plan_horizontal:'Plan horizontal scale (add brokers)',pl
   plan_vertical_heap:'Plan vertical scale (JVM heap)',plan_tune_gc:'Tune GC before scaling',
   watch_hot_node:'Watch hot node / rebalance first',none:'No scaling needed in horizon',insufficient_data:'Insufficient history'};
 const FC_STATUS_LABEL={already_critical:'already critical',breach_imminent:'critical soon',already_warning:'already warning',
-  breach_projected:'breach projected',watch:'watch',improving:'improving',stable:'stable',insufficient_data:'no history'};
+  breach_projected:'breach projected',watch:'watch',improving:'improving',stable:'stable',insufficient_data:'More history needed',trend_only:'Trend only',no_data:'More history needed'};
+const FC_RISK_LABEL={critical:'Critical',warning:'Warning',watch:'Watch',ok:'No threshold risk',no_data:'More history needed',trend_only:'Trend only'};
 
 function renderForecastPanel(fc){
   if(!fc || fc.verdict==='insufficient_data'){
-    return `<div class="panel full"><h3>Capacity forecast</h3><div class="muted">${esc((fc&&fc.summary)||'Not enough daily GC + host history yet to project capacity trends (need >= 7 days per node).')}</div></div>`;
+    return `<div class="panel full"><h3>Capacity forecast <span class="preview-label">Tech preview</span></h3><div class="muted">${esc((fc&&fc.summary)||'Forecast withheld: more daily GC and host history is needed.')} Advisory only.</div></div>`;
   }
   const rows=(fc.nodes||[]).map(n=>`<tr>
       <td>${esc(instanceLabel(n.instance_id))}</td>
-      <td><span class="fcrisk ${esc(n.risk)}">${esc(n.risk.replace('_',' '))}</span></td>
+      <td><span class="fcrisk ${esc(n.risk)}">${esc(FC_RISK_LABEL[n.risk]||'Not available')}</span></td>
       <td>${esc(n.top_label||'—')}${n.top_status?` <span class="fcstatus ${esc(n.top_status)}">${esc(FC_STATUS_LABEL[n.top_status]||n.top_status)}</span>`:''}</td>
-      <td>${n.top_current!=null?esc(n.top_current)+esc(n.top_unit||''):'—'}</td>
-      <td>${n.top_days_to_crit!=null?`~${Math.round(n.top_days_to_crit)}d (${esc(n.top_crit_date)})`:'—'}</td>
-      <td>${esc(n.top_confidence||'—')}</td>
+      <td>${fmtMetric(n.top_current,esc(n.top_unit||''))}</td>
+      <td>${n.top_days_to_crit!=null?`~${Math.round(n.top_days_to_crit)}d (${esc(n.top_crit_date)})`:'Not available'}</td>
+      <td>${esc(n.top_confidence||'Not available')}</td>
     </tr>`).join('');
   const warnHtml=(fc.warnings||[]).length?`<div class="alerts" style="margin:8px 0">${fc.warnings.map(w=>`
     <div class="alert warning"><span class="sev warning">forecast</span><span class="msg">${esc(w)}</span></div>`).join('')}</div>`:'';
-  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">Capacity forecast (${esc(fc.role)}s · next ${esc(fc.horizon_days)} days)
+  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Capacity forecast (${esc(fc.role)}s · next ${esc(fc.horizon_days)} days) <span class="preview-label">Tech preview</span>
       <span class="verdictpill ${esc(fc.verdict)}">${esc(FC_VERDICT_LABEL[fc.verdict]||fc.verdict)}</span>
       <span class="muted" style="font-size:11px;font-weight:400">confidence: ${esc(fc.confidence)}</span>
     </h3>
@@ -1183,22 +1191,22 @@ function renderForecastPanel(fc){
 
 function renderCapacityOutlook(fc){
   if(!fc){
-    return `<div class="panel full"><h3>Capacity outlook</h3><div class="muted">Capacity forecast unavailable.</div></div>`;
+    return `<div class="panel full"><h3>Capacity outlook <span class="preview-label">Tech preview</span></h3><div class="muted">Forecast withheld: capacity evidence is not available. Advisory only.</div></div>`;
   }
   const fitted=(fc.signals||[]).filter(s=>s.status!=='insufficient_data');
   const rows=(fc.signals||[]).map(s=>`<tr>
       <td>${esc(s.label)}</td>
-      <td>${s.current!=null?esc(s.current)+esc(s.unit):'—'}</td>
-      <td>${s.slope_per_day!=null?`${s.slope_per_day>0?'+':''}${esc(s.slope_per_day)}${esc(s.unit)}`:'—'}</td>
-      <td>${esc(s.warn_threshold)}${esc(s.unit)}</td>
-      <td>${esc(s.crit_threshold)}${esc(s.unit)}</td>
-      <td>${s.days_to_warn!=null?`~${Math.round(s.days_to_warn)}d`:'—'}</td>
-      <td>${s.days_to_crit!=null?`~${Math.round(s.days_to_crit)}d (${esc(s.crit_date)})`:'—'}</td>
+      <td>${fmtMetric(s.current,esc(s.unit||''))}</td>
+      <td>${s.slope_per_day!=null?`${s.slope_per_day>0?'+':''}${fmtMetric(s.slope_per_day,esc(s.unit||''))}`:'Not available'}</td>
+      <td>${fmtMetric(s.warn_threshold,esc(s.unit||''))}</td>
+      <td>${fmtMetric(s.crit_threshold,esc(s.unit||''))}</td>
+      <td>${s.days_to_warn!=null?`~${Math.round(s.days_to_warn)}d`:'Not available'}</td>
+      <td>${s.days_to_crit!=null?`~${Math.round(s.days_to_crit)}d (${esc(s.crit_date)})`:'Not available'}</td>
       <td><span class="fcstatus ${esc(s.status)}">${esc(FC_STATUS_LABEL[s.status]||s.status)}</span></td>
-      <td>${esc(s.confidence)}</td>
+      <td>${esc(s.confidence||'Not available')}</td>
     </tr>`).join('');
-  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">Capacity outlook (next ${esc(fc.horizon_days)} days)
-      <span class="fcrisk ${esc(fc.risk)}">${esc(fc.risk.replace('_',' '))}</span>
+  return `<div class="panel full"><h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Capacity outlook (next ${esc(fc.horizon_days)} days) <span class="preview-label">Tech preview</span>
+      <span class="fcrisk ${esc(fc.risk)}">${esc(FC_RISK_LABEL[fc.risk]||'Not available')}</span>
     </h3>
     <div style="margin-bottom:8px">${esc(fc.headline)}</div>
     ${fitted.length?`<table class="sar-table"><tr><th>Signal</th><th>Today</th><th>Trend / day</th><th>Warn at</th><th>Crit at</th><th>Warn in</th><th>Critical in</th><th>Status</th><th>Confidence</th></tr>${rows}</table>`
@@ -1243,10 +1251,11 @@ async function submitSarUpload(id){
 }
 
 /* ---------------- standalone Host health view (all SAR metrics) ---------------- */
-let HOST_RANGE='24h';
+let HOST_RANGE='24h', HOST_VIEW=false, _hostSnapshot=null;
 
 async function selectHost(id,ev){
   if(ev) ev.stopPropagation();
+  HOST_VIEW=true;
   SELECTED=id; CURRENT_INSTANCE=id; renderTree();
   const encodedId=encodeURIComponent(id);
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading host view for '+esc(id)+'…</div>';
@@ -1260,9 +1269,11 @@ async function selectHost(id,ev){
 
 async function changeHostRange(r){
   HOST_RANGE=r;
-  if(!CURRENT_INSTANCE) return;
-  const ser=await fetchOptional('/api/instance/'+encodeURIComponent(CURRENT_INSTANCE)+'/sar/series?range='+encodeURIComponent(r));
-  if(ser && ser.series && ser.series.length){ destroyTrendCharts(); drawHostFullCharts(ser); }
+  if(!CURRENT_INSTANCE||!_hostSnapshot) return;
+  const id=CURRENT_INSTANCE;
+  const ser=await fetchOptional('/api/instance/'+encodeURIComponent(id)+'/sar/series?range='+encodeURIComponent(r));
+  if(CURRENT_INSTANCE!==id||HOST_RANGE!==r) return;
+  renderHostView(id,_hostSnapshot.sar,ser,_hostSnapshot.fc);
 }
 
 const HOST_METRIC_HELP={
@@ -1296,6 +1307,7 @@ function hostMetricCell(l,v){
 
 function renderHostView(id,sar,ser,fc){
   destroy();
+  _hostSnapshot={sar,fc};
   const main=document.getElementById('main');
   const backLink=`<a href="#" onclick="selectInstance(${jsArg(id)});return false" style="color:var(--accent)">← back to JVM view</a>`;
   if(!sar || !sar.health || !sar.metrics || !sar.metrics.sample_count){
@@ -1304,9 +1316,9 @@ function renderHostView(id,sar,ser,fc){
     return;
   }
   const m=sar.metrics,h=sar.health,inst=sar.instance||{};
-  const grade=['A','B','C','D','F'].includes(h.grade)?h.grade:'F';
-  const mbps=k=>((k||0)/1024).toFixed(1)+' MB/s';
-  const gb=mb=>((mb||0)/1024).toFixed(1)+' GB';
+  const grade=Dashboard.grade(h);
+  const mbps=k=>Dashboard.scaled(k,1024,' MB/s');
+  const gb=mb=>Dashboard.scaled(mb,1024,' GB');
 
   const hostSignals=fc&&fc.signals?fc.signals.filter(s=>s.kind==='host'&&s.risk!=='ok'):[];
   const trendAlerts=hostSignals.length?`<div class="alerts" style="margin:6px 0 4px">${hostSignals.map(s=>`
@@ -1315,44 +1327,45 @@ function renderHostView(id,sar,ser,fc){
     </div>`).join('')}</div>`:'';
 
   const cpuGrid=[
-    ['CPU busy',`${m.cpu_busy_pct_avg}% / ${m.cpu_busy_pct_max}%`],
-    ['CPU user / system',`${m.cpu_user_pct_avg||0}% / ${m.cpu_system_pct_avg||0}%`],
-    ['iowait',`${m.cpu_iowait_pct_avg}% / ${m.cpu_iowait_pct_max}%`],
-    ['CPU steal',`${m.cpu_steal_pct_avg||0}% / ${m.cpu_steal_pct_max||0}%`],
-    ['Load avg (1/5/15m)',`${m.load1_avg} / ${m.load5_avg||0} / ${m.load15_avg||0}`],
-    ['Run queue / blocked',`${m.runq_sz_avg||0} / ${m.blocked_avg||0}`],
-    ['Context switches',`${(m.cswch_per_s_avg||0).toLocaleString()}/s`],
-    ['New processes',`${m.proc_per_s_avg||0}/s`],
+    ['CPU busy',`${fmtMetric(m.cpu_busy_pct_avg,'%')} / ${fmtMetric(m.cpu_busy_pct_max,'%')}`],
+    ['CPU user / system',`${fmtMetric(m.cpu_user_pct_avg,'%')} / ${fmtMetric(m.cpu_system_pct_avg,'%')}`],
+    ['iowait',`${fmtMetric(m.cpu_iowait_pct_avg,'%')} / ${fmtMetric(m.cpu_iowait_pct_max,'%')}`],
+    ['CPU steal',`${fmtMetric(m.cpu_steal_pct_avg,'%')} / ${fmtMetric(m.cpu_steal_pct_max,'%')}`],
+    ['Load avg (1/5/15m)',[m.load1_avg,m.load5_avg,m.load15_avg].map(v=>fmtMetric(v)).join(' / ')],
+    ['Run queue / blocked',`${fmtMetric(m.runq_sz_avg)} / ${fmtMetric(m.blocked_avg)}`],
+    ['Context switches',fmtMetric(m.cswch_per_s_avg,'/s')],
+    ['New processes',fmtMetric(m.proc_per_s_avg,'/s')],
   ];
   const memGrid=[
-    ['Memory used',`${m.mem_used_pct_avg}% / ${m.mem_used_pct_max}%`],
+    ['Memory used',`${fmtMetric(m.mem_used_pct_avg,'%')} / ${fmtMetric(m.mem_used_pct_max,'%')}`],
     ['Memory available',gb(m.mem_avail_mb_avg)],
     ['Page cache',gb(m.mem_cached_mb_avg)],
-    ['Commit %',`${m.mem_commit_pct_avg||0}%`],
-    ['Swap used',`${m.swap_used_pct_max}% peak`],
-    ['Paging in / out',`${(m.pgpgin_kbs_avg||0).toFixed(0)} / ${(m.pgpgout_kbs_avg||0).toFixed(0)} kB/s`],
-    ['Faults / major',`${(m.fault_per_s_avg||0).toFixed(0)} / ${(m.majflt_per_s_avg||0).toFixed(1)}/s`],
-    ['Swap in / out',`${m.pswpin_per_s_avg||0} / ${m.pswpout_per_s_avg||0} pg/s`],
+    ['Commit %',fmtMetric(m.mem_commit_pct_avg,'%')],
+    ['Swap used',fmtMetric(m.swap_used_pct_max,'% peak')],
+    ['Paging in / out',`${fmtMetric(m.pgpgin_kbs_avg,' kB/s')} / ${fmtMetric(m.pgpgout_kbs_avg,' kB/s')}`],
+    ['Faults / major',`${fmtMetric(m.fault_per_s_avg,'/s')} / ${fmtMetric(m.majflt_per_s_avg,'/s')}`],
+    ['Swap in / out',`${fmtMetric(m.pswpin_per_s_avg,' pg/s')} / ${fmtMetric(m.pswpout_per_s_avg,' pg/s')}`],
   ];
   const dnGrid=[
-    ['Disk util (max)',`${m.disk_util_pct_max}%`],
-    ['Disk await (max)',`${m.disk_await_ms_max} ms`],
-    ['Disk tps',`${m.disk_tps_avg||0}/s`],
-    ['NIC util (max)',`${m.net_util_pct_max}%`],
+    ['Disk util (max)',fmtMetric(m.disk_util_pct_max,'%')],
+    ['Disk await (max)',fmtMetric(m.disk_await_ms_max,' ms')],
+    ['Disk tps',fmtMetric(m.disk_tps_avg,'/s')],
+    ['NIC util (max)',fmtMetric(m.net_util_pct_max,'%')],
     ['Net ingress / egress',`${mbps(m.net_rx_kbs_avg)} / ${mbps(m.net_tx_kbs_avg)}`],
   ];
-  const devRows=(rows,key)=>(rows||[]).map(r=>`<tr><td>${esc(r[key])}</td><td>${r.util_pct_avg}%</td><td>${r.util_pct_max}%</td></tr>`).join('');
+  const devRows=(rows,key)=>(rows||[]).map(r=>`<tr><td>${esc(r[key])}</td><td>${fmtMetric(r.util_pct_avg,'%')}</td><td>${fmtMetric(r.util_pct_max,'%')}</td></tr>`).join('');
   const f=sar.findings||{pros:[],cons:[],recommendations:[]};
 
   main.innerHTML=`
     <div class="breadcrumb">${esc(inst.region||'')} › ${esc(inst.env||'')} › ${esc(inst.cluster||'')} › <a href="#" onclick="selectInstance(${jsArg(id)});return false" style="color:var(--accent)">${esc(inst.role||'jvm')} ${esc(id)}</a> › host</div>
     <div class="ihdr">
-      <div class="grade ${grade}">${grade}</div>
+      <div class="grade ${Dashboard.gradeClass(h)}">${grade}</div>
       <div><div style="font-size:18px;font-weight:700">Host health analysis — ${esc(id)}</div>
-        <div class="muted">${esc(h.score)} / 100 · ${esc(h.status)} · OS-level view only (no GC data on this page) · ${esc(m.sample_count)} sample rows in 24h window</div></div>
+        <div class="muted">${Dashboard.score(h)} · ${esc(h.status)} · OS-level view only · ${fmtMetric(m.sample_count)} sample rows in 24h window</div></div>
       <span class="engine">${backLink}</span>
     </div>
-    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||'No host resource pressure detected.'}</div>
+    <div class="quality-band"><strong>SAR</strong> ${esc(Dashboard.qualityText(sar))}</div>
+    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||(grade==='?'?'Not available: host health cannot be assessed.':'No host threshold alerts in the available data.')}</div>
     ${trendAlerts}
     <h2>CPU &amp; scheduler (24h)</h2>
     <div class="metric-grid">${cpuGrid.map(([l,v])=>hostMetricCell(l,v)).join('')}</div>
@@ -1389,13 +1402,13 @@ function renderHostView(id,sar,ser,fc){
 
 function drawHostFullCharts(ser){
   var __dark=document.body.classList.contains('theme-dark');
-  Chart.defaults.color=__dark?'#93acc4':'#5b7287';Chart.defaults.borderColor=__dark?'#1f405e':'#dde5ee';Chart.defaults.font.family="Inter, sans-serif";
+  chartTheme();
   const s=ser.series;
   const span=s.length>1?s[s.length-1].t-s[0].t:0;
-  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toISOString().slice(11,16)):fmtDay;
   const labels=s.map(p=>lab(p.t));
   const pr=s.length===1?3:0;
-  const ln=(label,data,color,extra)=>Object.assign({label,data:data.map(v=>v||0),borderColor:color,pointRadius:pr,borderWidth:1.3,tension:.25},extra||{});
+  const ln=(label,data,color,extra)=>Object.assign({label,data:data.map(Dashboard.number),spanGaps:false,borderColor:color,pointRadius:pr,borderWidth:1.3,tension:.25},extra||{});
   const dual=(left,right,leftMax)=>({...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:Object.assign({position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:left,font:{size:9}}},leftMax?{suggestedMax:leftMax}:{}),
@@ -1426,7 +1439,7 @@ function drawHostFullCharts(ser){
     ln('mem used avg %',s.map(p=>p.mem_avg),'#00aeef',{backgroundColor:'rgba(0,174,239,.12)',fill:true,yAxisID:'y',borderWidth:1.5}),
     ln('mem used max %',s.map(p=>p.mem_max),'#2eb872',{yAxisID:'y'}),
     ln('commit %',s.map(p=>p.mem_commit_avg),'#a371f7',{yAxisID:'y'}),
-    ln('page cache GB',s.map(p=>(p.mem_cached_avg||0)/1024),'#f5a623',{yAxisID:'y1'}),
+    ln('page cache GB',s.map(p=>Dashboard.divide(p.mem_cached_avg,1024)),'#f5a623',{yAxisID:'y1'}),
   ]},options:dual('%','GB',100)});
   charts.hostPaging=new Chart(cHostPaging,{type:'line',data:{labels,datasets:[
     ln('pgpgin kB/s',s.map(p=>p.pgpgin_avg),'#00aeef',{yAxisID:'y'}),
@@ -1445,8 +1458,8 @@ function drawHostFullCharts(ser){
   ]},options:dual('% util','ms · tps',100)});
   charts.hostNet=new Chart(cHostNet,{data:{labels,datasets:[
     {type:'bar',label:'NIC util % (max)',data:s.map(p=>p.net_util_max),backgroundColor:'#00aeef',yAxisID:'y'},
-    ln('egress MB/s',s.map(p=>p.net_tx_avg/1024),'#2eb872',{type:'line',yAxisID:'y1',borderWidth:1.5}),
-    ln('ingress MB/s',s.map(p=>(p.net_rx_avg||0)/1024),'#f5a623',{type:'line',yAxisID:'y1',borderWidth:1.5}),
+    ln('egress MB/s',s.map(p=>Dashboard.divide(p.net_tx_avg,1024)),'#2eb872',{type:'line',yAxisID:'y1',borderWidth:1.5}),
+    ln('ingress MB/s',s.map(p=>Dashboard.divide(p.net_rx_avg,1024)),'#f5a623',{type:'line',yAxisID:'y1',borderWidth:1.5}),
   ]},options:dual('% util','MB/s',100)});
 }
 
@@ -1461,8 +1474,8 @@ function instanceLabel(id, nodeId){
 function ncard(n){
   return `<div class="ncard ${SC[n.status]}" onclick="selectInstance(${jsArg(n.id)})">
     <div class="nid"><span>${esc(instanceLabel(n.id, n.node_id))}</span>
-      ${n.grade?`<span class="minigrade ${n.grade}">${n.grade}</span>`:''}</div>
-    <div class="nmeta"><span>${esc(n.role)}</span><span>heap ${n.heap_after_pct!=null?n.heap_after_pct+'%':'—'}</span></div>
+      <span class="minigrade ${Dashboard.gradeClass(n)}">${Dashboard.grade(n)}</span></div>
+    <div class="nmeta"><span>${esc(n.role)}</span><span>heap ${fmtMetric(n.heap_after_pct,'%')}</span></div>
     ${n.full_gc_1h?'<div class="nmeta" style="color:var(--crit)">🔴 Full GC in last hour</div>':''}
   </div>`;
 }
@@ -1470,9 +1483,9 @@ function ncard(n){
 function hostNcard(n){
   return `<div class="ncard ${SC[n.status]}" onclick="selectHost(${jsArg(n.id)})">
     <div class="nid"><span>${esc(instanceLabel(n.id, n.node_id))}</span>
-      ${n.grade?`<span class="minigrade ${n.grade}">${n.grade}</span>`:''}</div>
-    <div class="nmeta"><span>cpu ${n.cpu_busy_pct_avg!=null?n.cpu_busy_pct_avg+'%':'—'}</span><span>mem ${n.mem_used_pct_avg!=null?n.mem_used_pct_avg+'%':'—'}</span></div>
-    <div class="nmeta"><span>disk ${n.disk_util_pct_max!=null?n.disk_util_pct_max+'%':'—'}</span><span>nic ${n.net_util_pct_max!=null?n.net_util_pct_max+'%':'—'}</span></div>
+      <span class="minigrade ${Dashboard.gradeClass(n)}">${Dashboard.grade(n)}</span></div>
+    <div class="nmeta"><span>cpu ${fmtMetric(n.cpu_busy_pct_avg,'%')}</span><span>mem ${fmtMetric(n.mem_used_pct_avg,'%')}</span></div>
+    <div class="nmeta"><span>disk ${fmtMetric(n.disk_util_pct_max,'%')}</span><span>nic ${fmtMetric(n.net_util_pct_max,'%')}</span></div>
     ${(n.swap_used_pct_max||0)>0?'<div class="nmeta" style="color:var(--crit)">swap touched</div>':''}
   </div>`;
 }
@@ -1486,7 +1499,7 @@ function renderHostOverviewSection(v){
       <span class="where">${esc(n.id)}</span>
       <span class="msg">${esc(n.reason||('grade '+n.grade))}</span>
       ${n.grade?`<span class="minigrade ${n.grade}" style="margin-left:auto">${n.grade}</span>`:''}
-    </div>`).join(''):'<div class="muted">All hosts healthy — no OS-level resource pressure. 🟢</div>';
+    </div>`).join(''):'<div class="muted">No host alerts in the available evidence. Missing or stale sources do not confirm healthy operation.</div>';
   const cell=(l,val,crit)=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v"${crit?' style="color:var(--crit)"':''}>${val}</div></div>`;
   return `
     <h2 style="margin-top:24px;display:flex;align-items:center;gap:10px">Hosts — server health (SAR)
@@ -1495,14 +1508,14 @@ function renderHostOverviewSection(v){
     </h2>
     <div class="panels"><div class="panel full"><h3>Cluster host metrics (24h)</h3>
       <div class="metric-grid">
-        ${cell('CPU busy (avg / peak node)',`${hs.cpu_busy_avg}% / ${hs.cpu_busy_peak}%`)}
-        ${cell('iowait (avg)',`${hs.iowait_avg}%`)}
-        ${cell('Memory used (avg / peak node)',`${hs.mem_used_avg}% / ${hs.mem_used_peak}%`)}
-        ${cell('Worst disk util / await',`${hs.disk_util_worst}% / ${hs.disk_await_worst} ms`)}
-        ${cell('Worst NIC util',`${hs.net_util_worst}%`)}
-        ${cell('Cluster ingress / egress',`${(hs.net_rx_total_kbs/1024).toFixed(1)} / ${(hs.net_tx_total_kbs/1024).toFixed(1)} MB/s`)}
-        ${cell('Nodes with swap touched',hs.swap_touched_nodes,hs.swap_touched_nodes>0)}
-        ${cell('Nodes with majflt storms',hs.majflt_hot_nodes,hs.majflt_hot_nodes>0)}
+        ${cell('CPU busy (avg / peak node)',`${fmtMetric(hs.cpu_busy_avg,'%')} / ${fmtMetric(hs.cpu_busy_peak,'%')}`)}
+        ${cell('iowait (avg)',fmtMetric(hs.iowait_avg,'%'))}
+        ${cell('Memory used (avg / peak node)',`${fmtMetric(hs.mem_used_avg,'%')} / ${fmtMetric(hs.mem_used_peak,'%')}`)}
+        ${cell('Worst disk util / await',`${fmtMetric(hs.disk_util_worst,'%')} / ${fmtMetric(hs.disk_await_worst,' ms')}`)}
+        ${cell('Worst NIC util',fmtMetric(hs.net_util_worst,'%'))}
+        ${cell('Cluster ingress / egress',`${Dashboard.scaled(hs.net_rx_total_kbs,1024,' MB/s')} / ${Dashboard.scaled(hs.net_tx_total_kbs,1024,' MB/s')}`)}
+        ${cell('Nodes with swap touched',fmtMetric(hs.swap_touched_nodes),hs.swap_touched_nodes>0)}
+        ${cell('Nodes with majflt storms',fmtMetric(hs.majflt_hot_nodes),hs.majflt_hot_nodes>0)}
       </div>
     </div></div>
     <div class="legend" style="margin-top:10px"><span>${dot('ok')} healthy</span><span>${dot('watch')} watch</span><span>${dot('critical')} critical</span><span class="muted">click a host card for the full SAR analysis; GC cards above open the JVM view</span></div>
@@ -1514,65 +1527,63 @@ function renderHostOverviewSection(v){
 function renderCluster(v,scaling,fc){
   destroy();
   const m=v.memory, t=v.telemetry, cfg=v.config, c=v.counts;
-  const heapRoles=Object.entries(cfg.heap_by_role).map(([r,s])=>`${r} ${s.join('/')} MB`).join(' · ');
-  const cards=[
-    {l:'Total nodes',v:c.total},
-    {l:'Healthy',v:c.healthy,cls:'ok'},
-    {l:'Unhealthy',v:c.unhealthy,cls:c.unhealthy?'crit':'ok'},
-    {l:'Cluster memory',v:`${(m.used_mb/1024).toFixed(1)}<span class="muted" style="font-size:13px"> / ${(m.total_heap_mb/1024).toFixed(0)} GB</span>`},
-    {l:'Avg heap util',v:m.avg_util_pct+'%'},
-    {l:'GC engine',v:cfg.gc_engine.join(', ')},
-  ];
+  const heapRoles=Object.entries(cfg.heap_by_role||{}).map(([r,s])=>`${esc(r)} ${s.map(esc).join('/')} MB`).join(' · ')||'Not available';
+  const brokerRows=Dashboard.brokerRows(v);
+  const qualityCounts=nodes=>['fresh','partial','stale','missing','unknown'].map(state=>[state,nodes.filter(n=>(n.quality?.state||'unknown')===state).length]).filter(([,count])=>count).map(([state,count])=>`${count} ${state==='missing'?'missing data':state}`).join(' · ')||'Not available';
   const attention=v.attention.length?v.attention.map(n=>`
     <div class="alert ${n.status==='critical'?'critical':'warning'}" onclick="selectInstance(${jsArg(n.id)})">
       <span class="sev ${n.status==='critical'?'critical':'warning'}">${n.status}</span>
       <span class="where">${esc(n.id)}</span>
       <span class="msg">${esc((n.alerts[0]&&n.alerts[0].msg)||n.reason||('grade '+n.grade))}</span>
       ${n.grade?`<span class="minigrade ${n.grade}" style="margin-left:auto">${n.grade}</span>`:''}
-    </div>`).join(''):'<div class="muted">All nodes healthy — nothing needs attention. 🟢</div>';
+    </div>`).join(''):'<div class="muted">No GC alerts in the available evidence. Missing or stale sources do not confirm healthy operation.</div>';
 
   document.getElementById('main').innerHTML=`
-    <div class="breadcrumb">${v.region} › ${v.env}</div>
+    <div class="breadcrumb">${esc(v.region)} › ${esc(v.env)}</div>
     <div class="ihdr">
       <span class="statuspill" style="background:${PILL[v.status]};color:var(--ink)">${v.status}</span>
-      <div style="font-size:18px;font-weight:700">${v.cluster} cluster</div>
+      <div style="font-size:24px;font-weight:700">${esc(v.cluster)}</div>
       <span class="muted">snapshot ${fmtTime(v.now)}</span>
     </div>
-    <div class="cards">${cards.map(x=>`<div class="card ${x.cls||''}"><div class="l">${x.l}</div><div class="v">${x.v}</div></div>`).join('')}</div>
-
+    <section class="quality-band" aria-label="Cluster source quality"><div><strong>GC sources</strong> ${qualityCounts(v.nodes)}</div><div><strong>SAR sources</strong> ${qualityCounts(v.host_nodes||[])}</div><div>Timezone <strong>UTC</strong></div></section>
+    ${Dashboard.clusterSummary(v,brokerRows)}
+    <div class="broker-table-wrap" id="brokerHealthTable"></div>
+    <p class="muted kafka-context">Kafka context: Broker request metrics not connected. Service impact not confirmed.</p>
+    <details class="detail-section"><summary>Cluster configuration &amp; telemetry</summary>
     <div class="panels">
       <div class="panel"><h3>Cluster memory</h3>
         <div class="metric-grid">
-          ${memMetric('Total heap',`${(m.total_heap_mb/1024).toFixed(0)} GB`)}
-          ${memMetric('In use (live set)',`${(m.used_mb/1024).toFixed(1)} GB`)}
-          ${memMetric('Used of heap',`${m.used_pct}%`)}
-          ${memMetric('Peak node util',`${m.peak_util_pct}%`)}
+          ${memMetric('Total heap',Dashboard.scaled(m.total_heap_mb,1024,' GB'))}
+          ${memMetric('In use (live set)',Dashboard.scaled(m.used_mb,1024,' GB'))}
+          ${memMetric('Used of heap',fmtMetric(m.used_pct,'%'))}
+          ${memMetric('Peak node util',fmtMetric(m.peak_util_pct,'%'))}
         </div>
       </div>
       <div class="panel"><h3>Java / GC configuration &amp; telemetry</h3>
         <div class="cfg">
-          ${cfgKey('GC engine')}<span>${cfg.gc_engine.join(', ')}</span>
-          ${cfgKey('GC log format')}<span>${cfg.log_format}</span>
-          ${cfgKey('Pause target')}<span>${cfg.pause_target_ms} ms (MaxGCPauseMillis)</span>
-          ${cfgKey('Avg throughput')}<span>${t.avg_throughput_pct}%</span>
-          ${cfgKey('Full GCs (1h / 24h)')}<span style="color:${t.full_gc_1h?'var(--crit)':'inherit'}">${t.full_gc_1h} / ${t.full_gc_24h}</span>
-          ${cfgKey('Worst pause (now)')}<span style="color:${t.worst_pause_ms>500?'var(--crit)':'inherit'}">${t.worst_pause_ms} ms</span>
+          ${cfgKey('GC engine')}<span>${(cfg.gc_engine||[]).map(esc).join(', ')||'Not available'}</span>
+          ${cfgKey('GC log format')}<span>${esc(cfg.log_format||'Not available')}</span>
+          ${cfgKey('Pause target')}<span>${fmtMetric(cfg.pause_target_ms,' ms')} (MaxGCPauseMillis)</span>
+          ${cfgKey('Avg throughput')}<span>${fmtMetric(t.avg_throughput_pct,'%')}</span>
+          ${cfgKey('Full GCs (1h / 24h)')}<span style="color:${t.full_gc_1h?'var(--crit)':'inherit'}">${fmtMetric(t.full_gc_1h)} / ${fmtMetric(t.full_gc_24h)}</span>
+          ${cfgKey('Worst pause (now)')}<span style="color:${t.worst_pause_ms>500?'var(--crit)':'inherit'}">${fmtMetric(t.worst_pause_ms,' ms')}</span>
           ${cfgKey('Heap sizing')}<span>${heapRoles}</span>
         </div>
       </div>
-    </div>
+    </div></details>
 
-    <h2>Nodes — current GC health</h2>
+    <h2>Other JVM components</h2>
     <div class="legend"><span>${dot('ok')} healthy</span><span>${dot('watch')} watch</span><span>${dot('critical')} critical</span><span>🔴 Full GC in last hour</span></div>
-    <div class="nodegrid">${v.nodes.map(ncard).join('')}</div>
+    <div class="nodegrid">${v.nodes.filter(n=>n.role!=='broker').map(ncard).join('')||'<span class="muted">No other JVM components configured.</span>'}</div>
 
     <h2 style="margin-top:24px">Needs attention${v.attention.length?` (${v.attention.length})`:''} — click to investigate</h2>
     <div class="alerts">${attention}</div>
 
-    ${renderHostOverviewSection(v)}
+    <details class="detail-section"><summary>Host health &amp; SAR detail</summary>${renderHostOverviewSection(v)}</details>
 
-    <h2 style="margin-top:24px">Capacity &amp; scaling</h2>
+    <h2 style="margin-top:24px">Capacity &amp; scaling <span class="preview-label">Advisory</span></h2>
     <div class="panels">${renderScalingAdvisor(scaling)}${renderForecastPanel(fc)}</div>`;
+  Dashboard.mountBrokerTable(document.getElementById('brokerHealthTable'),brokerRows);
 }
 
 /* ---------------- instance detail ---------------- */
@@ -1584,6 +1595,7 @@ async function fetchOptional(path){
 
 async function selectInstance(id,ev){
   if(ev) ev.stopPropagation();
+  HOST_VIEW=false;
   SELECTED=id; CURRENT_INSTANCE=id; renderTree();
   const encodedId = encodeURIComponent(id);
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(id)+'…</div>';
@@ -1605,26 +1617,26 @@ function renderSarSection(sar,sarSer){
       <div class="muted">No host metrics collected for this instance yet. Enable <code>sar:</code> in its cluster.yaml node entry (requires <code>sysstat</code> installed + sa1/sa2 cron on the host), or wait for the next scheduler tick.</div></div>`;
   }
   const m=sar.metrics,h=sar.health;
-  const grade=['A','B','C','D','F'].includes(h.grade)?h.grade:'F';
+  const grade=Dashboard.grade(h);
   const mc=[
-    ['CPU busy (avg/max)',`${m.cpu_busy_pct_avg}% / ${m.cpu_busy_pct_max}%`],
-    ['iowait (avg/max)',`${m.cpu_iowait_pct_avg}% / ${m.cpu_iowait_pct_max}%`],
-    ['Load avg (1m)',m.load1_avg],
-    ['Memory used (avg/max)',`${m.mem_used_pct_avg}% / ${m.mem_used_pct_max}%`],
-    ['Swap used (max)',m.swap_used_pct_max+'%'],
-    ['Disk util (max)',m.disk_util_pct_max+'%'],
-    ['Disk await (max)',m.disk_await_ms_max+' ms'],
-    ['NIC util (max)',m.net_util_pct_max+'%'],
-    ['Net egress (avg)',(m.net_tx_kbs_avg/1024).toFixed(1)+' MB/s'],
+    ['CPU busy (avg/max)',`${fmtMetric(m.cpu_busy_pct_avg,'%')} / ${fmtMetric(m.cpu_busy_pct_max,'%')}`],
+    ['iowait (avg/max)',`${fmtMetric(m.cpu_iowait_pct_avg,'%')} / ${fmtMetric(m.cpu_iowait_pct_max,'%')}`],
+    ['Load avg (1m)',fmtMetric(m.load1_avg)],
+    ['Memory used (avg/max)',`${fmtMetric(m.mem_used_pct_avg,'%')} / ${fmtMetric(m.mem_used_pct_max,'%')}`],
+    ['Swap used (max)',fmtMetric(m.swap_used_pct_max,'%')],
+    ['Disk util (max)',fmtMetric(m.disk_util_pct_max,'%')],
+    ['Disk await (max)',fmtMetric(m.disk_await_ms_max,' ms')],
+    ['NIC util (max)',fmtMetric(m.net_util_pct_max,'%')],
+    ['Net egress (avg)',Dashboard.scaled(m.net_tx_kbs_avg,1024,' MB/s')],
   ];
-  const devRows=(rows,label,key)=>(rows||[]).map(r=>`<tr><td>${esc(r[key])}</td><td>${r.util_pct_avg}%</td><td>${r.util_pct_max}%</td></tr>`).join('');
+  const devRows=(rows,label,key)=>(rows||[]).map(r=>`<tr><td>${esc(r[key])}</td><td>${fmtMetric(r.util_pct_avg,'%')}</td><td>${fmtMetric(r.util_pct_max,'%')}</td></tr>`).join('');
   return `
     <div class="ihdr" style="margin-top:18px">
-      <div class="grade ${grade}">${grade}</div>
+      <div class="grade ${Dashboard.gradeClass(h)}">${grade}</div>
       <div><div style="font-size:15px;font-weight:700">Server health (SAR) — 24h window</div>
-        <div class="muted">${esc(h.score)} / 100 · ${esc(h.status)}</div></div>
+        <div class="muted">${Dashboard.score(h)} · ${esc(h.status)}</div></div>
     </div>
-    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||'No host resource pressure detected.'}</div>
+    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||(grade==='?'?'Not available: host health cannot be assessed.':'No host threshold alerts in the available data.')}</div>
     <div class="metric-grid">${mc.map(([l,v])=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v">${v}</div></div>`).join('')}</div>
     ${sarSer&&sarSer.series&&sarSer.series.length?`<div class="panels" style="margin-top:12px">
       <div class="panel"><h3>CPU busy &amp; iowait (%)</h3><div class="chartbox"><canvas id="cSarCpu"></canvas></div></div>
@@ -1651,14 +1663,6 @@ function renderCorrelationSection(corr,anom){
   const corrRows=(corr.correlations||[]).filter(c=>c.strength!=='weak').map(c=>
     `<tr><td>${esc(c.label)}</td><td>${c.r>0?'+':''}${c.r}</td><td><span class="bnpill ${c.strength==='strong'?'host_memory':'watch'}">${c.strength}</span></td></tr>`
   ).join('') || '<tr><td colspan="3" class="muted">No moderate/strong correlations in this window.</td></tr>';
-  let anomHtml='';
-  if(anom && anom.method!=='none'){
-    const cls=anom.is_anomalous?'':'calm';
-    anomHtml=`<div style="margin-top:10px">
-      <span class="anomaly-badge ${cls}">ML Tech Preview: ${anom.is_anomalous?'unusual pattern detected':'looks normal'} (score ${anom.overall_anomaly_score}/100, ${esc(anom.method)})</span>
-      <div class="muted" style="margin-top:6px;font-size:11px">${esc(anom.notice)}</div>
-    </div>`;
-  }
   return `
     <div class="panel full"><h3 style="display:flex;align-items:center;gap:10px">GC ↔ host correlation
       <span class="verdictpill ${esc(corr.verdict)}">${esc(verdictLabel)}</span>
@@ -1666,41 +1670,45 @@ function renderCorrelationSection(corr,anom){
     </h3>
       <table class="sar-table" style="margin-bottom:10px"><tr><th>Signal pair</th><th>r</th><th>strength</th></tr>${corrRows}</table>
       <ul class="list recs">${(corr.findings||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
-      ${anomHtml}
+      <p class="muted">Association, not a confirmed cause. Kafka broker request metrics are not connected.</p>
     </div>`;
 }
 
 function renderInstance(s,tr,sar,sarSer,corr,anom,fc){
   const m=s.metrics,h=s.health,inst=s.instance;
-  const status = s.alerts.some(a=>a.severity==='critical')?'critical':(s.alerts.length||['C','D','F'].includes(h.grade))?'watch':'ok';
-  const grade = ['A','B','C','D','F'].includes(h.grade) ? h.grade : 'F';
+  const grade = Dashboard.grade(h);
+  const status = grade==='?'?'unknown':s.alerts.some(a=>a.severity==='critical')?'critical':(s.alerts.length||['C','D','F'].includes(grade))?'watch':'ok';
+  const aligned=Dashboard.alignedTimeline(tr,sarSer);
   const alertHtml=s.alerts.length?`<div class="alerts" style="margin:6px 0 4px">${s.alerts.map(a=>`
     <div class="alert ${a.severity==='critical'?'critical':'warning'}"><span class="sev ${a.severity==='critical'?'critical':'warning'}">${esc(a.severity)}</span><span class="msg">${esc(a.msg)}</span></div>`).join('')}</div>`:'';
   const mc=[
-    ['Throughput',m.throughput_pct+'%'],['Time in GC',m.pct_time_in_gc+'%'],
-    ['Avg pause',m.avg_pause_ms+' ms'],['p99 pause',m.p99_pause_ms+' ms'],['Max pause',m.max_pause_ms+' ms'],
-    ['GC freq',m.gc_per_min+'/min'],['Full GCs (24h)',m.full_count],
-    ['Heap max',m.heap_max_mb+' MB'],['Avg live set',m.avg_heap_after_pct+'%'],['Peak live set',m.peak_heap_after_pct+'%'],
-    ['Promotion trend',m.promotion_trend_pct+'%'],
+    ['Throughput',fmtMetric(m.throughput_pct,'%')],['Time in GC',fmtMetric(m.pct_time_in_gc,'%')],
+    ['Avg pause',fmtMetric(m.avg_pause_ms,' ms')],['p99 pause',fmtMetric(m.p99_pause_ms,' ms')],['Max pause',fmtMetric(m.max_pause_ms,' ms')],
+    ['GC freq',fmtMetric(m.gc_per_min,'/min')],['Full GCs (24h)',fmtMetric(m.full_count)],
+    ['Heap max',fmtMetric(m.heap_max_mb,' MB')],['Avg live set',fmtMetric(m.avg_heap_after_pct,'%')],['Peak live set',fmtMetric(m.peak_heap_after_pct,'%')],
+    ['Promotion trend',fmtMetric(m.promotion_trend_pct,'%')],
   ];
   document.getElementById('main').innerHTML=`
-    <div class="breadcrumb">${esc(inst.region)} › ${esc(inst.env)} › ${esc(inst.cluster)} › ${esc(inst.role)}</div>
+    <div class="breadcrumb">${esc(inst.region||'')} › ${esc(inst.env||'')} › <button class="table-link" onclick="selectCluster(${jsArg(inst.cluster||'')})">${esc(inst.cluster||'')}</button> › ${esc(inst.role||'JVM')}</div>
     <div class="ihdr">
-      <div class="grade ${grade}">${grade}</div>
-      <div><div style="font-size:18px;font-weight:700">${esc(inst.id)}</div>
-        <div class="muted">${esc(h.score)} / 100 · ${esc(h.status)} · heap ${esc(inst.heap_max_mb)} MB</div></div>
-      <span class="engine"><span class="dot ${SC[status]}"></span> ${esc(inst.collector)} · ${esc(inst.role)}</span>
+      <div class="grade ${Dashboard.gradeClass(h)}">${grade}</div>
+      <div><div style="font-size:24px;font-weight:700">${esc(instanceLabel(inst.id,inst.node_id))}</div>
+        <div class="muted">${Dashboard.score(h)} · ${Dashboard.healthLabel(h)} · heap ${fmtMetric(inst.heap_max_mb,' MB')}</div></div>
+      <span class="engine"><span class="dot ${SC[status]}"></span> ${esc(inst.collector||'Not available')} · ${esc(inst.role||'JVM')}</span>
     </div>
-    <div class="muted" style="margin-bottom:8px">${(h.reasons||[]).map(esc).join(' · ')||'No issues detected.'}</div>
+    ${Dashboard.qualityBand(s,sar)}
+    ${Dashboard.diagnosticSummary(s,sar,corr)}
+    <div class="range-toolbar"><label for="evidenceRange">Evidence range</label><select id="evidenceRange" class="inp" onchange="changeRange(this.value)">
+      ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===CURRENT_RANGE?' selected':''}>${r}</option>`).join('')}
+    </select><a class="table-link" href="#" onclick="selectHost(${jsArg(inst.id)});return false">Host metrics &#8594;</a></div>
+    <div class="evidence-layout"><div id="alignedEvidence">${Dashboard.timelineHtml(aligned)}</div>${Dashboard.learningSummary(anom)}</div>
     ${alertHtml}
+    <details class="detail-section" id="gcTechnical"><summary>GC details &amp; technical evidence</summary>
+    <div class="muted" style="margin:12px 0">${(h.reasons||[]).map(esc).join(' · ')||(grade==='?'?'Not available: GC health cannot be assessed.':'No GC threshold alerts in the available data.')}</div>
     <h2>Current metrics (24h window)</h2>
     <div class="metric-grid">${mc.map(([l,v])=>{const hlp=METRIC_HELP[l]||'';return `<div class="metric"${hlp?` title="${esc(hlp)}"`:''}><div class="l">${esc(l)}${hlp?'<span class="info">ⓘ</span>':''}</div><div class="v">${esc(v)}</div>${hlp?`<span class="tip">${esc(hlp)}</span>`:''}</div>`;}).join('')}</div>
     <div class="node-deep">${renderNodeDeepDive(m,tr,s)}</div>
-    <h2 style="display:flex;align-items:center;gap:12px">Trends
-      <select class="inp" style="width:auto;margin:0;text-transform:none;letter-spacing:0" onchange="changeRange(this.value)">
-        ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===CURRENT_RANGE?' selected':''}>${r}</option>`).join('')}
-      </select>
-    </h2>
+    <h2>GC trends</h2>
     <div class="panels">
       <div class="panel"><h3>Heap live set vs max (MB)</h3><div class="chartbox"><canvas id="cHeap"></canvas></div></div>
       <div class="panel"><h3>Heap utilization (%)</h3><div class="chartbox"><canvas id="cUtil"></canvas></div></div>
@@ -1713,16 +1721,23 @@ function renderInstance(s,tr,sar,sarSer,corr,anom,fc){
       <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(s.findings.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
       <div class="panel full"><h3 style="color:var(--accent)">How to improve</h3><ul class="list recs">${(s.findings.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
     </div>
-    <h2 style="margin-top:24px;display:flex;align-items:center;gap:12px">Server &amp; correlation analysis
+    </details>
+    <details class="detail-section" id="sarTechnical"><summary>Host details &amp; correlation evidence</summary>
+    <h2 style="margin-top:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">Server &amp; correlation analysis
       <a href="#" onclick="selectHost(${jsArg(inst.id)});return false" style="color:var(--accent);font-size:12px;font-weight:500">Full host health analysis (all SAR metrics) →</a>
     </h2>
     ${renderSarSection(sar,sarSer)}
-    <div class="panels" style="margin-top:12px">${renderCorrelationSection(corr,anom)}${renderCapacityOutlook(fc)}${renderSarUpload(inst.id)}</div>`;
+    <div class="panels" style="margin-top:12px">${renderCorrelationSection(corr,anom)}</div></details>
+    <div class="panels" style="margin-top:12px">${renderCapacityOutlook(fc)}${renderSarUpload(inst.id)}</div>`;
   _lastMetrics=m; _lastSeries=tr; _lastSar=sar; _lastSarSer=sarSer;
   EXPLORER_TAB='heap';
   drawTrends(tr);
   drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));
   if(sarSer && sarSer.series && sarSer.series.length) drawSarTrends(sarSer);
+  Dashboard.drawTimeline(aligned,Chart,document,charts);
+  ['gcTechnical','sarTechnical'].forEach(id=>document.getElementById(id).addEventListener('toggle',()=>{
+    [...Object.values(charts),...Object.values(nodeCharts)].forEach(c=>c.resize());
+  }));
 }
 
 function destroyTrendCharts(){Object.values(charts).forEach(c=>c.destroy());charts={};}
@@ -1735,10 +1750,10 @@ function baseOpts(){return{responsive:true,maintainAspectRatio:false,animation:f
 function drawTrends(tr){
   destroyTrendCharts();
   var __dark=document.body.classList.contains('theme-dark');
-  Chart.defaults.color=__dark?'#93acc4':'#5b7287';Chart.defaults.borderColor=__dark?'#1f405e':'#dde5ee';Chart.defaults.font.family="Inter, sans-serif";
+  chartTheme();
   const s=tr.series;
   const span=s.length>1?s[s.length-1].t-s[0].t:0;
-  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toISOString().slice(11,16)):fmtDay;
   const labels=s.map(p=>lab(p.t)),hmax=tr.heap_max_mb;
   const pr = s.length === 1 ? 3 : 0;
 
@@ -1758,7 +1773,7 @@ function drawTrends(tr){
   ]},options:baseOpts()});
 
   charts.full=new Chart(cFull,{data:{labels,datasets:[
-    {type:'bar',label:'Full GCs/day',data:s.map(p=>p.full_gc),backgroundColor:'#e5484d',yAxisID:'y'},
+    {type:'bar',label:'Full GCs / bucket',data:s.map(p=>p.full_gc),backgroundColor:'#e5484d',yAxisID:'y'},
     {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
   ]},options:{...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
@@ -1773,7 +1788,7 @@ function drawSarTrends(sarSer){
   // on the next navigation — do not re-call destroyTrendCharts() here.
   const s=sarSer.series;
   const span=s.length>1?s[s.length-1].t-s[0].t:0;
-  const lab=span<=36*3600?(ts=>new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})):fmtDay;
+  const lab=span<=36*3600?(ts=>new Date(ts*1000).toISOString().slice(11,16)):fmtDay;
   const labels=s.map(p=>lab(p.t));
   const pr = s.length === 1 ? 3 : 0;
   if(!document.getElementById('cSarCpu')) return; // host data rendered but charts not in DOM (defensive)
@@ -1801,8 +1816,8 @@ function drawSarTrends(sarSer){
 
   charts.sarNet=new Chart(cSarNet,{data:{labels,datasets:[
     {type:'bar',label:'NIC util % (max)',data:s.map(p=>p.net_util_max),backgroundColor:'#00aeef',yAxisID:'y'},
-    {type:'line',label:'egress MB/s (avg)',data:s.map(p=>p.net_tx_avg/1024),borderColor:'#2eb872',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'},
-    {type:'line',label:'ingress MB/s (avg)',data:s.map(p=>(p.net_rx_avg||0)/1024),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+    {type:'line',label:'egress MB/s (avg)',data:s.map(p=>Dashboard.divide(p.net_tx_avg,1024)),borderColor:'#2eb872',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'},
+    {type:'line',label:'ingress MB/s (avg)',data:s.map(p=>Dashboard.divide(p.net_rx_avg,1024)),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
   ]},options:{...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:{position:'left',beginAtZero:true,suggestedMax:100,ticks:{font:{size:9}},title:{display:true,text:'% util',font:{size:9}}},
@@ -2154,13 +2169,19 @@ async function collectSelectedCluster() {
   }
 }
 
+let settingsRequestToken = 0;
 async function openSettings(){
+  if (CURRENT_ROLE !== 'admin') return;
+  const token = ++settingsRequestToken;
   SELECTED='settings'; renderTree();
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading settings…</div>';
+  const current = () => token === settingsRequestToken && SELECTED === 'settings' && CURRENT_ROLE === 'admin' && document.getElementById('main') === main;
   try {
     const data = await api('/api/clusters');
+    if (!current()) return;
     renderSettingsView(data.clusters);
   } catch(e) {
+    if (!current()) return;
     main.innerHTML=`<div class="empty">Failed to load settings: ${esc(e.message)}</div>`;
   }
 }
@@ -2177,7 +2198,7 @@ function renderSettingsView(clusters) {
     <div class="breadcrumb">Admin Settings</div>
     <div style="font-size:18px; font-weight:700; margin-bottom:20px;">Cluster Management</div>
     
-    <div class="panels" style="grid-template-columns: 1fr 1fr;">
+    <div class="panels">
       <div class="panel">
         <h3>Onboarded Clusters (<span id="settingsClusterCount">${clusters.length}</span>)</h3>
         <div id="settingsClusterList" style="margin-top:12px; display:flex; flex-direction:column;">
@@ -2198,9 +2219,13 @@ function renderSettingsView(clusters) {
         </div>
       </div>
     </div>
+    ${CURRENT_ROLE === 'admin' ? '<section id="prometheus-settings" aria-labelledby="prom-title"></section>' : ''}
   `;
   
   resetOnboardForm();
+  if (CURRENT_ROLE === 'admin' && typeof PrometheusSettings !== 'undefined') {
+    PrometheusSettings.mount(document.getElementById('prometheus-settings'), {isAdmin: true, isCurrent: () => SELECTED === 'settings' && CURRENT_ROLE === 'admin'});
+  }
 }
 
 async function refreshSettingsClusters() {
@@ -2356,8 +2381,10 @@ async function executeClusterDeletion() {
     const r = await fetch('/api/clusters/' + encodeURIComponent(cluster), {method: 'DELETE'});
     if (r.ok) {
       closeDeleteConfirmModal();
-      const data = await api('/api/clusters');
-      renderSettingsView(data.clusters);
+      if (SELECTED === 'settings') {
+        if (SELECTED_CLUSTER === cluster || EDITING_CLUSTER === cluster) resetOnboardForm();
+        await refreshSettingsClusters();
+      }
       load();
     } else {
       const d = await r.json().catch(() => ({}));
@@ -2383,11 +2410,11 @@ async function load(){
     if (SELECTED === 'settings') {
       await refreshSettingsClusters();
     } else if (SELECTED === 'ml-preview') {
-      renderMlPreview();
+      await refreshLearningPreview(CURRENT_INSTANCE);
     } else if (SELECTED && SELECTED.startsWith('cluster:')) {
       selectCluster(SELECTED.slice(8));
     } else if (SELECTED) {
-      selectInstance(SELECTED);
+      if(HOST_VIEW) selectHost(SELECTED); else selectInstance(SELECTED);
     } else {
       renderFleet();
     }
@@ -2439,6 +2466,16 @@ async function changeRange(r){
   drawTrends(tr);
   drawNodeAnalyticsCharts(tr, pauseBucketsFromSeries(tr.series));
   if(sarSer && sarSer.series && sarSer.series.length) drawSarTrends(sarSer);
+  const evidence=document.getElementById('alignedEvidence');
+  if(evidence){
+    const aligned=Dashboard.alignedTimeline(tr,sarSer);
+    evidence.innerHTML=Dashboard.timelineHtml(aligned);
+    Dashboard.drawTimeline(aligned,Chart,document,charts);
+  }
+}
+if(typeof __STATIC__!=='undefined'){
+  document.getElementById('analyzeLogsBtn').disabled=true;
+  document.getElementById('analyzeLogsBtn').title='Read-only export';
 }
 boot();
 </script>

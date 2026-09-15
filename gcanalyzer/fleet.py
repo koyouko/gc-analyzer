@@ -20,20 +20,31 @@ STATUS_RANK = {"unknown": 0, "ok": 1, "watch": 2, "critical": 3}
 
 
 def _instance_status(health: dict | None, alerts: list[dict]) -> str:
-    if health is None:
-        return "unknown"
-    if any(a["severity"] == "critical" for a in alerts):
-        return "critical"
-    grade = health["grade"]
-    if grade in ("D", "F"):
+    grade = (health or {}).get("grade")
+    if any(a["severity"] == "critical" for a in alerts) or grade in ("D", "F"):
         return "critical"
     if any(a["severity"] == "warning" for a in alerts) or grade == "C":
         return "watch"
+    if grade not in ("A", "B"):
+        return "unknown"
     return "ok"
 
 
 def _worse(a: str, b: str) -> str:
     return a if STATUS_RANK[a] >= STATUS_RANK[b] else b
+
+
+def _rollup(statuses) -> str:
+    values = set(statuses)
+    for status in ("critical", "watch", "unknown"):
+        if status in values:
+            return status
+    return "ok" if values else "unknown"
+
+
+def _observed_count(rows, column="full_gc_count"):
+    values = [r[column] for r in rows if isinstance(r.get(column), (int, float))]
+    return sum(values) if values else None
 
 
 # Deterministic display ordering. Known regions/envs/groups keep the demo's
@@ -72,32 +83,28 @@ def _skeleton_from_store(insts: dict) -> dict:
 
 
 def build_fleet(c, now: int = None) -> dict:
-    now = now or store.now_ts(c)
+    now = store.now_ts(c) if now is None else now
     insts = {i["id"]: i for i in store.list_instances(c)}
 
     # Compute per-instance status once.
     inst_status: dict[str, dict] = {}
     for iid, inst in insts.items():
-        last = store.latest_row(c, iid, now)
-        if not last:
-            inst_status[iid] = {"status": "unknown", "alerts": [], "grade": None, "score": None,
-                                "heap_after_pct": None, "max_pause_ms": None, "full_gc": 0}
-            continue
-        day = store.window_rows(c, iid, now - 86400, now)
-        if not day and last:
-            day = [last]
-        from . import analyzer
-        m = store._metrics_dict_from_window(day, inst["heap_max_mb"])
-        health = analyzer.score_health(m)
-        alerts = store.evaluate_alerts(c, iid, now)
+        snap = store.current_snapshot(c, iid, now) or {}
+        quality = snap.get("quality", {"state": "missing"})
+        health = snap.get("health") or {"grade": "?", "score": None}
+        alerts = snap.get("alerts", [])
+        last = snap.get("latest") or {}
+        if quality["state"] in ("missing", "stale", "unknown"):
+            last = {}
         inst_status[iid] = {
             "status": _instance_status(health, alerts),
             "alerts": alerts,
             "grade": health["grade"],
             "score": health["score"],
-            "heap_after_pct": last["heap_after_pct"],
-            "max_pause_ms": last["pause_max_ms"],
-            "full_gc_1h": sum(r["full_gc_count"] for r in store.window_rows(c, iid, now - 3600, now)),
+            "heap_after_pct": last.get("heap_after_pct"),
+            "max_pause_ms": last.get("pause_max_ms"),
+            "quality": quality,
+            "full_gc_1h": _observed_count(store.window_rows(c, iid, now - 3600, now)),
         }
 
     # Assemble the tree from the instances actually in the store, layering
@@ -141,9 +148,10 @@ def build_fleet(c, now: int = None) -> dict:
                             "max_pause_ms": st["max_pause_ms"],
                             "full_gc_1h": st.get("full_gc_1h", 0),
                             "alerts": st["alerts"],
+                            "quality": st["quality"],
                         })
                         fleet_counts[st["status"]] = fleet_counts.get(st["status"], 0) + 1
-                    cluster_status = _worse(cluster_status, group_status)
+                    group_status = _rollup(n["status"] for n in ginsts)
                     groups.append({
                         "group": gkey,
                         "label": topology.GROUP_LABEL.get(gkey, gkey),
@@ -151,7 +159,7 @@ def build_fleet(c, now: int = None) -> dict:
                         "count": len(ginsts),
                         "instances": ginsts,
                     })
-                env_status = _worse(env_status, cluster_status)
+                cluster_status = _rollup(g["status"] for g in groups)
                 env_alerts += cluster_alerts
                 clusters.append({
                     "cluster": ckey,
@@ -160,14 +168,14 @@ def build_fleet(c, now: int = None) -> dict:
                     "groups": groups,
                 })
             
-            region_status = _worse(region_status, env_status)
+            env_status = _rollup(cl["status"] for cl in clusters)
             envs.append({
                 "env": env_key,
                 "status": env_status,
                 "alert_count": env_alerts,
                 "clusters": clusters,
             })
-        fleet_status = _worse(fleet_status, region_status)
+        region_status = _rollup(e["status"] for e in envs)
         regions.append({"region": region_key, "status": region_status, "envs": envs})
 
     # Flat list of current critical/warning alerts across the fleet.
@@ -180,7 +188,7 @@ def build_fleet(c, now: int = None) -> dict:
 
     return {
         "now": now,
-        "fleet_status": fleet_status,
+        "fleet_status": _rollup(r["status"] for r in regions),
         "counts": fleet_counts,
         "total_instances": len(insts),
         "active_alerts": active,
@@ -191,7 +199,7 @@ def build_fleet(c, now: int = None) -> dict:
 def _host_status(host_health: dict | None) -> str:
     """Host-side analog of _instance_status — driven purely by the SAR
     resource-pressure grade (hosts have no last-hour alert stream)."""
-    if not host_health or host_health.get("grade") is None:
+    if not host_health or host_health.get("grade") not in ("A", "B", "C", "D", "F"):
         return "unknown"
     grade = host_health["grade"]
     if grade in ("D", "F"):
@@ -213,7 +221,7 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     """
     from . import analyzer
 
-    now = now or store.now_ts(c)
+    now = store.now_ts(c) if now is None else now
     insts = [i for i in store.list_instances(c) if i["cluster"] == cluster]
     if not insts:
         return None
@@ -228,7 +236,10 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     disk_util_worst = disk_await_worst = net_util_worst = 0.0
     rx_total = tx_total = 0.0
     swap_touched = majflt_hot = 0
-    full_1h_total = full_24h_total = 0
+    host_available = set()
+    observed_heap = []
+    observed_pauses = []
+    full_1h_counts, full_24h_counts = [], []
     worst_pause = 0.0
     collectors = set()
     heap_by_role: dict[str, set] = {}
@@ -236,13 +247,13 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     host_status_counts = {"ok": 0, "watch": 0, "critical": 0, "unknown": 0}
 
     for inst in insts:
-        last = store.latest_row(c, inst["id"], now)
+        snap = store.current_snapshot(c, inst["id"], now) or {}
+        quality = snap.get("quality", {"state": "missing"})
+        last = snap.get("latest") if quality["state"] not in ("missing", "stale", "unknown") else None
         day = store.window_rows(c, inst["id"], now - 86400, now)
-        if not day and last:
-            day = [last]
-        m = store._metrics_dict_from_window(day, inst["heap_max_mb"])
-        health = analyzer.score_health(m) if m else None
-        alerts = store.evaluate_alerts(c, inst["id"], now)
+        m = snap.get("metrics") or {}
+        health = snap.get("health")
+        alerts = snap.get("alerts", [])
         status = _instance_status(health, alerts)
         status_counts[status] += 1
         if status in ("critical", "watch"):
@@ -253,15 +264,22 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
         collectors.add(inst["collector"])
         total_heap += inst["heap_max_mb"]
         heap_by_role.setdefault(inst["role"], set()).add(inst["heap_max_mb"])
-        full_1h = sum(r["full_gc_count"] for r in store.window_rows(c, inst["id"], now - 3600, now))
-        full_24h = int(sum(r["full_gc_count"] for r in day))
-        full_1h_total += full_1h
-        full_24h_total += full_24h
+        full_1h = _observed_count(store.window_rows(c, inst["id"], now - 3600, now))
+        full_24h = _observed_count(day)
+        if full_1h is not None:
+            full_1h_counts.append(full_1h)
+        if full_24h is not None:
+            full_24h_counts.append(full_24h)
         if last:
-            total_used += last["heap_used_mb"]
-            util_vals.append(last["heap_after_pct"])
-            worst_pause = max(worst_pause, last["pause_max_ms"])
-        if m:
+            if last.get("heap_used_mb") is not None:
+                total_used += last["heap_used_mb"]
+                observed_heap.append(last["heap_used_mb"])
+            if last.get("heap_after_pct") is not None:
+                util_vals.append(last["heap_after_pct"])
+            if m.get("max_pause_ms") is not None:
+                observed_pauses.append(m["max_pause_ms"])
+                worst_pause = max(worst_pause, m["max_pause_ms"])
+        if m.get("throughput_pct") is not None and quality["state"] not in ("missing", "stale", "unknown"):
             thru_vals.append(m["throughput_pct"])
 
         nodes.append({
@@ -274,9 +292,11 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
             "score": health["score"] if health else None,
             "heap_after_pct": last["heap_after_pct"] if last else None,
             "heap_max_mb": inst["heap_max_mb"],
-            "max_pause_ms": last["pause_max_ms"] if last else None,
+            "max_pause_ms": m.get("max_pause_ms") if last else None,
             "full_gc_1h": full_1h,
             "alerts": alerts,
+            "quality": quality,
+            "last_observed_at": quality.get("last_observed_at"),
             "reason": (health["reasons"][0] if health and health["reasons"] else
                        (alerts[0]["msg"] if alerts else "")),
         })
@@ -284,6 +304,9 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
         # --- host (SAR) side of the same node --------------------------------
         host_snap = store.current_host_snapshot(c, inst["id"], now) or {}
         hm = host_snap.get("metrics") or {}
+        host_quality = host_snap.get("quality", {"state": "missing"})
+        if host_quality["state"] in ("missing", "stale", "unknown"):
+            hm = {}
         hh = host_snap.get("health")
         h_status = _host_status(hh) if hm.get("sample_count") else "unknown"
         host_status_counts[h_status] += 1
@@ -292,9 +315,13 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
         elif h_status == "ok":
             host_healthy += 1
         if hm.get("sample_count"):
-            cpu_vals.append(hm.get("cpu_busy_pct_avg") or 0.0)
-            mem_vals.append(hm.get("mem_used_pct_avg") or 0.0)
-            iowait_vals.append(hm.get("cpu_iowait_pct_avg") or 0.0)
+            host_available.update(key for key, value in hm.items() if value is not None)
+            if hm.get("cpu_busy_pct_avg") is not None:
+                cpu_vals.append(hm["cpu_busy_pct_avg"])
+            if hm.get("mem_used_pct_avg") is not None:
+                mem_vals.append(hm["mem_used_pct_avg"])
+            if hm.get("cpu_iowait_pct_avg") is not None:
+                iowait_vals.append(hm["cpu_iowait_pct_avg"])
             disk_util_worst = max(disk_util_worst, hm.get("disk_util_pct_max") or 0.0)
             disk_await_worst = max(disk_await_worst, hm.get("disk_await_ms_max") or 0.0)
             net_util_worst = max(net_util_worst, hm.get("net_util_pct_max") or 0.0)
@@ -316,9 +343,12 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
             "mem_used_pct_avg": hm.get("mem_used_pct_avg"),
             "swap_used_pct_max": hm.get("swap_used_pct_max"),
             "disk_util_pct_max": hm.get("disk_util_pct_max"),
+            "disk_await_ms_max": hm.get("disk_await_ms_max"),
             "net_util_pct_max": hm.get("net_util_pct_max"),
             "reason": (hh["reasons"][0] if hh and hh.get("reasons") else ""),
             "has_data": bool(hm.get("sample_count")),
+            "quality": host_quality,
+            "last_observed_at": host_quality.get("last_observed_at"),
         })
 
     nodes.sort(key=lambda n: (-STATUS_RANK[n["status"]], n["score"] if n["score"] is not None else 999))
@@ -330,22 +360,21 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     # Do NOT parse the cluster name — names like "demo" have no "-" and would crash.
     region = insts[0]["region"]
     env = insts[0]["env"]
-    cluster_status = "unknown"
-    for n in nodes:
-        cluster_status = _worse(cluster_status, n["status"])
+    cluster_status = _rollup(n["status"] for n in nodes)
 
     memory = {
         "total_heap_mb": round(total_heap, 0),
-        "used_mb": round(total_used, 0),
-        "used_pct": round(total_used / total_heap * 100, 1) if total_heap else 0.0,
-        "avg_util_pct": round(statistics.fmean(util_vals), 1) if util_vals else 0.0,
-        "peak_util_pct": round(max(util_vals), 1) if util_vals else 0.0,
+        "used_mb": round(total_used, 0) if observed_heap else None,
+        "used_pct": round(total_used / total_heap * 100, 1) if total_heap and len(observed_heap) == len(insts) else None,
+        "avg_util_pct": round(statistics.fmean(util_vals), 1) if util_vals else None,
+        "peak_util_pct": round(max(util_vals), 1) if util_vals else None,
+        "nodes_observed": len(observed_heap),
     }
     telemetry = {
-        "avg_throughput_pct": round(statistics.fmean(thru_vals), 2) if thru_vals else 0.0,
-        "full_gc_1h": full_1h_total,
-        "full_gc_24h": full_24h_total,
-        "worst_pause_ms": round(worst_pause, 0),
+        "avg_throughput_pct": round(statistics.fmean(thru_vals), 2) if thru_vals else None,
+        "full_gc_1h": sum(full_1h_counts) if full_1h_counts else None,
+        "full_gc_24h": sum(full_24h_counts) if full_24h_counts else None,
+        "worst_pause_ms": round(worst_pause, 0) if observed_pauses else None,
     }
     config = {
         "gc_engine": sorted(collectors),
@@ -355,23 +384,21 @@ def build_cluster(c, cluster: str, now: int = None) -> dict | None:
     }
 
     host_summary = {
-        "n_with_data": len(cpu_vals),
-        "cpu_busy_avg": round(statistics.fmean(cpu_vals), 1) if cpu_vals else 0.0,
-        "cpu_busy_peak": round(max(cpu_vals), 1) if cpu_vals else 0.0,
-        "iowait_avg": round(statistics.fmean(iowait_vals), 1) if iowait_vals else 0.0,
-        "mem_used_avg": round(statistics.fmean(mem_vals), 1) if mem_vals else 0.0,
-        "mem_used_peak": round(max(mem_vals), 1) if mem_vals else 0.0,
-        "disk_util_worst": round(disk_util_worst, 1),
-        "disk_await_worst": round(disk_await_worst, 1),
-        "net_util_worst": round(net_util_worst, 1),
-        "net_rx_total_kbs": round(rx_total, 1),
-        "net_tx_total_kbs": round(tx_total, 1),
+        "n_with_data": sum(n["has_data"] for n in host_nodes),
+        "cpu_busy_avg": round(statistics.fmean(cpu_vals), 1) if cpu_vals else None,
+        "cpu_busy_peak": round(max(cpu_vals), 1) if cpu_vals else None,
+        "iowait_avg": round(statistics.fmean(iowait_vals), 1) if iowait_vals else None,
+        "mem_used_avg": round(statistics.fmean(mem_vals), 1) if mem_vals else None,
+        "mem_used_peak": round(max(mem_vals), 1) if mem_vals else None,
+        "disk_util_worst": round(disk_util_worst, 1) if "disk_util_pct_max" in host_available else None,
+        "disk_await_worst": round(disk_await_worst, 1) if "disk_await_ms_max" in host_available else None,
+        "net_util_worst": round(net_util_worst, 1) if "net_util_pct_max" in host_available else None,
+        "net_rx_total_kbs": round(rx_total, 1) if "net_rx_kbs_avg" in host_available else None,
+        "net_tx_total_kbs": round(tx_total, 1) if "net_tx_kbs_avg" in host_available else None,
         "swap_touched_nodes": swap_touched,
         "majflt_hot_nodes": majflt_hot,
     }
-    host_cluster_status = "unknown"
-    for n in host_nodes:
-        host_cluster_status = _worse(host_cluster_status, n["status"])
+    host_cluster_status = _rollup(n["status"] for n in host_nodes)
 
     return {
         "cluster": cluster,

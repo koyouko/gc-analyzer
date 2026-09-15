@@ -32,6 +32,15 @@ def test_manage_app_avoids_empty_array_expansion_under_nounset():
     assert "Log file was not created:" in script
 
 
+def test_start_is_offline_and_does_not_seed_demo_data():
+    script = _read("manage-app.sh")
+    start = script.split("start_app() {", 1)[1].split("stop_app() {", 1)[0]
+    assert "seed_demo_history" not in start
+    assert "ensure_venv" not in start
+    assert "check_runtime" in start
+    assert 'json.load(response).get("ok") is not True' in script
+
+
 def test_legacy_launchers_delegate_to_manage_app():
     run_sh = _read("run.sh")
     start_local = _read("start-local.command")

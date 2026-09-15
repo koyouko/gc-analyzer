@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "base_url": "http://prometheus.example:9090",
+  "authentication": "none",
+  "timeout_seconds": 5,
+  "scrape_interval_seconds": 60,
+  "filters": {
+    "job": [],
+    "region": ["emea", "amer", "apac"],
+    "tier": ["dev", "uat", "prod", "sandbox", "stage"],
+    "infra": ["icp", "phy"],
+    "az": [],
+    "service": ["kafka", "connect", "registry", "zookeeper"],
+    "instance": []
+  },
+  "service_roles": {
+    "kafka": "broker",
+    "connect": "connect",
+    "registry": "schema-registry",
+    "zookeeper": "zookeeper"
+  }
+}
