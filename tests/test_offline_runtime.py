@@ -76,6 +76,7 @@ def test_rpm_closure_is_verified_without_the_resolver_installed_packages():
     assert '--installroot=/rpm-closure' in script
     assert '--network none' in script
     assert 'rpm --root /rpm-closure --initdb' in script
+    assert '--arch=x86_64,noarch' in script
 
 
 def test_build_ownership_repair_does_not_touch_frozen_git_objects():

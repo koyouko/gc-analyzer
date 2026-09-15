@@ -40,7 +40,7 @@ with at least **4 GiB RAM** is recommended for the frontend production build.
 | PyYAML | 6.0.3 |
 | scikit-learn | 1.9.0, with NumPy, SciPy and all transitive wheels |
 | Node.js / npm | 22.22.3 / bundled npm 10 |
-| Next.js | 16.3.0 |
+| Next.js | 16.3.5 |
 | React / React DOM | 19.2.8 |
 | Chart.js | 4.5.1 for the optional Next client; the dashboard's vendor asset is also local |
 | OS packages | Python, certificates, networking/archive tools, service-account tools, systemd, DNF, C++ runtime and their RPM dependency closure |

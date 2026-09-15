@@ -886,8 +886,8 @@ repair_build_ownership
     assert "HOST_UID=1234" in docker_arguments
     assert "HOST_GID=5678" in docker_arguments
     assert "sha256:frozen-ubi" in docker_arguments
-    assert '-path "$SNAPSHOT_PATH" -prune' in docker_arguments
-    assert '-exec chown "$HOST_UID:$HOST_GID" {} +' in docker_arguments
+    assert '-path "$SNAPSHOT_PATH" -prune' in "\n".join(docker_arguments)
+    assert '-exec chown "$HOST_UID:$HOST_GID" {} +' in "\n".join(docker_arguments)
 
 
 @pytest.mark.parametrize(

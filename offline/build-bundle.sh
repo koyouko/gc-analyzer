@@ -477,6 +477,7 @@ download_rpms() {
             mapfile -t packages < /src/offline/rhel8-packages.txt
             ((${#packages[@]} > 0))
             dnf download --resolve --alldeps \
+                --arch=x86_64,noarch \
                 --destdir /bundle/rpms "${packages[@]}"
             find /bundle/rpms -maxdepth 1 -type f -name "*.rpm" -print -quit \
                 | grep -q .
