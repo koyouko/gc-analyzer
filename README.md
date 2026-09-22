@@ -31,10 +31,14 @@ percentiles, Full-GC detection, heap occupancy, tuning advice) but runs
 
 ## Running The App
 
-**Air-gapped RHEL 8.10 x86_64:** use the self-contained
-[offline deployment package](offline/README.md). It includes the Python/Node
-runtimes, Python wheels, frontend npm cache and local RPM dependencies. Install
-with `sudo bash offline/deploy.sh`; no separate dependency downloads are needed.
+**Production & Enterprise Deployment:** For online deployment or deployments pulling from enterprise package repositories (**Sonatype Nexus**, **JFrog Artifactory**), use `install.sh`:
+
+```bash
+sudo bash install.sh
+```
+See the complete [Enterprise Deployment Guide](DEPLOYMENT.md) for custom repository flags, pip/npm proxies, and corporate SSL setup.
+
+**Air-gapped RHEL 8.10 x86_64:** For strict offline environments, see the [offline deployment guide](offline/README.md).
 
 Use `manage-app.sh` as the single control surface for local setup, deployment,
 startup, shutdown, status, and logs:

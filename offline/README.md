@@ -1,5 +1,7 @@
 # RHEL 8 Offline Deployment
 
+> **Note for the `online-install` branch**: This branch removes the ~372 MiB pre-bundled binary archives to keep the Git repository lightweight. To deploy on servers with internet or internal repository (Nexus / Artifactory) access, use `sudo bash install.sh` as documented in [DEPLOYMENT.md](../DEPLOYMENT.md). Pre-bundled air-gapped binary archives remain available on the `main` branch.
+
 Target: **RHEL 8.10, x86_64**, with a normal Minimal Install OS and root access.
 No internet, Docker, Git, Node.js, application Python, pip, npm, compiler, or
 manual application dependency installation is needed on the target.

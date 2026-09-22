@@ -1,5 +1,7 @@
 # Offline Release Verification
 
+> **Note**: On the `online-install` branch, the binary payload parts are excluded from Git to allow lightweight cloning and dynamic dependency resolution from the internet or enterprise repositories (Nexus / Artifactory). The verified offline payload remains tracked on `main`.
+
 Qualification date: **2026-09-14**.
 
 Target: **RHEL 8.10 x86_64**, normal Minimal Install OS, root access, local RPM

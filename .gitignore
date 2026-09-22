@@ -33,6 +33,8 @@ web/*.tsbuildinfo
 gcanalyzer-*.log
 gcanalyzer-*.pid
 
-# Offline bundle build outputs
+# Offline bundle build outputs and release binaries
 offline/dist/
 offline/work/
+offline/releases/
+*.part-[0-9][0-9][0-9][0-9]

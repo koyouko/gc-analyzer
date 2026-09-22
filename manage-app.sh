@@ -69,6 +69,8 @@ Environment:
   GC_HOST=0.0.0.0     Bind host, defaults to 127.0.0.1.
   GC_PORT=8083        Default port.
   GC_DB=gc_live.db    Default SQLite DB path.
+  PIP_INDEX_URL       Custom PyPI index URL (e.g. Nexus/Artifactory).
+  PIP_TRUSTED_HOST    Host to trust for pip SSL verification.
 EOF
 }
 
@@ -114,7 +116,21 @@ ensure_venv() {
   fi
 
   echo "Installing Python dependencies..."
-  .venv/bin/python -m pip install --quiet -r requirements.txt
+  local extra_pip=()
+  if [ -n "${PIP_INDEX_URL:-}" ]; then
+    extra_pip+=(--index-url "$PIP_INDEX_URL")
+  fi
+  if [ -n "${PIP_EXTRA_INDEX_URL:-}" ]; then
+    extra_pip+=(--extra-index-url "$PIP_EXTRA_INDEX_URL")
+  fi
+  if [ -n "${PIP_TRUSTED_HOST:-}" ]; then
+    extra_pip+=(--trusted-host "$PIP_TRUSTED_HOST")
+  fi
+  if [ "${#extra_pip[@]}" -gt 0 ]; then
+    .venv/bin/python -m pip install --quiet "${extra_pip[@]}" -r requirements.txt
+  else
+    .venv/bin/python -m pip install --quiet -r requirements.txt
+  fi
 }
 
 python_bin() {
