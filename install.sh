@@ -48,6 +48,7 @@ NPM_REGISTRY="${NPM_CONFIG_REGISTRY:-${NPM_REGISTRY:-}}"
 SKIP_OS_PACKAGES=0
 SKIP_FRONTEND=0
 START_SERVICES=1
+SKIP_SYSTEMD=0
 
 log_info() {
     printf '\033[1;34m[INFO]\033[0m %s\n' "$1"
@@ -83,6 +84,8 @@ Options:
   --config-dir <PATH>          Configuration directory (default: /etc/gc-analyzer)
   --skip-os-packages           Do not attempt to install OS packages via dnf/yum/apt
   --skip-frontend              Skip Next.js frontend build (backend-only mode)
+  --systemd                    Install systemd units (default when running as root)
+  --skip-systemd               Do not create or enable systemd service units
   --no-start                   Do not start systemd services immediately after install
   -h, --help                   Display this help message
 
@@ -133,6 +136,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-frontend)
             SKIP_FRONTEND=1
+            shift
+            ;;
+        --systemd)
+            SKIP_SYSTEMD=0
+            shift
+            ;;
+        --skip-systemd)
+            SKIP_SYSTEMD=1
             shift
             ;;
         --no-start)
@@ -387,7 +398,7 @@ if [[ "$IS_ROOT" -eq 1 ]]; then
 fi
 
 # 10. Systemd Service Setup
-if [[ "$IS_ROOT" -eq 1 && -d "$SYSTEMD_UNIT_ROOT" ]] && command -v systemctl >/dev/null 2>&1; then
+if [[ "$IS_ROOT" -eq 1 && "$SKIP_SYSTEMD" -eq 0 && -d "$SYSTEMD_UNIT_ROOT" ]] && command -v systemctl >/dev/null 2>&1; then
     log_info "Installing systemd service units..."
     
     # Backend unit
