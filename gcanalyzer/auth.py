@@ -84,9 +84,40 @@ def find_user(name: str) -> dict | None:
     return next((u for u in load_users() if u["user"] == name), None)
 
 
+_DUMMY_HASH = hash_password("timing-guard-placeholder-secret", "0123456789abcdef0123456789abcdef")
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_RATE_LIMIT_WINDOW_S = 60.0
+_RATE_LIMIT_MAX_ATTEMPTS = 12
+
+
+def check_login_rate_limit(client_key: str) -> bool:
+    """Return True if client_key is within allowed login attempt rate."""
+    now = time.monotonic()
+    recent = [t for t in _LOGIN_FAILURES.get(client_key, []) if now - t < _RATE_LIMIT_WINDOW_S]
+    if recent:
+        _LOGIN_FAILURES[client_key] = recent
+    else:
+        _LOGIN_FAILURES.pop(client_key, None)
+    return len(recent) < _RATE_LIMIT_MAX_ATTEMPTS
+
+
+def record_login_failure(client_key: str) -> None:
+    now = time.monotonic()
+    recent = [t for t in _LOGIN_FAILURES.get(client_key, []) if now - t < _RATE_LIMIT_WINDOW_S]
+    recent.append(now)
+    _LOGIN_FAILURES[client_key] = recent
+
+
+def clear_login_failures(client_key: str) -> None:
+    _LOGIN_FAILURES.pop(client_key, None)
+
+
 def authenticate(name: str, password: str) -> dict | None:
     u = find_user(name)
-    if u and verify_password(password, u["pw_hash"]):
+    if not u:
+        verify_password(password, _DUMMY_HASH)
+        return None
+    if verify_password(password, u["pw_hash"]):
         return u
     return None
 

@@ -53,7 +53,7 @@ from pydantic import BaseModel
 
 from . import (
     store, fleet, ingest as ingest_mod, config as config_mod, auth, scheduler,
-    sar_ingest, correlate, scaling_advisor, ml_insights, forecast as forecast_mod,
+    sar_ingest, kafka_ingest, correlate, scaling_advisor, ml_insights, forecast as forecast_mod,
     investigations, prometheus_settings,
 )
 
@@ -97,12 +97,16 @@ async def _auth_guard(request: Request, call_next):
         ) or (
             path.startswith("/api/jobs/") and request.method == "POST" and path.endswith("/cancel")
         ) or (
-            request.method == "POST" and path.endswith("/sar/upload")
+            request.method == "POST" and (path.endswith("/sar/upload") or path.endswith("/kafka/logs") or path == "/api/ml/train")
         )
         if (admin_write or path.startswith("/api/settings/prometheus")) and sess["role"] != "admin":
             return JSONResponse({"detail": "admin role required"}, status_code=403)
         request.state.user = sess
-    return await call_next(request)
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return resp
 
 
 def _prometheus_error(exc):
@@ -643,6 +647,18 @@ async def run_onboard_job(job_id: str, nodes: list, db_path: str, region: str, e
         except Exception as exc:
             log_cb(f"SAR collection failed (GC results unaffected): {exc}")
 
+        # Kafka 2.8.1 & ZooKeeper JMX/Prometheus + operational log pass
+        log_cb(f"Collecting Kafka 2.8.1 & ZooKeeper logs/metrics for {len(nodes)} node(s)...")
+        try:
+            kafka_results = await asyncio.to_thread(
+                kafka_ingest.ingest_kafka_nodes, nodes, db_path, cluster, None, log_cb,
+                lambda: _job_cancelled(job_id),
+            )
+            k_ok = sum(1 for r in kafka_results if r.recorded)
+            log_cb(f"Kafka/ZK collection: {k_ok}/{len(kafka_results)} node(s) recorded metrics/logs.")
+        except Exception as exc:
+            log_cb(f"Kafka/ZK collection warning (GC results unaffected): {exc}")
+
         nodes_recorded = sum(1 for r in results if r.recorded)
         if nodes_recorded == 0:
             JOBS[job_id]["status"] = "failed"
@@ -856,10 +872,15 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/login")
-def login(req: LoginRequest, response: Response) -> dict:
+def login(req: LoginRequest, request: Request, response: Response) -> dict:
+    client_key = f"{request.client.host if request.client else 'local'}:{req.user}"
+    if not auth.check_login_rate_limit(client_key):
+        raise HTTPException(429, "Too many failed login attempts. Please wait 60 seconds.")
     u = auth.authenticate(req.user, req.password)
     if not u:
+        auth.record_login_failure(client_key)
         raise HTTPException(401, "Invalid username or password")
+    auth.clear_login_failures(client_key)
     token = auth.make_session(u["user"], u["role"])
     response.set_cookie("gc_session", token, httponly=True, samesite="lax",
                         max_age=auth.SESSION_TTL_S)
@@ -912,6 +933,97 @@ def get_range_series(instance_id: str, range: str = "24h") -> dict:
         data = store.range_series(c, instance_id, now - window, now, _bucket_for(window))
     data["range"] = range
     return data
+
+
+# --------------------------------------------------------------------------- #
+# Real-Time Active Alerter (Host CPU/Memory/Disk Damage + Kafka URP + ZK + GC)
+# --------------------------------------------------------------------------- #
+@app.get("/api/alerts/realtime")
+def get_realtime_alerts(cluster: str | None = None) -> dict:
+    with store.connect() as c:
+        return store.evaluate_realtime_alerts(c, cluster=cluster)
+
+
+# --------------------------------------------------------------------------- #
+# Kafka 2.8.1 & ZooKeeper Metrics + Operational Log Analysis Endpoints
+# --------------------------------------------------------------------------- #
+@app.get("/api/cluster/{cluster}/kafka")
+def get_cluster_kafka(cluster: str) -> dict:
+    with store.connect() as c:
+        view = store.cluster_kafka_overview(c, cluster)
+    if not view:
+        raise HTTPException(404, f"Unknown cluster: {cluster}")
+    return view
+
+
+@app.get("/api/instance/{instance_id}/kafka")
+def get_instance_kafka(instance_id: str) -> dict:
+    with store.connect() as c:
+        snap = store.current_kafka_snapshot(c, instance_id)
+    if not snap:
+        raise HTTPException(404, f"Unknown instance: {instance_id}")
+    return snap
+
+
+@app.get("/api/instance/{instance_id}/kafka/series")
+def get_instance_kafka_series(instance_id: str, range: str = "24h") -> dict:
+    window = _RANGES.get(range)
+    if window is None:
+        raise HTTPException(400, f"Unknown range '{range}'. Options: {', '.join(_RANGES)}")
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        now = store.now_ts(c)
+        data = store.kafka_range_series(c, instance_id, now - window, now, _bucket_for(window))
+    data["range"] = range
+    return data
+
+
+class KafkaLogUploadRequest(BaseModel):
+    content: str
+    role: str | None = None
+
+
+@app.post("/api/instance/{instance_id}/kafka/logs")
+def upload_kafka_logs(instance_id: str, req: KafkaLogUploadRequest) -> dict:
+    """Admin-only: ingest pasted/uploaded Kafka 2.8.1 (`server.log`, `controller.log`,
+    `state-change.log`) or ZooKeeper (`zookeeper.log`, `zookeeper.out`) log text."""
+    with store.connect() as c:
+        inst = store.get_instance(c, instance_id)
+        if not inst:
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        role = req.role or inst.get("role", "broker")
+    result = kafka_ingest.ingest_kafka_log_text(req.content, instance_id, store.DB_PATH, role=role)
+    if not result["recorded"]:
+        raise HTTPException(400, result["detail"])
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# ML Ensemble Training & TypeSafe Jev + Local Open-Source LLM Diagnostics
+# --------------------------------------------------------------------------- #
+class MlTrainRequest(BaseModel):
+    cluster: str | None = None
+    instance_id: str | None = None
+    days: int = 30
+
+
+@app.post("/api/ml/train")
+def train_ml_models(req: MlTrainRequest) -> dict:
+    with store.connect() as c:
+        if req.instance_id:
+            if not store.get_instance(c, req.instance_id):
+                raise HTTPException(404, f"Unknown instance: {req.instance_id}")
+            return ml_insights.train_instance_model(c, req.instance_id, days=req.days)
+        return ml_insights.train_cluster_models(c, cluster=req.cluster, days=req.days)
+
+
+@app.get("/api/ml/diagnose/{instance_id}")
+def diagnose_instance_ai(instance_id: str, model: str | None = None) -> dict:
+    with store.connect() as c:
+        if not store.get_instance(c, instance_id):
+            raise HTTPException(404, f"Unknown instance: {instance_id}")
+        return ml_insights.diagnose_with_local_llm(c, instance_id, model=model)
 
 
 def main() -> None:

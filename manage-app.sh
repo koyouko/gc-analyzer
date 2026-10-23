@@ -166,8 +166,10 @@ PY
     return 0
   fi
 
-  echo "Seeding 30 days of demo history into $db..."
+  echo "Seeding 30 days of demo history (JVM GC + Host SAR + Kafka 2.8.1 & ZooKeeper) into $db..."
   "$py" -m seed.seed_history
+  "$py" -m seed.seed_sar_history
+  "$py" -m seed.seed_kafka_history
 }
 
 check_runtime() {

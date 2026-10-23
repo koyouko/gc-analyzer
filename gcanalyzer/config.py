@@ -59,6 +59,11 @@ def parse_cluster(raw: dict) -> tuple[str, list[NodeConfig], str | None, str | N
                 sar_bin=sar.get("sar_bin", "sar"),
                 sadf_bin=sar.get("sadf_bin", "sadf"),
                 sar_local_path=sar.get("local_path"),
+                kafka_log_paths=merged.get("kafka_log_paths", []),
+                kafka_local_paths=merged.get("kafka_local_paths", []),
+                prometheus_url=merged.get("prometheus_url") or raw.get("prometheus_url"),
+                jmx_exporter_url=merged.get("jmx_exporter_url"),
+                kafka_version=str(merged.get("kafka_version", raw.get("kafka_version", "2.8.1"))),
             )
         )
     return cluster_name, nodes, region, env

@@ -567,6 +567,68 @@
     color: var(--ink);
     border-color: var(--accent);
   }
+  .rt-banner {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 22px;
+    background: linear-gradient(90deg, rgba(210, 45, 45, 0.16) 0%, rgba(199, 119, 0, 0.12) 100%);
+    border-bottom: 1px solid var(--crit);
+    font-size: 12px;
+  }
+  body.authenticated .rt-banner.active {
+    display: flex;
+  }
+  .rt-pulse {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--crit);
+    box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.7);
+    animation: rtPulse 1.6s infinite;
+    flex: none;
+  }
+  @keyframes rtPulse {
+    0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.7); }
+    70% { box-shadow: 0 0 0 8px rgba(229, 72, 77, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); }
+  }
+  .layer-pill {
+    font-size: 9.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    color: #fff;
+  }
+  .layer-pill.host { background: #db6d28; }
+  .layer-pill.kafka { background: #00aeef; }
+  .layer-pill.zookeeper { background: #a371f7; }
+  .layer-pill.jvm { background: #e5484d; }
+  .jev-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .jev-card {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .jev-prim {
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(0, 174, 239, 0.18);
+    color: var(--accent);
+  }
 </style>
 <link rel="stylesheet" href="/assets/dashboard.css">
 <link rel="stylesheet" href="/assets/prometheus-settings.css">
@@ -579,6 +641,8 @@
   </div>
   <div class="right">
     <button class="btn" id="analyzeLogsBtn" onclick="openInvestigation()">Analyze logs</button>
+    <button class="btn ghost" id="kafkaDashBtn" onclick="openKafkaDashboard()" title="Dedicated Kafka 2.8.1 & ZooKeeper Metrics Dashboard" style="display:none">Kafka &amp; ZK</button>
+    <button class="btn ghost" id="rtAlertsBtn" onclick="toggleRtAlertsPanel()" title="Real-time Host CPU/Mem, Kafka URP & ZooKeeper Alerter" style="position:relative;display:none">Live Alerts <span id="rtAlertsBadge" class="badge" style="display:none;background:var(--crit)">0</span></button>
     <span class="muted" id="whoami" style="font-size:11px"></span>
     <span class="statuspill" id="fleetPill">—</span>
     <button class="btn ghost" id="mlPreviewBtn" onclick="openMlPreview()" title="ML Tech Preview" style="display:none">ML Preview</button>
@@ -589,6 +653,10 @@
     <button class="btn ghost" id="logoutBtn" onclick="logout()" style="display:none">Log out</button>
   </div>
 </header>
+<div id="rtAlertBanner" class="rt-banner">
+  <div style="display:flex;align-items:center;gap:10px;overflow:hidden;flex:1" id="rtAlertBannerText"></div>
+  <button class="btn ghost" style="padding:4px 10px;font-size:11px;flex:none" onclick="toggleRtAlertsPanel(true)">View All Alerts</button>
+</div>
 
 <div class="layout">
   <div class="sidebar" id="sidebar"></div>
@@ -596,6 +664,16 @@
 </div>
 
 <!-- Onboarding modal removed (onboarding migrated to Settings page) -->
+
+<div id="rtAlertsPanel" class="jobs-panel" style="display:none;width:420px">
+  <div class="jobs-panel-header">
+    <h3>Real-Time Active Alerter (Host · Kafka · ZK · JVM)</h3>
+    <button class="close-btn" onclick="toggleRtAlertsPanel(false)">×</button>
+  </div>
+  <div class="jobs-panel-content" id="rtAlertsList">
+    <div class="muted" style="text-align:center;padding:40px 0">Scanning real-time telemetry…</div>
+  </div>
+</div>
 
 <div id="jobsPanel" class="jobs-panel" style="display:none">
   <div class="jobs-panel-header">
@@ -1081,15 +1159,82 @@ async function openMlPreview(){
   await refreshLearningPreview(CURRENT_INSTANCE);
 }
 
+let _lastAiDiag=null;
 async function refreshLearningPreview(id){
   CURRENT_INSTANCE=id||null;
-  if(!id){renderMlPreview(null);return;}
+  if(!id){renderMlPreview(null,null);return;}
   document.getElementById('main').innerHTML='<div class="empty">Loading model status...</div>';
-  const anomaly=await fetchOptional('/api/instance/'+encodeURIComponent(id)+'/anomalies');
-  if(SELECTED==='ml-preview'&&CURRENT_INSTANCE===id) renderMlPreview(anomaly);
+  const [anomaly,aiDiag]=await Promise.all([
+    fetchOptional('/api/instance/'+encodeURIComponent(id)+'/anomalies'),
+    fetchOptional('/api/ml/diagnose/'+encodeURIComponent(id)),
+  ]);
+  _lastAiDiag=aiDiag;
+  if(SELECTED==='ml-preview'&&CURRENT_INSTANCE===id) renderMlPreview(anomaly,aiDiag);
 }
 
-function renderMlPreview(anomaly){
+async function triggerMlTraining(){
+  const statusEl=document.getElementById('mlTrainStatus');
+  if(statusEl) statusEl.textContent='Training ensemble models (Isolation Forest + LOF + EWMA + Robust Z-Score)…';
+  try{
+    const r=await fetch('/api/ml/train',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({instance_id:CURRENT_INSTANCE||null,days:30}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+    if(statusEl) statusEl.textContent=d.trained?`Trained ${d.instance_id} (${d.sample_count} hrs · ${d.features_trained} features · score ${d.anomaly_score}/100)`:`Trained ${d.instances_trained}/${d.instances_total} instances across fleet.`;
+    if(CURRENT_INSTANCE) await refreshLearningPreview(CURRENT_INSTANCE);
+  }catch(e){
+    if(statusEl) statusEl.textContent='Training error: '+e.message;
+  }
+}
+
+function renderJevAndLlmPanel(aiDiag){
+  if(!aiDiag || !aiDiag.jev || !aiDiag.jev.judgments) return '';
+  const j=aiDiag.jev.judgments;
+  const rc=j.primary_root_cause||{};
+  const act=j.recommended_remediation||{};
+  const sc=j.operational_risk_score||{};
+  const urp=j.urp_cascade_risk||{};
+  const zk=j.zk_session_expiry_risk||{};
+  const host=j.host_hardware_damage_risk||{};
+  return `
+    <div class="panel full" style="margin-top:14px">
+      <h3 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        TypeSafe Jev (System One) &amp; Local Open-Source LLM Diagnostics
+        <span class="jev-prim">${esc(aiDiag.jev.engine||'TypeSafe Jev')}</span>
+        <span class="muted" style="font-size:11px;font-weight:400">${esc(aiDiag.provider||'')}</span>
+      </h3>
+      <div class="jev-grid">
+        <div class="jev-card">
+          <div style="display:flex;justify-content:space-between;align-items:center"><span class="l muted">Root Cause Judgment</span><span class="jev-prim">Choice</span></div>
+          <div style="font-size:14px;font-weight:700;margin-top:6px">${esc((rc.answer||'nominal').replace(/_/g,' '))}</div>
+          <div class="muted" style="font-size:11px;margin-top:3px">Calibrated confidence: ${fmtMetric(rc.confidence!=null?Math.round(rc.confidence*100):null,'%')}</div>
+        </div>
+        <div class="jev-card">
+          <div style="display:flex;justify-content:space-between;align-items:center"><span class="l muted">Remediation Action</span><span class="jev-prim">Choice</span></div>
+          <div style="font-size:14px;font-weight:700;margin-top:6px">${esc((act.answer||'none').replace(/_/g,' '))}</div>
+          <div class="muted" style="font-size:11px;margin-top:3px">Confidence: ${fmtMetric(act.confidence!=null?Math.round(act.confidence*100):null,'%')}</div>
+        </div>
+        <div class="jev-card">
+          <div style="display:flex;justify-content:space-between;align-items:center"><span class="l muted">Operational Risk</span><span class="jev-prim">Score</span></div>
+          <div style="font-size:18px;font-weight:700;margin-top:4px;color:${(sc.score||0)>=70?'var(--crit)':(sc.score||0)>=40?'var(--watch)':'var(--ok)'}">${fmtMetric(sc.score,' / 100')}</div>
+          <div class="muted" style="font-size:11px;margin-top:3px">Level ${esc(sc.level??0)} / 3</div>
+        </div>
+        <div class="jev-card">
+          <div style="display:flex;justify-content:space-between;align-items:center"><span class="l muted">Cascade Noul Primitives</span><span class="jev-prim">Noul</span></div>
+          <div style="font-size:11px;margin-top:6px;line-height:1.5">
+            URP Cascade: <b>${fmtMetric(urp.probability!=null?Math.round(urp.probability*100):null,'%')}</b><br>
+            ZK Expiry: <b>${fmtMetric(zk.probability!=null?Math.round(zk.probability*100):null,'%')}</b><br>
+            Host Damage: <b>${fmtMetric(host.probability!=null?Math.round(host.probability*100):null,'%')}</b>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:12px;background:var(--panel2);border-left:3px solid var(--accent);padding:10px 14px;border-radius:6px;white-space:pre-wrap;font-size:12px;line-height:1.55">${esc(aiDiag.narrative||'')}</div>
+    </div>`;
+}
+
+function renderMlPreview(anomaly, aiDiag){
   destroy();
   const snapshot=FLEET?`snapshot ${fmtTime(FLEET.now)}`:'waiting for fleet snapshot';
   const instances=(FLEET?.regions||[]).flatMap(r=>r.envs.flatMap(e=>e.clusters.flatMap(c=>c.groups.flatMap(g=>g.instances))));
@@ -1100,17 +1245,30 @@ function renderMlPreview(anomaly){
     'Scores describe unusual observations, not the probability of an incident',
     'Capacity forecasts are separate advisory estimates',
   ];
+  const isAdmin=(typeof CURRENT_ROLE!=='undefined')&&CURRENT_ROLE==='admin';
+  const ewma=anomaly&&anomaly.ewma_drift&&anomaly.ewma_drift.top_drifts?anomaly.ewma_drift.top_drifts:[];
+  const lof=anomaly&&anomaly.lof?anomaly.lof:null;
+  const ensembleHtml=(ewma.length||lof)?`<div class="panel full" style="margin-top:12px">
+    <h3>Multivariate Ensemble Details (Isolation Forest · Local Outlier Factor · EWMA Drift)</h3>
+    <div class="muted" style="margin-bottom:8px">Methods active: ${esc((anomaly.methods||[]).join(', '))} ${lof?`· LOF score: ${fmtMetric(lof.overall_anomaly_score,' / 100')} (${lof.n_flagged||0} flagged hrs)`:''}</div>
+    ${ewma.length?`<table class="sar-table"><tr><th>Feature</th><th>Baseline EWMA</th><th>Recent EWMA</th><th>Drift (σ)</th><th>Status</th></tr>
+      ${ewma.map(d=>`<tr><td>${esc(d.feature)}</td><td>${fmtMetric(d.baseline_ewma)}</td><td>${fmtMetric(d.recent_ewma)}</td><td>${fmtMetric(d.drift_sigma,'σ')}</td><td>${d.drifting?'<span class="sev warning">drifting</span>':'<span class="muted">stable</span>'}</td></tr>`).join('')}</table>`:''}
+  </div>`:'';
   document.getElementById('main').innerHTML=`
     <div class="breadcrumb">Technology Preview · ${snapshot}</div>
     <div class="ihdr">
       <span class="statuspill" style="background:var(--watch);color:var(--ink)">preview</span>
       <div style="font-size:18px;font-weight:700">ML Tech Preview</div>
       <span class="muted">Actual model status</span>
+      ${isAdmin?`<button class="btn" style="margin-left:auto" onclick="triggerMlTraining()">Train Ensemble Models</button>`:''}
+      <span id="mlTrainStatus" class="muted" style="font-size:11px"></span>
     </div>
     <div class="range-toolbar"><label for="learningInstance">Component</label><select id="learningInstance" class="inp" onchange="refreshLearningPreview(this.value)">
       <option value="">No component selected</option>${instances.map(i=>`<option value="${esc(i.id)}"${i.id===CURRENT_INSTANCE?' selected':''}>${esc(i.id)}</option>`).join('')}
     </select></div>
     ${Dashboard.learningSummary(anomaly,false)}
+    ${ensembleHtml}
+    ${renderJevAndLlmPanel(aiDiag)}
     <section class="aligned-evidence"><h2>Model scope</h2><ul class="list">${guardrails.map(g=>`<li>${esc(g)}</li>`).join('')}</ul></section>`;
 }
 
@@ -1120,12 +1278,13 @@ async function selectCluster(cluster){
   SELECTED='cluster:'+cluster; renderTree();
   const main=document.getElementById('main'); main.innerHTML='<div class="empty">Loading '+esc(cluster)+'…</div>';
   try{
-    const [v,scaling,fc]=await Promise.all([
+    const [v,scaling,fc,kafka]=await Promise.all([
       api('/api/cluster/'+encodeURIComponent(cluster)),
       fetchOptional('/api/cluster/'+encodeURIComponent(cluster)+'/scaling?role=broker'),
       fetchOptional('/api/cluster/'+encodeURIComponent(cluster)+'/forecast?role=broker'),
+      fetchOptional('/api/cluster/'+encodeURIComponent(cluster)+'/kafka'),
     ]);
-    renderCluster(v,scaling,fc);
+    renderCluster(v,scaling,fc,kafka);
   }catch(e){ main.innerHTML=`<div class="empty">Failed: ${esc(e.message)}</div>`; }
 }
 
@@ -1524,7 +1683,46 @@ function renderHostOverviewSection(v){
     <div class="alerts">${attention}</div>`;
 }
 
-function renderCluster(v,scaling,fc){
+function renderClusterKafkaSection(kv, clusterName){
+  if(!kv || !kv.summary) return '';
+  const ks=kv.summary;
+  const cell=(l,val,crit)=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v"${crit?' style="color:var(--crit)"':''}>${val}</div></div>`;
+  const kNodes=(kv.nodes||[]).map(n=>`<div class="ncard ${SC[n.status]||'unknown'}" onclick="selectKafkaInstance(${jsArg(n.id)})">
+    <div class="nid"><span>${esc(instanceLabel(n.id, n.node_id))}</span>
+      <span class="minigrade ${n.grade&&n.grade!=='?'?n.grade:'unknown'}">${esc(n.grade||'?')}</span></div>
+    <div class="nmeta"><span>${esc(n.role)}</span><span>${n.role==='zookeeper'?`lat ${fmtMetric(n.zk_avg_latency_ms,' ms')}`:`URP ${fmtMetric(n.urp)}`}</span></div>
+    <div class="nmeta"><span>${n.role==='zookeeper'?`state ${esc(n.zk_server_state||'—')}`:`idle ${fmtMetric(n.request_handler_idle_pct,'%')}`}</span><span>${n.role==='zookeeper'?`fsync ${fmtMetric(n.zk_fsync_warnings)}`:`p99 ${fmtMetric(n.produce_p99_ms,' ms')}`}</span></div>
+  </div>`).join('');
+  const logs=(kv.recent_log_events||[]).slice(0,6).map(ev=>`
+    <div class="alert ${ev.severity==='critical'?'critical':'warning'}" onclick="selectKafkaInstance(${jsArg(ev.instance_id)})">
+      <span class="sev ${ev.severity==='critical'?'critical':'warning'}">${esc(ev.level)}</span>
+      <span class="where">${esc(ev.instance_id)}</span>
+      <span class="msg">[${esc(ev.category)}] ${esc(ev.summary)}</span>
+    </div>`).join('');
+  return `
+    <h2 style="margin-top:24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">Kafka 2.8.1 &amp; ZooKeeper Metrics (JMX / Prometheus &amp; Operational Logs)
+      <span class="statuspill" style="background:${PILL[kv.status||'unknown']};color:var(--ink);font-size:11px">${esc(kv.status||'unknown')}</span>
+      <span class="engine">${esc(kv.consensus||'ZOOKEEPER')} · Kafka ${esc(kv.kafka_version||'2.8.1')}</span>
+      <button class="btn ghost" style="margin-left:auto;padding:4px 10px;font-size:11px" onclick="selectKafkaCluster(${jsArg(clusterName)})">Open Dedicated Kafka &amp; ZK Dashboard →</button>
+    </h2>
+    <div class="panels"><div class="panel full"><h3>Cluster Kafka 2.8.1 &amp; ZooKeeper Health (Real-Time)</h3>
+      <div class="metric-grid">
+        ${cell('Under-Replicated (URP)',fmtMetric(ks.total_urp),(ks.total_urp||0)>0)}
+        ${cell('Offline Partitions',fmtMetric(ks.total_offline_partitions),(ks.total_offline_partitions||0)>0)}
+        ${cell('Active Controllers',`${fmtMetric(ks.active_controllers)} (${esc(ks.active_controller_id||'none')})`,ks.active_controllers!==1)}
+        ${cell('Messages In / sec',fmtMetric(ks.messages_in_per_sec,'/s'))}
+        ${cell('Bytes In / Out',`${Dashboard.scaled(ks.bytes_in_per_sec,1048576,' MB/s')} / ${Dashboard.scaled(ks.bytes_out_per_sec,1048576,' MB/s')}`)}
+        ${cell('Worst Produce p99',fmtMetric(ks.worst_produce_p99_ms,' ms'),(ks.worst_produce_p99_ms||0)>=150)}
+        ${cell('Worst Req Handler Idle',fmtMetric(ks.worst_request_idle_pct,'%'),(ks.worst_request_idle_pct??100)<25)}
+        ${cell('ZK Leader / Latency',`${esc(ks.zk_leader_id||'—')} · ${fmtMetric(ks.worst_zk_latency_ms,' ms')}`,(ks.worst_zk_latency_ms||0)>=25)}
+        ${cell('ZK WAL fsync / Expired',`${fmtMetric(ks.total_zk_fsync_warnings)} / ${fmtMetric(ks.total_zk_session_expires)}`,(ks.total_zk_fsync_warnings||0)>0||(ks.total_zk_session_expires||0)>0)}
+      </div>
+    </div></div>
+    <div class="nodegrid" style="margin-top:10px">${kNodes}</div>
+    ${logs?`<h2 style="margin-top:18px">Recent Kafka &amp; ZooKeeper Log Events (server.log · controller.log · zookeeper.log)</h2><div class="alerts">${logs}</div>`:''}`;
+}
+
+function renderCluster(v,scaling,fc,kafka){
   destroy();
   const m=v.memory, t=v.telemetry, cfg=v.config, c=v.counts;
   const heapRoles=Object.entries(cfg.heap_by_role||{}).map(([r,s])=>`${esc(r)} ${s.map(esc).join('/')} MB`).join(' · ')||'Not available';
@@ -1544,11 +1742,13 @@ function renderCluster(v,scaling,fc){
       <span class="statuspill" style="background:${PILL[v.status]};color:var(--ink)">${v.status}</span>
       <div style="font-size:24px;font-weight:700">${esc(v.cluster)}</div>
       <span class="muted">snapshot ${fmtTime(v.now)}</span>
+      <button class="btn ghost" style="margin-left:auto" onclick="selectKafkaCluster(${jsArg(v.cluster)})">Kafka 2.8.1 &amp; ZK Dashboard →</button>
     </div>
     <section class="quality-band" aria-label="Cluster source quality"><div><strong>GC sources</strong> ${qualityCounts(v.nodes)}</div><div><strong>SAR sources</strong> ${qualityCounts(v.host_nodes||[])}</div><div>Timezone <strong>UTC</strong></div></section>
     ${Dashboard.clusterSummary(v,brokerRows)}
     <div class="broker-table-wrap" id="brokerHealthTable"></div>
     <p class="muted kafka-context">Kafka context: Broker request metrics not connected. Service impact not confirmed.</p>
+    ${renderClusterKafkaSection(kafka, v.cluster)}
     <details class="detail-section"><summary>Cluster configuration &amp; telemetry</summary>
     <div class="panels">
       <div class="panel"><h3>Cluster memory</h3>
@@ -1700,7 +1900,8 @@ function renderInstance(s,tr,sar,sarSer,corr,anom,fc){
     ${Dashboard.diagnosticSummary(s,sar,corr)}
     <div class="range-toolbar"><label for="evidenceRange">Evidence range</label><select id="evidenceRange" class="inp" onchange="changeRange(this.value)">
       ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===CURRENT_RANGE?' selected':''}>${r}</option>`).join('')}
-    </select><a class="table-link" href="#" onclick="selectHost(${jsArg(inst.id)});return false">Host metrics &#8594;</a></div>
+    </select><a class="table-link" href="#" onclick="selectHost(${jsArg(inst.id)});return false">Host metrics &#8594;</a>
+    <a class="table-link" href="#" onclick="selectKafkaInstance(${jsArg(inst.id)});return false" style="margin-left:10px">Kafka 2.8.1 &amp; ZK metrics &#8594;</a></div>
     <div class="evidence-layout"><div id="alignedEvidence">${Dashboard.timelineHtml(aligned)}</div>${Dashboard.learningSummary(anom)}</div>
     ${alertHtml}
     <details class="detail-section" id="gcTechnical"><summary>GC details &amp; technical evidence</summary>
@@ -1747,6 +1948,16 @@ function baseOpts(){return{responsive:true,maintainAspectRatio:false,animation:f
   plugins:{legend:{labels:{boxWidth:11,font:{size:10}}}},
   scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{ticks:{font:{size:9}}}}};}
 
+function ewmaSmooth(vals, alpha=0.28){
+  let acc=null;
+  return (vals||[]).map(v=>{
+    const n=Dashboard.number(v);
+    if(n===null) return null;
+    acc = acc===null ? n : (alpha*n + (1-alpha)*acc);
+    return Math.round(acc*100)/100;
+  });
+}
+
 function drawTrends(tr){
   destroyTrendCharts();
   var __dark=document.body.classList.contains('theme-dark');
@@ -1758,23 +1969,26 @@ function drawTrends(tr){
   const pr = s.length === 1 ? 3 : 0;
 
   charts.heap=new Chart(cHeap,{type:'line',data:{labels,datasets:[
-    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#2eb872',backgroundColor:'rgba(46,184,114,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25},
-    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#00aeef',pointRadius:pr,borderWidth:1,tension:.25},
+    {label:'avg live set',data:s.map(p=>p.heap_used_avg),borderColor:'#2eb872',backgroundColor:'rgba(46,184,114,.12)',fill:true,pointRadius:pr,borderWidth:1.5,tension:.38,cubicInterpolationMode:'monotone'},
+    {label:'smooth trend (EWMA)',data:ewmaSmooth(s.map(p=>p.heap_used_avg)),borderColor:'#a371f7',borderDash:[4,3],pointRadius:0,borderWidth:1.5,tension:.42,cubicInterpolationMode:'monotone'},
+    {label:'peak live set',data:s.map(p=>p.heap_used_max),borderColor:'#00aeef',pointRadius:pr,borderWidth:1.1,tension:.36,cubicInterpolationMode:'monotone'},
     {label:'heap max',data:s.map(()=>hmax),borderColor:'#93acc4',borderDash:[5,4],pointRadius:pr,borderWidth:1}
   ]},options:baseOpts()});
 
   charts.util=new Chart(cUtil,{type:'line',data:{labels,datasets:[
-    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#f5a623',backgroundColor:'rgba(245,166,35,.12)',fill:true,pointRadius:pr,borderWidth:1.4,tension:.25}
+    {label:'live set % of heap',data:s.map(p=>p.heap_after_pct_avg),borderColor:'#f5a623',backgroundColor:'rgba(245,166,35,.12)',fill:true,pointRadius:pr,borderWidth:1.5,tension:.38,cubicInterpolationMode:'monotone'},
+    {label:'smooth trend (EWMA)',data:ewmaSmooth(s.map(p=>p.heap_after_pct_avg)),borderColor:'#00aeef',borderDash:[4,3],pointRadius:0,borderWidth:1.4,tension:.42,cubicInterpolationMode:'monotone'}
   ]},options:{...baseOpts(),scales:{...baseOpts().scales,y:{suggestedMax:100,ticks:{font:{size:9}}}}}});
 
   charts.pause=new Chart(cPause,{type:'line',data:{labels,datasets:[
-    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#00aeef',pointRadius:pr,borderWidth:1.3,tension:.25},
-    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#e5484d',backgroundColor:'rgba(229,72,77,.10)',fill:true,pointRadius:pr,borderWidth:1.3,tension:.25}
+    {label:'p99',data:s.map(p=>p.pause_p99_max),borderColor:'#00aeef',pointRadius:pr,borderWidth:1.4,tension:.38,cubicInterpolationMode:'monotone'},
+    {label:'p99 smooth trend',data:ewmaSmooth(s.map(p=>p.pause_p99_max)),borderColor:'#2eb872',borderDash:[4,3],pointRadius:0,borderWidth:1.4,tension:.42,cubicInterpolationMode:'monotone'},
+    {label:'max',data:s.map(p=>p.pause_max),borderColor:'#e5484d',backgroundColor:'rgba(229,72,77,.10)',fill:true,pointRadius:pr,borderWidth:1.3,tension:.36,cubicInterpolationMode:'monotone'}
   ]},options:baseOpts()});
 
   charts.full=new Chart(cFull,{data:{labels,datasets:[
     {type:'bar',label:'Full GCs / bucket',data:s.map(p=>p.full_gc),backgroundColor:'#e5484d',yAxisID:'y'},
-    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.4,tension:.25,yAxisID:'y1'}
+    {type:'line',label:'time in GC %',data:s.map(p=>p.time_in_gc_avg),borderColor:'#f5a623',pointRadius:pr,borderWidth:1.5,tension:.38,cubicInterpolationMode:'monotone',yAxisID:'y1'}
   ]},options:{...baseOpts(),scales:{
     x:{ticks:{maxTicksLimit:8,font:{size:9}}},
     y:{position:'left',beginAtZero:true,ticks:{font:{size:9}},title:{display:true,text:'Full GCs',font:{size:9}}},
@@ -2398,6 +2612,351 @@ async function executeClusterDeletion() {
   }
 }
 
+/* ---------------- Dedicated Kafka 2.8.1 & ZooKeeper Metrics Dashboard ---------------- */
+let KAFKA_RANGE='24h', _kafkaInstSnap=null;
+
+async function openKafkaDashboard(){
+  let defaultCluster='DEMO-ZK';
+  if(SELECTED && SELECTED.startsWith('cluster:')) defaultCluster=SELECTED.slice(8);
+  else if(SELECTED && SELECTED.startsWith('kafka-cluster:')) defaultCluster=SELECTED.slice(14);
+  else if(CURRENT_INSTANCE && CURRENT_INSTANCE.includes('--')) defaultCluster=CURRENT_INSTANCE.split('--')[0];
+  await selectKafkaCluster(defaultCluster);
+}
+
+async function selectKafkaCluster(cluster){
+  CURRENT_INSTANCE=null;
+  SELECTED='kafka-cluster:'+cluster;
+  if(FLEET) renderTree();
+  const main=document.getElementById('main');
+  main.innerHTML='<div class="empty">Loading Kafka 2.8.1 &amp; ZooKeeper dashboard for '+esc(cluster)+'…</div>';
+  try{
+    const kv=await api('/api/cluster/'+encodeURIComponent(cluster)+'/kafka');
+    renderKafkaClusterView(kv);
+  }catch(e){
+    main.innerHTML=`<div class="empty">Failed to load Kafka dashboard: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderKafkaClusterView(kv){
+  destroy();
+  const ks=kv.summary||{};
+  const clusters=((FLEET&&FLEET.regions)||[]).flatMap(r=>r.envs.flatMap(e=>e.clusters.map(c=>c.cluster)));
+  const cell=(l,val,crit)=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v"${crit?' style="color:var(--crit)"':''}>${val}</div></div>`;
+  const rows=(kv.nodes||[]).map(n=>`<tr style="cursor:pointer" onclick="selectKafkaInstance(${jsArg(n.id)})">
+    <td><b>${esc(instanceLabel(n.id,n.node_id))}</b></td>
+    <td><span class="role-tag">${esc(n.role)}</span></td>
+    <td><span class="minigrade ${n.grade&&n.grade!=='?'?n.grade:'unknown'}">${esc(n.grade||'?')}</span></td>
+    <td style="color:${(n.urp||0)>0?'var(--crit)':'inherit'};font-weight:${(n.urp||0)>0?700:400}">${fmtMetric(n.urp)}</td>
+    <td>${fmtMetric(n.offline_partitions)}</td>
+    <td>${n.active_controller?'<span class="sev warning">ACTIVE CTRL</span>':'—'}</td>
+    <td>${fmtMetric(n.isr_shrinks_per_sec,'/s')}</td>
+    <td>${fmtMetric(n.messages_in_per_sec,'/s')}</td>
+    <td>${fmtMetric(n.request_handler_idle_pct,'%')}</td>
+    <td>${fmtMetric(n.produce_p99_ms,' ms')}</td>
+    <td>${n.role==='zookeeper'?`${esc(n.zk_server_state||'—')} · ${fmtMetric(n.zk_avg_latency_ms,' ms')} (fsync:${fmtMetric(n.zk_fsync_warnings)})`:'—'}</td>
+  </tr>`).join('');
+  const logHtml=(kv.recent_log_events||[]).map(ev=>`
+    <div class="alert ${ev.severity==='critical'?'critical':'warning'}" onclick="selectKafkaInstance(${jsArg(ev.instance_id)})">
+      <span class="sev ${ev.severity==='critical'?'critical':'warning'}">${esc(ev.level)}</span>
+      <span class="where">${esc(ev.instance_id)}</span>
+      <span class="msg">[${esc(ev.category)}] ${esc(ev.summary)}</span>
+      <span class="muted" style="margin-left:auto;font-size:10px">${fmtTime(ev.ts)}</span>
+    </div>`).join('')||'<div class="muted">No operational log warnings or errors in the last 24h.</div>';
+
+  document.getElementById('main').innerHTML=`
+    <div class="breadcrumb">Kafka 2.8.1 &amp; ZooKeeper Diagnostic Engine · <button class="table-link" onclick="selectCluster(${jsArg(kv.cluster)})">← Cluster JVM &amp; Host Overview</button></div>
+    <div class="ihdr">
+      <span class="statuspill" style="background:${PILL[kv.status||'unknown']};color:var(--ink)">${esc(kv.status||'unknown')}</span>
+      <div style="font-size:22px;font-weight:700">Kafka 2.8.1 &amp; ZooKeeper Metrics — ${esc(kv.cluster)}</div>
+      <span class="engine">${esc(kv.consensus||'ZOOKEEPER')} · Kafka ${esc(kv.kafka_version||'2.8.1')}</span>
+      <select class="inp" style="width:auto;margin-left:auto" onchange="selectKafkaCluster(this.value)">
+        ${clusters.map(c=>`<option value="${esc(c)}"${c===kv.cluster?' selected':''}>${esc(c)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="panels"><div class="panel full"><h3>Core Kafka 2.8.1 &amp; ZooKeeper Quorum Telemetry (JMX / Prometheus + Logs)</h3>
+      <div class="metric-grid">
+        ${cell('Under-Replicated (URP)',fmtMetric(ks.total_urp),(ks.total_urp||0)>0)}
+        ${cell('Offline Partitions',fmtMetric(ks.total_offline_partitions),(ks.total_offline_partitions||0)>0)}
+        ${cell('Active Controller',`${fmtMetric(ks.active_controllers)} (${esc(ks.active_controller_id||'none')})`,ks.active_controllers!==1)}
+        ${cell('Messages In / sec',fmtMetric(ks.messages_in_per_sec,'/s'))}
+        ${cell('Bytes In / Out',`${Dashboard.scaled(ks.bytes_in_per_sec,1048576,' MB/s')} / ${Dashboard.scaled(ks.bytes_out_per_sec,1048576,' MB/s')}`)}
+        ${cell('Worst Produce p99',fmtMetric(ks.worst_produce_p99_ms,' ms'),(ks.worst_produce_p99_ms||0)>=150)}
+        ${cell('Worst Request Idle',fmtMetric(ks.worst_request_idle_pct,'%'),(ks.worst_request_idle_pct??100)<25)}
+        ${cell('ZK Leader & Synced',`${esc(ks.zk_leader_id||'—')} (${fmtMetric(ks.zk_synced_followers)} followers)`)}
+        ${cell('Worst ZK Latency',fmtMetric(ks.worst_zk_latency_ms,' ms'),(ks.worst_zk_latency_ms||0)>=25)}
+        ${cell('ZK WAL fsync Stalls',fmtMetric(ks.total_zk_fsync_warnings),(ks.total_zk_fsync_warnings||0)>0)}
+        ${cell('ZK Expired Sessions',fmtMetric(ks.total_zk_session_expires),(ks.total_zk_session_expires||0)>0)}
+      </div>
+    </div></div>
+    <h2>Broker, Controller &amp; ZooKeeper Node Matrix (click any node for deep-dive charts &amp; log analyzer)</h2>
+    <div class="panel full" style="overflow-x:auto">
+      <table class="sar-table">
+        <tr><th>Node</th><th>Role</th><th>Grade</th><th>URP</th><th>Offline</th><th>Controller</th><th>ISR Shrink/s</th><th>Msg In/s</th><th>Req Idle %</th><th>Produce p99</th><th>ZooKeeper Quorum / WAL</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <h2 style="margin-top:22px">Parsed Kafka &amp; ZooKeeper Operational Log Events (server.log · controller.log · state-change.log · zookeeper.log)</h2>
+    <div class="alerts">${logHtml}</div>`;
+}
+
+async function selectKafkaInstance(id,ev){
+  if(ev) ev.stopPropagation();
+  CURRENT_INSTANCE=id;
+  SELECTED='kafka-instance:'+id;
+  if(FLEET) renderTree();
+  const encodedId=encodeURIComponent(id);
+  const main=document.getElementById('main');
+  main.innerHTML='<div class="empty">Loading Kafka 2.8.1 &amp; ZooKeeper deep-dive for '+esc(id)+'…</div>';
+  const [kSnap,kSer,aiDiag]=await Promise.all([
+    fetchOptional('/api/instance/'+encodedId+'/kafka'),
+    fetchOptional('/api/instance/'+encodedId+'/kafka/series?range='+encodeURIComponent(KAFKA_RANGE)),
+    fetchOptional('/api/ml/diagnose/'+encodedId),
+  ]);
+  renderKafkaInstanceView(id,kSnap,kSer,aiDiag);
+}
+
+async function changeKafkaRange(r){
+  KAFKA_RANGE=r;
+  if(!CURRENT_INSTANCE||!_kafkaInstSnap) return;
+  const id=CURRENT_INSTANCE;
+  const kSer=await fetchOptional('/api/instance/'+encodeURIComponent(id)+'/kafka/series?range='+encodeURIComponent(r));
+  if(CURRENT_INSTANCE!==id||KAFKA_RANGE!==r) return;
+  renderKafkaInstanceView(id,_kafkaInstSnap.kSnap,kSer,_kafkaInstSnap.aiDiag);
+}
+
+function renderKafkaInstanceView(id,kSnap,kSer,aiDiag){
+  destroy();
+  _kafkaInstSnap={kSnap,aiDiag};
+  const main=document.getElementById('main');
+  if(!kSnap || !kSnap.instance){
+    main.innerHTML=`<div class="empty">No Kafka/ZooKeeper telemetry found for ${esc(id)}.</div>`;
+    return;
+  }
+  const inst=kSnap.instance, m=kSnap.metrics||{}, h=kSnap.health||{grade:'?',score:null,status:'unknown'};
+  const f=kSnap.findings||{pros:[],cons:[],recommendations:[],root_causes:[]};
+  const grade=Dashboard.grade(h);
+  const cell=(l,v,crit)=>`<div class="metric"><div class="l">${esc(l)}</div><div class="v"${crit?' style="color:var(--crit)"':''}>${v}</div></div>`;
+  const isZk=inst.role==='zookeeper';
+
+  const kCells=isZk?[
+    cell('ZK Quorum Role',esc(m.zk_server_state||'follower')),
+    cell('Synced Followers',fmtMetric(m.zk_synced_followers)),
+    cell('ZK Avg Latency',fmtMetric(m.zk_avg_latency_ms,' ms'),(m.zk_avg_latency_ms||0)>=20),
+    cell('ZK Max Latency',fmtMetric(m.zk_max_latency_ms,' ms'),(m.zk_max_latency_ms||0)>=500),
+    cell('Outstanding Reqs',fmtMetric(m.zk_outstanding_requests),(m.zk_outstanding_requests||0)>=10),
+    cell('Alive Connections',fmtMetric(m.zk_alive_connections)),
+    cell('ZNode Count',fmtMetric(m.zk_znode_count)),
+    cell('Watch Count',fmtMetric(m.zk_watch_count)),
+    cell('WAL fsync Warnings',fmtMetric(m.zk_fsync_warning_count),(m.zk_fsync_warning_count||0)>0),
+    cell('Session Expirations',fmtMetric(m.zk_session_expire_count),(m.zk_session_expire_count||0)>0),
+  ]:[
+    cell('Under-Replicated (URP)',fmtMetric(m.under_replicated_partitions),(m.under_replicated_partitions||0)>0),
+    cell('Offline Partitions',fmtMetric(m.offline_partitions_count),(m.offline_partitions_count||0)>0),
+    cell('Active Controller',fmtMetric(m.active_controller_count)),
+    cell('Partitions / Leaders',`${fmtMetric(m.partition_count)} / ${fmtMetric(m.leader_count)}`),
+    cell('ISR Shrink / Expand',`${fmtMetric(m.isr_shrinks_per_sec,'/s')} / ${fmtMetric(m.isr_expands_per_sec,'/s')}`,(m.isr_shrinks_per_sec||0)>0),
+    cell('Messages In / sec',fmtMetric(m.messages_in_per_sec,'/s')),
+    cell('Bytes In / Out',`${Dashboard.scaled(m.bytes_in_per_sec,1048576,' MB/s')} / ${Dashboard.scaled(m.bytes_out_per_sec,1048576,' MB/s')}`),
+    cell('Req Handler Idle',fmtMetric(m.request_handler_avg_idle_pct,'%'),(m.request_handler_avg_idle_pct??100)<25),
+    cell('Net Processor Idle',fmtMetric(m.network_processor_avg_idle_pct,'%'),(m.network_processor_avg_idle_pct??100)<30),
+    cell('Produce p99 Latency',fmtMetric(m.produce_latency_p99_ms,' ms'),(m.produce_latency_p99_ms||0)>=150),
+    cell('Fetch Consumer p99',fmtMetric(m.fetch_consumer_latency_p99_ms,' ms')),
+    cell('Fetch Follower p99',fmtMetric(m.fetch_follower_latency_p99_ms,' ms')),
+    cell('Request / Resp Queue',`${fmtMetric(m.request_queue_size)} / ${fmtMetric(m.response_queue_size)}`,(m.request_queue_size||0)>=100),
+    cell('Log Flush p99',fmtMetric(m.log_flush_rate_ms_p99,' ms')),
+    cell('ZK Client Latency',fmtMetric(m.zk_avg_latency_ms,' ms')),
+  ];
+
+  const rcHtml=(f.root_causes||[]).map(rc=>`
+    <div class="alert ${rc.severity==='critical'?'critical':'warning'}" style="cursor:default">
+      <span class="sev ${rc.severity==='critical'?'critical':'warning'}">${esc(rc.layer)}</span>
+      <span class="where">${esc(rc.title)}</span>
+      <span class="msg">${esc(rc.detail)}</span>
+    </div>`).join('');
+
+  const logs=(kSnap.log_events||[]).map(ev=>`<tr>
+    <td style="white-space:nowrap">${fmtTime(ev.ts)}</td>
+    <td><span class="sev ${ev.severity==='critical'?'critical':'warning'}">${esc(ev.level)}</span></td>
+    <td><code>${esc(ev.category)}</code></td>
+    <td>${esc(ev.summary)}</td>
+  </tr>`).join('')||'<tr><td colspan="4" class="muted">No operational log warnings/errors recorded for this node.</td></tr>';
+
+  const isAdmin=(typeof CURRENT_ROLE!=='undefined')&&CURRENT_ROLE==='admin';
+  const uploadHtml=isAdmin?`
+    <div class="panel full" style="margin-top:14px">
+      <h3>Ingest Kafka 2.8.1 / ZooKeeper Operational Logs (server.log · controller.log · state-change.log · zookeeper.log)</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Paste raw lines from <code>server.log</code>, <code>controller.log</code>, <code>state-change.log</code>, or <code>zookeeper.log</code> to extract ISR shrink/expand, URP, controller elections, WAL fsync stalls, and session expirations.</div>
+      <textarea id="kafkaLogText" class="sar-upload-text" rows="5" placeholder="[2026-10-22 21:00:01,112] WARN [Partition orders-0 broker=1] Shrinking ISR from 1,2,3 to 1,3 (kafka.cluster.Partition)…"></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button class="btn" onclick="submitKafkaLogUpload(${jsArg(id)})">Analyze &amp; Ingest Logs</button>
+        <span id="kafkaLogMsg" class="muted" style="font-size:11px"></span>
+      </div>
+    </div>`:'';
+
+  main.innerHTML=`
+    <div class="breadcrumb"><button class="table-link" onclick="selectKafkaCluster(${jsArg(inst.cluster)})">← ${esc(inst.cluster)} Kafka &amp; ZK Overview</button> · <button class="table-link" onclick="selectInstance(${jsArg(id)})">JVM GC View</button> · <button class="table-link" onclick="selectHost(${jsArg(id)})">Host SAR View</button></div>
+    <div class="ihdr">
+      <div class="grade ${Dashboard.gradeClass(h)}">${grade}</div>
+      <div><div style="font-size:20px;font-weight:700">Kafka 2.8.1 &amp; ZooKeeper Deep-Dive — ${esc(id)}</div>
+        <div class="muted">${Dashboard.score(h)} · ${esc(inst.role)} · Kafka ${esc(m.kafka_version||'2.8.1')}</div></div>
+    </div>
+    ${rcHtml?`<h2>Cross-Layer Root Cause Correlations (GC ↔ Host SAR ↔ Kafka 2.8.1 ↔ ZooKeeper)</h2><div class="alerts">${rcHtml}</div>`:''}
+    ${renderJevAndLlmPanel(aiDiag)}
+    <h2>Real-Time JMX / Prometheus &amp; Operational Metrics</h2>
+    <div class="metric-grid">${kCells.join('')}</div>
+    <h2 style="display:flex;align-items:center;gap:12px">Gradual Smooth Trending Charts (with EWMA Overlay)
+      <select class="inp" style="width:auto;margin:0;text-transform:none" onchange="changeKafkaRange(this.value)">
+        ${['1h','3h','6h','12h','24h','2d','7d','30d','90d','1y','2y'].map(r=>`<option value="${r}"${r===KAFKA_RANGE?' selected':''}>${r}</option>`).join('')}
+      </select>
+    </h2>
+    ${kSer&&kSer.series&&kSer.series.length?`<div class="panels">
+      <div class="panel"><h3>Replication Health — URP, Offline &amp; ISR Shrink/s</h3><div class="chartbox"><canvas id="cKafkaUrp"></canvas></div></div>
+      <div class="panel"><h3>Request Latency p99 (Produce · Fetch) + Smooth Trend (ms)</h3><div class="chartbox"><canvas id="cKafkaLat"></canvas></div></div>
+      <div class="panel"><h3>Broker Throughput (Msg/s) &amp; Thread Pool Idle (%)</h3><div class="chartbox"><canvas id="cKafkaTput"></canvas></div></div>
+      <div class="panel"><h3>ZooKeeper Latency (ms), Outstanding &amp; WAL fsync Stalls</h3><div class="chartbox"><canvas id="cKafkaZk"></canvas></div></div>
+    </div>`:'<div class="muted" style="padding:12px">No time-series samples in this window.</div>'}
+    <div class="panels" style="margin-top:12px">
+      <div class="panel"><h3 style="color:#7ee787">Pros</h3><ul class="list pros">${(f.pros||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">—</li>'}</ul></div>
+      <div class="panel"><h3 style="color:#ffa198">Cons</h3><ul class="list cons">${(f.cons||[]).map(x=>`<li>${esc(x)}</li>`).join('')||'<li class="muted">None.</li>'}</ul></div>
+      <div class="panel full"><h3 style="color:var(--accent)">Engineering Recommendations</h3><ul class="list recs">${(f.recommendations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
+    </div>
+    <div class="panel full" style="margin-top:14px">
+      <h3>Parsed Operational Log Events (${(kSnap.log_events||[]).length})</h3>
+      <table class="sar-table"><tr><th>Timestamp (UTC)</th><th>Level</th><th>Category</th><th>Diagnostic Summary</th></tr>${logs}</table>
+    </div>
+    ${uploadHtml}`;
+  if(kSer&&kSer.series&&kSer.series.length) drawKafkaCharts(kSer);
+}
+
+function drawKafkaCharts(kSer){
+  chartTheme();
+  const s=kSer.series||[];
+  const {labels,pr}=seriesLabels(s);
+  const ln=(label,data,color,extra)=>Object.assign({label,data:data.map(Dashboard.number),borderColor:color,pointRadius:pr,borderWidth:1.5,tension:.38,cubicInterpolationMode:'monotone'},extra||{});
+  if(document.getElementById('cKafkaUrp')){
+    charts.kUrp=new Chart(cKafkaUrp,{data:{labels,datasets:[
+      {type:'bar',label:'URP max',data:s.map(p=>p.urp_max),backgroundColor:'rgba(229,72,77,.65)',yAxisID:'y'},
+      {type:'bar',label:'Offline max',data:s.map(p=>p.offline_max),backgroundColor:'#a371f7',yAxisID:'y'},
+      ln('ISR shrinks/s',s.map(p=>p.isr_shrink_avg),'#f5a623',{type:'line',yAxisID:'y1'}),
+    ]},options:{...baseOpts(),scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{position:'left',beginAtZero:true,ticks:{font:{size:9}}},y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}}}}}});
+  }
+  if(document.getElementById('cKafkaLat')){
+    charts.kLat=new Chart(cKafkaLat,{type:'line',data:{labels,datasets:[
+      ln('Produce p99 (ms)',s.map(p=>p.produce_p99_max),'#e5484d',{backgroundColor:'rgba(229,72,77,.10)',fill:true}),
+      ln('Produce EWMA trend',ewmaSmooth(s.map(p=>p.produce_p99_max)),'#f5a623',{borderDash:[4,3],pointRadius:0}),
+      ln('Fetch Consumer p99',s.map(p=>p.fetch_consumer_p99_max),'#00aeef'),
+      ln('Fetch Follower p99',s.map(p=>p.fetch_follower_p99_max),'#2eb872'),
+    ]},options:baseOpts()});
+  }
+  if(document.getElementById('cKafkaTput')){
+    charts.kTput=new Chart(cKafkaTput,{type:'line',data:{labels,datasets:[
+      ln('Messages in/s',s.map(p=>p.msg_in_avg),'#00aeef',{yAxisID:'y',backgroundColor:'rgba(0,174,239,.10)',fill:true}),
+      ln('Req Handler Idle %',s.map(p=>p.req_idle_avg),'#2eb872',{yAxisID:'y1'}),
+      ln('Net Processor Idle %',s.map(p=>p.net_idle_avg),'#a371f7',{yAxisID:'y1'}),
+    ]},options:{...baseOpts(),scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{position:'left',beginAtZero:true,ticks:{font:{size:9}}},y1:{position:'right',beginAtZero:true,suggestedMax:100,grid:{drawOnChartArea:false},ticks:{font:{size:9}}}}}});
+  }
+  if(document.getElementById('cKafkaZk')){
+    charts.kZk=new Chart(cKafkaZk,{data:{labels,datasets:[
+      ln('ZK avg latency (ms)',s.map(p=>p.zk_latency_avg),'#a371f7',{type:'line',yAxisID:'y'}),
+      ln('ZK latency EWMA',ewmaSmooth(s.map(p=>p.zk_latency_avg)),'#00aeef',{type:'line',borderDash:[4,3],pointRadius:0,yAxisID:'y'}),
+      {type:'bar',label:'WAL fsync stalls',data:s.map(p=>p.zk_fsync_sum),backgroundColor:'#e5484d',yAxisID:'y1'},
+    ]},options:{...baseOpts(),scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}}},y:{position:'left',beginAtZero:true,ticks:{font:{size:9}}},y1:{position:'right',beginAtZero:true,grid:{drawOnChartArea:false},ticks:{font:{size:9}}}}}});
+  }
+}
+
+async function submitKafkaLogUpload(id){
+  const txt=document.getElementById('kafkaLogText'),msg=document.getElementById('kafkaLogMsg');
+  if(!txt||!txt.value.trim()){ if(msg) msg.textContent='Paste Kafka or ZooKeeper log lines first.'; return; }
+  msg.textContent='Parsing & ingesting…';
+  try{
+    const r=await fetch('/api/instance/'+encodeURIComponent(id)+'/kafka/logs',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content:txt.value}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+    msg.textContent=d.detail;
+    txt.value='';
+    await selectKafkaInstance(id);
+  }catch(e){ msg.textContent='Failed: '+e.message; }
+}
+
+/* ---------------- Real-Time Active Alerter (Host CPU/Mem/Disk + Kafka URP + ZK + JVM) ---------------- */
+let rtAlertInterval=null, LAST_RT_ALERTS=null;
+
+function toggleRtAlertsPanel(show){
+  const panel=document.getElementById('rtAlertsPanel');
+  if(!panel) return;
+  const open = show===undefined ? panel.style.display==='none' : !!show;
+  panel.style.display=open?'flex':'none';
+  if(open) pollRealtimeAlerts();
+}
+
+function navigateRtAlert(layer, instanceId){
+  toggleRtAlertsPanel(false);
+  if(layer==='host') selectHost(instanceId);
+  else if(layer==='kafka'||layer==='zookeeper') selectKafkaInstance(instanceId);
+  else selectInstance(instanceId);
+}
+
+async function pollRealtimeAlerts(){
+  try{
+    const data=await fetchOptional('/api/alerts/realtime');
+    if(!data || !Array.isArray(data.alerts)) return;
+    LAST_RT_ALERTS=data;
+    const badge=document.getElementById('rtAlertsBadge');
+    const banner=document.getElementById('rtAlertBanner');
+    const bannerTxt=document.getElementById('rtAlertBannerText');
+    const list=document.getElementById('rtAlertsList');
+
+    if(badge){
+      if(data.total_count>0){
+        badge.textContent=data.total_count;
+        badge.style.display='flex';
+        badge.style.background=data.critical_count>0?'var(--crit)':'var(--watch)';
+      }else{
+        badge.style.display='none';
+      }
+    }
+    if(banner && bannerTxt){
+      if(data.critical_count>0 || data.warning_count>0){
+        banner.classList.add('active');
+        const top=data.alerts[0];
+        const byL=data.by_layer||{};
+        bannerTxt.innerHTML=`<span class="rt-pulse"></span>
+          <b>REAL-TIME ALERTER (${data.critical_count} critical, ${data.warning_count} warning)</b>
+          <span class="muted">Host:${byL.host||0} · Kafka:${byL.kafka||0} · ZK:${byL.zookeeper||0} · JVM:${byL.jvm||0}</span>
+          <span class="layer-pill ${esc(top.layer)}">${esc(top.layer)}</span>
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b>${esc(top.instance_id)}</b>: ${esc(top.title)}</span>`;
+      }else{
+        banner.classList.remove('active');
+      }
+    }
+    if(list){
+      if(!data.alerts.length){
+        list.innerHTML='<div class="muted" style="text-align:center;padding:40px 0">All Host CPU/Memory/Disk, Kafka URP, ZooKeeper Quorum, and JVM GC signals are nominal.</div>';
+      }else{
+        list.innerHTML=data.alerts.map(a=>`
+          <div class="job-card" style="cursor:pointer;border-left:3px solid ${a.severity==='critical'?'var(--crit)':'var(--watch)'}" onclick="navigateRtAlert(${jsArg(a.layer)},${jsArg(a.instance_id)})">
+            <div class="job-card-header">
+              <span class="layer-pill ${esc(a.layer)}">${esc(a.layer)}</span>
+              <span class="sev ${esc(a.severity)}">${esc(a.severity)}</span>
+            </div>
+            <div style="font-weight:700;font-size:12px;margin:4px 0">${esc(a.title)}</div>
+            <div class="job-message">${esc(a.msg)}</div>
+            <div class="muted" style="font-size:10px;margin-top:6px;text-align:right">${esc(a.instance_id)} · click to inspect</div>
+          </div>`).join('');
+      }
+    }
+  }catch(e){}
+}
+
+function startRealtimeAlertPoller(){
+  if(rtAlertInterval) return;
+  pollRealtimeAlerts();
+  rtAlertInterval=setInterval(pollRealtimeAlerts, 5000);
+}
+
 /* ---------------- boot ---------------- */
 async function load(){
   const b=document.getElementById('refreshBtn');b.disabled=true;b.textContent='Loading…';
@@ -2411,6 +2970,10 @@ async function load(){
       await refreshSettingsClusters();
     } else if (SELECTED === 'ml-preview') {
       await refreshLearningPreview(CURRENT_INSTANCE);
+    } else if (SELECTED && SELECTED.startsWith('kafka-cluster:')) {
+      await selectKafkaCluster(SELECTED.slice(14));
+    } else if (SELECTED && SELECTED.startsWith('kafka-instance:')) {
+      await selectKafkaInstance(SELECTED.slice(15));
     } else if (SELECTED && SELECTED.startsWith('cluster:')) {
       selectCluster(SELECTED.slice(8));
     } else if (SELECTED) {
@@ -2431,12 +2994,15 @@ async function boot(){
     document.getElementById('whoami').textContent=me.user+' · '+me.role;
     document.getElementById('logoutBtn').style.display='';
     document.getElementById('mlPreviewBtn').style.display='';
+    document.getElementById('kafkaDashBtn').style.display='';
+    document.getElementById('rtAlertsBtn').style.display='';
     document.getElementById('settingsBtn').style.display=(me.role==='admin')?'':'none';
     document.getElementById('jobsBtn').style.display='';
     document.getElementById('loginModal').style.display='none';
     document.body.classList.add('authenticated');
     load();
     startPollingJobs();
+    startRealtimeAlertPoller();
   }catch(e){
     document.body.classList.remove('authenticated');
     document.getElementById('loginModal').style.display='flex';

@@ -142,6 +142,13 @@ DEFAULT_LOG_GLOBS = {
     "history": ["logs/kafka-history-gc.log*", "logs/gc.log*"],
     "zookeeper": ["logs/zookeeper-gc.log*", "logs/zookeeperServer-gc.log*", "logs/gc.log*"],
 }
+DEFAULT_KAFKA_LOG_GLOBS = {
+    "broker": ["logs/server.log*", "logs/controller.log*", "logs/state-change.log*"],
+    "controller": ["logs/controller.log*", "logs/server.log*", "logs/state-change.log*"],
+    "zookeeper": ["logs/zookeeper.log*", "logs/zookeeper.out*"],
+    "connect": ["logs/connect.log*"],
+    "schema-registry": ["logs/schema-registry.log*"],
+}
 DEFAULT_KAFKA_HOME = "/opt/kafka"
 FALLBACK_DIRS = ["/var/log/kafka", "/var/log/zookeeper"]
 
@@ -167,6 +174,13 @@ class NodeConfig:
     sadf_bin: str = "sadf"
     sar_local_path: Optional[str] = None   # local/demo: a captured sar -A or sadf -j dump
 
+    # --- Kafka 2.8.1 & ZooKeeper operational logs + JMX/Prometheus ---
+    kafka_log_paths: list = field(default_factory=list)
+    kafka_local_paths: list = field(default_factory=list)
+    prometheus_url: Optional[str] = None
+    jmx_exporter_url: Optional[str] = None
+    kafka_version: str = "2.8.1"
+
     def effective_sar_source(self) -> str:
         return self.sar_source or self.source
 
@@ -174,6 +188,12 @@ class NodeConfig:
         if self.log_paths:
             return self.log_paths
         rel = DEFAULT_LOG_GLOBS.get(self.role, DEFAULT_LOG_GLOBS["broker"])
+        return [os.path.join(self.kafka_home, r) for r in rel]
+
+    def effective_kafka_log_globs(self) -> list[str]:
+        if self.kafka_log_paths:
+            return self.kafka_log_paths
+        rel = DEFAULT_KAFKA_LOG_GLOBS.get(self.role, DEFAULT_KAFKA_LOG_GLOBS["broker"])
         return [os.path.join(self.kafka_home, r) for r in rel]
 
 
@@ -519,3 +539,87 @@ def collect_sar(node: NodeConfig, log_callback=None) -> CollectedSar:
     if node.effective_sar_source() == "local":
         return collect_sar_local(node, log_callback=log_callback)
     return collect_sar_ssh(node, log_callback=log_callback)
+
+
+# --------------------------------------------------------------------------- #
+# Kafka 2.8.1 & ZooKeeper operational log collection
+# (server.log, controller.log, state-change.log, zookeeper.log, zookeeper.out)
+# --------------------------------------------------------------------------- #
+def collect_kafka_logs_local(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
+    paths: list[str] = []
+    patterns = node.kafka_local_paths or node.effective_kafka_log_globs()
+    for pat in patterns:
+        paths.extend(sorted(glob.glob(pat)))
+    paths = list(dict.fromkeys(paths))
+    if len(paths) > MAX_LOG_FILES:
+        paths = paths[:MAX_LOG_FILES]
+    out: list[CollectedLog] = []
+    total_bytes = 0
+    for p in paths:
+        try:
+            text = read_log_text(p)
+            total_bytes += len(text.encode("utf-8"))
+            if total_bytes > MAX_LOG_BYTES:
+                break
+            out.append(CollectedLog(node.id, node.role, p, text))
+        except OSError:
+            continue
+    return out
+
+
+def collect_kafka_logs_ssh(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
+    try:
+        import paramiko
+    except ImportError:
+        return []
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    connect_kwargs = {
+        "hostname": node.host,
+        "port": node.port,
+        "username": node.user,
+        "timeout": 15,
+        "banner_timeout": 15,
+        "auth_timeout": 15,
+        "channel_timeout": SSH_COMMAND_TIMEOUT_S,
+    }
+    if node.key_path:
+        connect_kwargs["key_filename"] = os.path.expanduser(node.key_path)
+    if node.password:
+        connect_kwargs["password"] = node.password
+
+    out: list[CollectedLog] = []
+    try:
+        client.connect(**connect_kwargs)
+        files: list[str] = []
+        for pattern in node.effective_kafka_log_globs():
+            ls_out, _, _ = _run_ssh_command(
+                client, f"ls -1d -- {_quote_glob(pattern)}", max_bytes=MAX_LIST_BYTES, check=False
+            )
+            files.extend(line for line in ls_out.decode(errors="replace").splitlines() if line)
+        files = [f for f in dict.fromkeys(files) if not f.endswith(".gz")][:12]
+        total_bytes = 0
+        for remote_path in files:
+            data, _, _ = _run_ssh_command(
+                client, f"tail -n 2000 -- {shlex.quote(remote_path)}", max_bytes=4 * 1024 * 1024, check=False
+            )
+            if not data:
+                continue
+            total_bytes += len(data)
+            if total_bytes > MAX_LOG_BYTES:
+                break
+            out.append(CollectedLog(node.id, node.role, f"{node.host}:{remote_path}", data.decode(errors="replace")))
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"Kafka log SSH warning for '{node.id}': {exc}")
+    finally:
+        client.close()
+    return out
+
+
+def collect_kafka_logs(node: NodeConfig, log_callback=None) -> list[CollectedLog]:
+    if node.source == "local":
+        return collect_kafka_logs_local(node, log_callback=log_callback)
+    return collect_kafka_logs_ssh(node, log_callback=log_callback)
+

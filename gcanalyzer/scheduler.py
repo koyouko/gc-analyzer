@@ -29,7 +29,7 @@ import time
 import concurrent.futures
 import json
 
-from . import analyzer, config, ingest, parser, store, sar_ingest
+from . import analyzer, config, ingest, kafka_ingest, parser, store, sar_ingest
 from .collector import NodeConfig, collect_ssh, collect_ssh_incremental, read_increment_local
 
 CLUSTERS_DIR = os.environ.get("GC_CONFIG_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clusters"))
@@ -238,7 +238,23 @@ def tick(db_path: str, now: int | None = None, on_tick_start=None, on_node_resul
                 elif not r.recorded:
                     on_node_result(cluster, f"SAR: node '{r.node_id}' {r.detail}", False, r.node_id)
 
-    summary = {"ts": ts, "clusters": clusters_count, "points": collected, "sar_points": sar_points, "pruned": pruned}
+    # 5. Kafka 2.8.1 & ZooKeeper JMX/Prometheus + operational log pass
+    kafka_points = 0
+    for cluster, region, env, nodes in configs:
+        try:
+            kafka_results = kafka_ingest.ingest_kafka_nodes(
+                nodes, db_path, cluster=cluster, now=ts, max_workers=concurrency
+            )
+            kafka_points += sum(1 for r in kafka_results if r.recorded)
+            if on_node_result:
+                for r in kafka_results:
+                    if r.recorded:
+                        on_node_result(cluster, f"Kafka/ZK: node '{r.node_id}' {r.detail}", True, r.node_id)
+        except Exception as exc:
+            if on_node_result:
+                on_node_result(cluster, f"Kafka/ZK collection warning for '{cluster}': {exc}", False)
+
+    summary = {"ts": ts, "clusters": clusters_count, "points": collected, "sar_points": sar_points, "kafka_points": kafka_points, "pruned": pruned}
     return summary
 
 
